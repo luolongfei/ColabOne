@@ -5,6 +5,8 @@ import {
   COLABONE_CANONICAL_VISUAL_PROMPT,
   COLABONE_DIGITAL_HUMAN_ENGINE_SPECIFIC_KEYS,
   COLABONE_DIGITAL_HUMAN_GROUP_KEY,
+  COLABONE_FASHION_MANAGED_FIELD_KEYS,
+  COLABONE_FASHION_MAX_REFS_PER_GROUP,
   COLABONE_LEGACY_VISUAL_PROMPTS,
   COLABONE_VOICE_PRESET_ID_RE,
   buildColabOneStudioWorkflowEntries,
@@ -18,8 +20,10 @@ import {
   formatOutputCreatedAtISO,
   formatOutputSize,
   groupWorkflowFields,
+  guessColabOneFashionPhotoRole,
   hasNonCommercialNotice,
   isColabOneBuiltinDigitalHumanWorkflow,
+  isColabOneFashionCustomPosesEmpty,
   isColabOnePresetVisualPrompt,
   isColabOneVoicePresetSupportedByEngine,
   isColabOneVoiceRefRequired,
@@ -27,13 +31,17 @@ import {
   isWorkflowFieldVisible,
   missingRequiredWorkflowFields,
   outputBlobURL,
+  parseColabOneFashionPhotoMeta,
   parseWorkflowImportJSON,
   partitionWorkflowFields,
+  pickColabOneNextFashionSlotKeys,
   readColabOnePreferredDigitalHumanEngine,
+  reconcileColabOneFashionPhotoList,
   remapColabOnePresetPromptFieldsForLocale,
   resolveColabOneAudioSource,
   resolveColabOneDigitalHumanGpuContext,
   resolveColabOneFallbackVoicePreset,
+  resolveColabOneFashionPreflight,
   resolveColabOneInitialDigitalHumanWorkflowId,
   resolveColabOneLongCatNativeSamplingMode,
   resolveColabOneRecommendedDigitalHumanWorkflowId,
@@ -41,10 +49,15 @@ import {
   resolveColabOneWorkflowFieldDefault,
   resolveColabOneWorkflowFieldPlaceholder,
   resolveSelectedTtsEngine,
+  serializeColabOneFashionPhotoMeta,
   transferColabOneDigitalHumanFields,
   workflowModelsTotalBytes,
   writeColabOnePreferredDigitalHumanEngine,
 } from "./comfyui";
+import {
+  hasColabOneDraftContent,
+  mergeColabOneWorkflowDraftFields,
+} from "./comfyDrafts";
 import {
   colabOneWorkflowShareId,
   colabOneWorkflowShareMode,
@@ -287,6 +300,67 @@ describe("parseWorkflowImportJSON", () => {
       ok: false,
       error: t("comfy.errImportInvalidInputKey", { id: "1" }),
     });
+  });
+
+  it("rejects forbidden prototype keys, enforces 32-level nesting depth, and validates compact byte size", () => {
+    // Forbidden prototype keys on node IDs (raw JSON preserves own __proto__ property)
+    for (const badNodeId of ["__proto__", "constructor", "prototype"]) {
+      const raw = `{"${badNodeId}":{"class_type":"KSampler","inputs":{"steps":10}}}`;
+      expect(parseWorkflowImportJSON(raw)).toEqual({
+        ok: false,
+        error: t("comfy.errImportInvalidNodeId", { id: badNodeId }),
+      });
+    }
+
+    // Forbidden prototype keys on input keys
+    for (const badInputKey of ["__proto__", "constructor", "prototype"]) {
+      const raw = `{"1":{"class_type":"KSampler","inputs":{"${badInputKey}":1}}}`;
+      expect(parseWorkflowImportJSON(raw)).toEqual({
+        ok: false,
+        error: t("comfy.errImportForbiddenKey", { id: "1", key: badInputKey }),
+      });
+    }
+
+    // Nesting depth: root (1) -> node (2) -> inputs (3) -> 29 nested arrays = 32 (allowed)
+    let nestedAllowed: unknown = "ok";
+    for (let i = 0; i < 29; i += 1) {
+      nestedAllowed = [nestedAllowed];
+    }
+    expect(
+      parseWorkflowImportJSON(
+        JSON.stringify({
+          "1": { class_type: "KSampler", inputs: { nested: nestedAllowed } },
+        }),
+      ).ok,
+    ).toBe(true);
+
+    // 30 nested arrays inside inputs -> depth 33 (rejected)
+    const nestedTooDeep = [nestedAllowed];
+    expect(
+      parseWorkflowImportJSON(
+        JSON.stringify({
+          "1": { class_type: "KSampler", inputs: { nested: nestedTooDeep } },
+        }),
+      ),
+    ).toEqual({
+      ok: false,
+      error: t("comfy.errImportTooDeep"),
+    });
+
+    // Pretty-printed JSON slightly > 2 MiB raw but <= 2 MiB compact is accepted
+    const compactPayload = JSON.stringify({
+      "1": {
+        class_type: "CLIPTextEncode",
+        inputs: { text: "x".repeat(1024) },
+      },
+    });
+    const paddedValid = `${" ".repeat(2 * 1024 * 1024 + 64)}${compactPayload}`.replace(
+      /^\s+/,
+      `{\n${" ".repeat(2 * 1024 * 1024 + 64)}"1": `,
+    );
+    const paddedObj = `{${" ".repeat(2 * 1024 * 1024 + 64)}"1":{"class_type":"CLIPTextEncode","inputs":{"text":"ok"}}}`;
+    expect(paddedValid.length).toBeGreaterThan(2 * 1024 * 1024);
+    expect(parseWorkflowImportJSON(paddedObj).ok).toBe(true);
   });
 });
 
@@ -5986,6 +6060,270 @@ describe("unified digital human workflow helpers", () => {
         "zh-CN",
       );
       expect(customTtsToInfiniteTalk["pipeline.tts_engine"]).toBe("qwen3_tts");
+    });
+
+    it("exposes beginner-friendly non-commercial fashion-tryon-h3 workflow cleanly", () => {
+      const templates = comfyCatalog.templates as unknown as WorkflowTemplate[];
+      const fashionWf = templates.find((w) => w.id === "fashion-tryon-h3");
+      expect(fashionWf).toBeDefined();
+      expect(fashionWf!.pipeline?.kind).toBe("fashion_tryon");
+      expect(fashionWf!.commercial_ok).toBe(false);
+
+      // Non-commercial notice triggers automatically without any TTS selection
+      const notice = hasNonCommercialNotice(fashionWf, undefined);
+      expect(notice).not.toBeNull();
+      expect(notice?.restrictedBy).toBe("workflow");
+      expect(notice?.license).toContain("MiniMax-H3-Image");
+      expect(notice?.license).toContain("CC BY-NC 4.0");
+      expect(notice?.notice).toContain("非商业用途");
+
+      // Beginner-friendly basic vs advanced partitioning:
+      // 14 multi-ref managed fields + 3 basic dropdowns in primary; zero old scattered photo fields in advanced.
+      const { primary, advanced } = partitionWorkflowFields(fashionWf!.fields);
+      const standardPrimary = primary.filter(
+        (f) => !COLABONE_FASHION_MANAGED_FIELD_KEYS.has(f.key),
+      );
+      expect(standardPrimary.map((f) => f.key)).toEqual([
+        "pipeline.scene_preset",
+        "pipeline.shot_pack",
+        "pipeline.aspect_preset",
+      ]);
+      expect(primary.length).toBe(17);
+      expect(advanced.length).toBeGreaterThanOrEqual(15);
+      expect(
+        advanced.some((f) =>
+          [
+            "pipeline.model_extra_photo_1",
+            "pipeline.model_extra_photo_2",
+            "pipeline.garment_detail_photo",
+            "pipeline.garment_back_photo",
+          ].includes(f.key),
+        ),
+      ).toBe(false);
+
+      // Defaults & required validation: satisfied by ANY occupied model slot + ANY occupied garment slot
+      const defaults = defaultFieldValues(fashionWf!.fields, "zh-CN");
+      expect(defaults["pipeline.scene_preset"]).toBe("studio_light_gray");
+      expect(defaults["pipeline.shot_pack"]).toBe("full_6");
+      expect(defaults["pipeline.aspect_preset"]).toBe("3x4_2k");
+      expect(defaults["pipeline.garment_cleanup"]).toBe("rmbg3");
+      expect(defaults["pipeline.save_cleaned_garment"]).toBe(false);
+      expect(defaults["pipeline.styling_match"]).toBe("auto_match");
+      expect(defaults["pipeline.precision_mode"]).toBe("auto");
+      expect(defaults["pipeline.anchor_hero_shot"]).toBe(true);
+
+      expect(
+        missingRequiredWorkflowFields(fashionWf, defaults, {}, {}).map(
+          (f) => f.key,
+        ),
+      ).toEqual(["1.image", "2.image"]);
+      expect(
+        missingRequiredWorkflowFields(
+          fashionWf,
+          defaults,
+          { "1.image": "in_model", "2.image": "in_garment" },
+          {},
+        ),
+      ).toEqual([]);
+      // Deleting slot 1 while slot 2 remains still satisfies required validation
+      expect(
+        missingRequiredWorkflowFields(
+          fashionWf,
+          defaults,
+          {
+            "pipeline.model_photo_2": "in_model_2",
+            "pipeline.garment_photo_3": "in_garment_3",
+          },
+          {},
+        ),
+      ).toEqual([]);
+
+      // Smart filename role guessing & multi-ref metadata helpers
+      expect(guessColabOneFashionPhotoRole("model", "IMG_1001.jpg", true)).toEqual({
+        role: "front",
+        guessed: false,
+      });
+      expect(guessColabOneFashionPhotoRole("model", "IMG_1002.jpg", false)).toEqual({
+        role: "auto",
+        guessed: false,
+      });
+      expect(
+        guessColabOneFashionPhotoRole("model", "童模微侧照.png", false),
+      ).toEqual({ role: "side", guessed: true });
+      expect(
+        guessColabOneFashionPhotoRole("garment", "礼服背面披风.jpg", false),
+      ).toEqual({ role: "back", guessed: true });
+      expect(
+        guessColabOneFashionPhotoRole("garment", "领口水钻细节特写.webp", false),
+      ).toEqual({ role: "detail", guessed: true });
+      // ASCII word boundaries: unrelated words like "background"/"outside"/"surface" must NOT misclassify
+      expect(
+        guessColabOneFashionPhotoRole("garment", "dress_white_background.png", true),
+      ).toEqual({ role: "front", guessed: false });
+      expect(
+        guessColabOneFashionPhotoRole("garment", "dress_white_background.png", false),
+      ).toEqual({ role: "auto", guessed: false });
+      expect(
+        guessColabOneFashionPhotoRole("model", "outside_surface_shoot.jpg", false),
+      ).toEqual({ role: "auto", guessed: false });
+      expect(
+        guessColabOneFashionPhotoRole("garment", "inflate_domain_shot.jpg", false),
+      ).toEqual({ role: "auto", guessed: false });
+
+      // Ghost role metadata in text-only drafts (no validMedia) is pruned cleanly
+      const ghostMerged = mergeColabOneWorkflowDraftFields(
+        fashionWf!.fields,
+        {
+          "pipeline.model_photo_roles": JSON.stringify({
+            order: ["1.image"],
+            roles: { "1.image": "front" },
+          }),
+          "pipeline.garment_photo_roles": JSON.stringify({
+            order: ["2.image", "pipeline.garment_photo_2"],
+            roles: { "2.image": "front", "pipeline.garment_photo_2": "back" },
+          }),
+        },
+        "zh-CN",
+        {},
+      );
+      expect(ghostMerged["pipeline.model_photo_roles"]).toBe("");
+      expect(ghostMerged["pipeline.garment_photo_roles"]).toBe("");
+      expect(
+        hasColabOneDraftContent(fashionWf!.fields, ghostMerged, [], "zh-CN"),
+      ).toBe(false);
+
+      const serialized = serializeColabOneFashionPhotoMeta({
+        order: ["pipeline.garment_photo_2", "2.image"],
+        roles: { "pipeline.garment_photo_2": "back", "2.image": "front" },
+      });
+      expect(parseColabOneFashionPhotoMeta(serialized, "garment")).toEqual({
+        order: ["pipeline.garment_photo_2", "2.image"],
+        roles: { "pipeline.garment_photo_2": "back", "2.image": "front" },
+      });
+      expect(
+        reconcileColabOneFashionPhotoList(
+          "garment",
+          ["2.image", "pipeline.garment_photo_2", "pipeline.garment_photo_3"],
+          serialized,
+        ),
+      ).toEqual([
+        { key: "pipeline.garment_photo_2", role: "back" },
+        { key: "2.image", role: "front" },
+        { key: "pipeline.garment_photo_3", role: "auto" },
+      ]);
+      expect(
+        pickColabOneNextFashionSlotKeys("model", ["1.image", "pipeline.model_photo_3"], 10),
+      ).toEqual([
+        "pipeline.model_photo_2",
+        "pipeline.model_photo_4",
+        "pipeline.model_photo_5",
+        "pipeline.model_photo_6",
+      ]);
+      expect(COLABONE_FASHION_MAX_REFS_PER_GROUP).toBe(6);
+
+      // Individual pose toggles stay hidden until shot_pack === "custom"
+      const pose1Field = fashionWf!.fields.find(
+        (f) => f.key === "pipeline.pose_1_enabled",
+      )!;
+      expect(isWorkflowFieldVisible(pose1Field, defaults)).toBe(false);
+      expect(
+        isWorkflowFieldVisible(pose1Field, {
+          ...defaults,
+          "pipeline.shot_pack": "custom",
+        }),
+      ).toBe(true);
+
+      // Standalone card in Studio entries alongside grouped digital human card
+      const studioEntries = buildColabOneStudioWorkflowEntries(
+        templates.map((tpl) => ({ ...tpl, source: "builtin" as const })),
+      );
+      const fashionEntry = studioEntries.find(
+        (e) => e.key === "fashion-tryon-h3",
+      );
+      expect(fashionEntry).toBeDefined();
+      expect(fashionEntry?.isGroup).toBe(false);
+
+      // Dynamic preflight reflects auto BF16/INT8 + RMBG 3.0 toggle accurately
+      const bf16Rmbg = resolveColabOneFashionPreflight(defaults, 98304);
+      expect(bf16Rmbg.precision).toBe("bf16");
+      expect(bf16Rmbg.minVramMib).toBe(65536);
+      expect(bf16Rmbg.minDiskMib).toBeGreaterThan(90_000);
+
+      const int8Rmbg = resolveColabOneFashionPreflight(defaults, 24576);
+      expect(int8Rmbg.precision).toBe("int8");
+      expect(int8Rmbg.minVramMib).toBe(22528);
+      expect(int8Rmbg.minDiskMib).toBeGreaterThan(50_000);
+      expect(int8Rmbg.minDiskMib).toBeLessThan(56_000);
+
+      const int8CropOnly = resolveColabOneFashionPreflight(
+        { ...defaults, "pipeline.garment_cleanup": "crop_only" },
+        24576,
+      );
+      expect(int8CropOnly.minDiskMib).toBeLessThan(44_000);
+
+      const forcedBf16On24G = resolveColabOneFashionPreflight(
+        { ...defaults, "pipeline.precision_mode": "bf16" },
+        24576,
+      );
+      expect(forcedBf16On24G.precision).toBe("bf16");
+      expect(forcedBf16On24G.minVramMib).toBe(65536);
+
+      // Custom pose validation blocks empty pose set unless custom_pose_prompts is filled
+      expect(isColabOneFashionCustomPosesEmpty(fashionWf, defaults)).toBe(false);
+      const allUnchecked = {
+        ...defaults,
+        "pipeline.shot_pack": "custom",
+        "pipeline.pose_1_enabled": false,
+        "pipeline.pose_2_enabled": false,
+        "pipeline.pose_3_enabled": false,
+        "pipeline.pose_4_enabled": false,
+        "pipeline.pose_5_enabled": false,
+        "pipeline.pose_6_enabled": false,
+      };
+      expect(isColabOneFashionCustomPosesEmpty(fashionWf, allUnchecked)).toBe(true);
+      expect(
+        isColabOneFashionCustomPosesEmpty(fashionWf, {
+          ...allUnchecked,
+          "pipeline.pose_3_enabled": true,
+        }),
+      ).toBe(false);
+      expect(
+        isColabOneFashionCustomPosesEmpty(fashionWf, {
+          ...allUnchecked,
+          "pipeline.custom_pose_prompts": "正面微笑站姿",
+        }),
+      ).toBe(false);
+    });
+
+    it("trims and deduplicates order keys before looking up roles in serializeColabOneFashionPhotoMeta", () => {
+      const serialized = serializeColabOneFashionPhotoMeta({
+        order: [
+          "  1.image  ",
+          "",
+          "   ",
+          "pipeline.model_photo_2",
+          "1.image",
+          " pipeline.model_photo_2 ",
+        ],
+        roles: {
+          "1.image": " FRONT ",
+          "pipeline.model_photo_2": "Side",
+          "pipeline.model_photo_3": "back",
+        },
+      });
+      expect(JSON.parse(serialized)).toEqual({
+        order: ["1.image", "pipeline.model_photo_2"],
+        roles: {
+          "1.image": "front",
+          "pipeline.model_photo_2": "side",
+        },
+      });
+      expect(
+        serializeColabOneFashionPhotoMeta({
+          order: ["", "   "],
+          roles: { "1.image": "front" },
+        }),
+      ).toBe("");
     });
 
     it("scopes preferred Digital Human engine storage by share context and no-ops when shareId is empty", () => {

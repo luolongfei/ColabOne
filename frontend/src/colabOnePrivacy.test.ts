@@ -302,6 +302,62 @@ describe("ColabOne privacy text and URL segmentation", () => {
     expect(adjacent[1].masked).toBe(true);
     expect(adjacent[1].original).toBe("alex.chen@gmail.com");
   });
+
+  it("masks single-segment Cloudflare tunnel tokens, RFC-3986 sub-delim userinfo, and live_external_llm base_url hosts", () => {
+    const cfToken = btoa(
+      JSON.stringify({
+        a: "account-123456",
+        t: "tunnel-abcdef",
+        s: "secret-xyz789",
+      }),
+    );
+    const nonTunnelB64 = btoa(
+      JSON.stringify({ hello: "world-not-a-cloudflare-token" }),
+    );
+
+    // Valid single-segment Cloudflare tunnel token is masked in plain text and URLs
+    const maskedCf = colabOneMaskPlainText(`cloudflared --token ${cfToken}`);
+    expect(maskedCf).not.toContain(cfToken);
+    expect(maskedCf).toContain("cloudflared --token ");
+
+    const maskedCfUrl = segmentColabOneUrlText(
+      `https://api.example.com/install/${cfToken}`,
+    )
+      .map((s) => s.text)
+      .join("");
+    expect(maskedCfUrl).not.toContain(cfToken);
+    expect(maskedCfUrl).toContain("https://api.example.com/install/");
+
+    // Non-tunnel eyJ... base64 JSON is NOT falsely masked
+    expect(colabOneMaskPlainText(`payload=${nonTunnelB64}`)).toBe(
+      `payload=${nonTunnelB64}`,
+    );
+
+    // Userinfo containing RFC-3986 sub-delims (! $ & ' ( ) * + , ; =) is fully masked
+    const proxyLine = "Proxy failed: http://alice:p!a$s&w(o)r+d,;=1@proxy.acme.dev:7890/test";
+    const maskedProxy = colabOneMaskPlainText(proxyLine);
+    expect(maskedProxy).not.toContain("alice");
+    expect(maskedProxy).not.toContain("p!a$s&w(o)r+d,;=1");
+    expect(maskedProxy).not.toContain("proxy.acme.dev");
+    expect(maskedProxy).toContain("http://");
+    expect(maskedProxy).toContain("/test");
+
+    // buildColabOnePrivacyContext extracts live_external_llm.base_url host
+    const snap = createColabOneSnapshot();
+    snap.live_external_llm = {
+      base_url: "https://llm.private-studio.dev/v1",
+      model: "gpt-4o-mini",
+      has_api_key: true,
+      masked_api_key: "sk-****1234",
+    };
+    const ctx = buildColabOnePrivacyContext(snap);
+    expect(ctx.hosts).toContain("llm.private-studio.dev");
+    const maskedErr = colabOneMaskPlainText(
+      "Upstream timeout contacting llm.private-studio.dev",
+      ctx,
+    );
+    expect(maskedErr).not.toContain("llm.private-studio.dev");
+  });
 });
 
 describe("ColabOne privacy code-block token masking", () => {

@@ -10,6 +10,8 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -977,4 +979,63 @@ type stalePendingTestBackend struct {
 
 func (b *stalePendingTestBackend) CheckSelfUpdate(context.Context) (ColabOneUpdateInstallable, error) {
 	return b.forwardInstall, nil
+}
+
+type eofAfterDelayReader struct {
+	data []byte
+	done bool
+}
+
+func (r *eofAfterDelayReader) Read(p []byte) (int, error) {
+	if r.done {
+		return 0, io.EOF
+	}
+	r.done = true
+	n := copy(p, r.data)
+	return n, io.EOF
+}
+
+func (r *eofAfterDelayReader) Close() error { return nil }
+
+func TestColabOneStalledBodyPreservesEOFAndCloseRaceSafe(t *testing.T) {
+	t.Run("EOF_is_not_masked_when_stalled_flag_is_set", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		sb := newColabOneStalledBody(&eofAfterDelayReader{data: []byte("ok")}, cancel, 30*time.Millisecond)
+		defer sb.Close()
+
+		// Simulate stall flag flipping concurrently right as Read returns io.EOF.
+		sb.stalled.Store(true)
+		buf := make([]byte, 8)
+		n, err := sb.Read(buf)
+		if !errors.Is(err, io.EOF) || string(buf[:n]) != "ok" {
+			t.Fatalf("Read() = (%q, %v), want (\"ok\", io.EOF)", string(buf[:n]), err)
+		}
+		_ = ctx
+	})
+
+	t.Run("Close_does_not_race_with_timer_check_or_rearm", func(t *testing.T) {
+		for i := 0; i < 40; i++ {
+			ctx, cancel := context.WithCancel(context.Background())
+			sb := newColabOneStalledBody(io.NopCloser(bytes.NewReader(nil)), cancel, 20*time.Millisecond)
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				sb.check()
+			}()
+			go func() {
+				defer wg.Done()
+				_ = sb.Close()
+			}()
+			wg.Wait()
+			sb.mu.Lock()
+			done := sb.done
+			sb.mu.Unlock()
+			if !done {
+				t.Fatal("expected sb.done to remain true after Close()")
+			}
+			_ = ctx
+		}
+	})
 }

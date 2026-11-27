@@ -386,7 +386,7 @@ class ComfyTtsEngineSpec(BaseModel):
 
 class ComfyPipelineSpec(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
-    kind: Literal["comfy_standard", "digital_human"] = "comfy_standard"
+    kind: Literal["comfy_standard", "digital_human", "fashion_tryon"] = "comfy_standard"
     video_backend: Literal[
         "infinitetalk", "longcat_avatar", "longcat_avatar_native", "custom"
     ] = "custom"

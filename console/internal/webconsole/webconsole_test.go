@@ -2207,3 +2207,79 @@ func TestWebConsoleBrandLogoAndFaviconRoutes(t *testing.T) {
 		}
 	}
 }
+
+func TestLoginAndRedeemAtomicAgainstConcurrentRevocationAndStop(t *testing.T) {
+	clk := newFakeClock(time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC))
+	wc := NewColabOneWebConsole(ColabOneWebConsoleOptions{
+		ConfigDir: t.TempDir(),
+		Vault:     newMemoryVault(),
+		Now:       clk.Now,
+	})
+	defer wc.Close()
+
+	port := reserveFreePort(t)
+	if _, err := wc.Update(ColabOneWebConsoleUpdateRequest{
+		Enabled: boolPtr(true),
+		Port:    intPtr(port),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	initialPass, err := wc.Passcode()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Issue tickets and hammer login + redeem concurrently while rotating passcode & revoking sessions.
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			for j := 0; j < 10; j++ {
+				b, _ := json.Marshal(map[string]string{"passcode": initialPass})
+				req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/_colabone_web/login", bytes.NewReader(b))
+				req.RemoteAddr = fmt.Sprintf("10.0.0.%d:1234", idx+1)
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set(ClientHeaderName, ClientHeaderValue)
+				rec := httptest.NewRecorder()
+				wc.Handler().ServeHTTP(rec, req)
+			}
+		}(i)
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for j := 0; j < 6; j++ {
+			if tk, tkErr := wc.CreateLoginTicket(true); tkErr == nil {
+				u, _ := url.Parse(tk.LocalURL)
+				r := httptest.NewRequest(http.MethodGet, u.RequestURI(), nil)
+				r.Host = u.Host
+				wc.Handler().ServeHTTP(httptest.NewRecorder(), r)
+			}
+			wc.RevokeSessions()
+		}
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, _ = wc.SetPasscode("rotated-passcode-123456")
+	}()
+	wg.Wait()
+
+	// After SetPasscode + RevokeSessions (and advancing past global rate-limit window), old passcode MUST never authenticate.
+	wc.RevokeSessions()
+	clk.Advance(loginRateLimitWindow + time.Second)
+	b, _ := json.Marshal(map[string]string{"passcode": initialPass})
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/_colabone_web/login", bytes.NewReader(b))
+	req.RemoteAddr = "10.0.0.99:1234"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(ClientHeaderName, ClientHeaderValue)
+	rec := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("old passcode expected 401 after rotation, got %d", rec.Code)
+	}
+	if wc.State().ActiveSessions != 0 {
+		t.Fatalf("expected 0 active sessions after revoke + failed login, got %d", wc.State().ActiveSessions)
+	}
+}

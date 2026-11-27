@@ -1,11 +1,27 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  colabOneApplyMigrationPreview,
+  colabOneCancelMigrationSession,
+  colabOneCancelUpdateInstall,
+  colabOneCheckForUpdate,
   colabOneCommand,
+  colabOneDecryptMigrationPreview,
+  colabOneExportMigrationFile,
   colabOneExportWorkflowOutput,
+  colabOneGetMigrationExportSummary,
   colabOneGetWebConsoleState,
   colabOneGetWorkflowSharesState,
+  colabOneListRollbackVersions,
   colabOneOutputPreviewURL,
+  colabOnePickMigrationFile,
+  colabOneRelaunchForUpdate,
+  colabOneResolveCloseRequest,
+  colabOneSetCloseBehavior,
+  colabOneSetUpdatePreferences,
+  colabOneSkipUpdateVersion,
   colabOneSnapshotRaw,
+  colabOneStartUpdateInstall,
+  colabOneStartUpdateRollback,
   isColabOneWorkflowShareActive,
 } from "./api";
 import {
@@ -36,13 +52,19 @@ import {
 } from "./colabOneWorkflowShare";
 import {
   createColabOneWorkflowDraftClient,
+  mergeColabOneWorkflowDraftFields,
 } from "./comfyDrafts";
+import {
+  COLABONE_FASHION_MODEL_ROLES_KEY,
+  serializeColabOneFashionPhotoMeta,
+} from "./comfyui";
 import {
   readStoredColabOneLocale,
   setColabOneLocale,
   syncColabOneLocaleToNative,
 } from "./i18n";
 import { COLABONE_STORAGE_KEYS } from "./storage";
+import type { WorkflowField } from "./types";
 
 const globalWithMyGo = globalThis as typeof globalThis & {
   mygo?: { callWith?: (...args: unknown[]) => unknown };
@@ -1014,6 +1036,48 @@ describe("comfyDrafts isolation in workflow share mode", () => {
       "guest-queued",
     );
   });
+
+  it("prunes fashion photo-role metadata when persisted media entry has an empty filename", () => {
+    const fields: WorkflowField[] = [
+      {
+        key: "1.image",
+        label: "Model 1",
+        node_id: "1",
+        input_name: "image",
+        field_type: "image",
+        default: "",
+      },
+      {
+        key: COLABONE_FASHION_MODEL_ROLES_KEY,
+        label: "Model roles",
+        node_id: "0",
+        input_name: "roles",
+        field_type: "text",
+        default: "",
+      },
+    ];
+    const rolesMeta = serializeColabOneFashionPhotoMeta({
+      order: ["1.image"],
+      roles: { "1.image": "front" },
+    });
+    const merged = mergeColabOneWorkflowDraftFields(
+      fields,
+      { [COLABONE_FASHION_MODEL_ROLES_KEY]: rolesMeta },
+      "en-US",
+      {
+        "1.image": {
+          id: "a".repeat(32),
+          filename: "",
+          kind: "image",
+          mime: "image/png",
+          size: 0,
+          sha256: "",
+          updated_at: 0,
+        },
+      },
+    );
+    expect(merged[COLABONE_FASHION_MODEL_ROLES_KEY]).toBe("");
+  });
 });
 
 describe("share-mode locale sync guard", () => {
@@ -1069,5 +1133,43 @@ describe("share-mode locale sync guard", () => {
     colabOneWorkflowShareMode.value = true;
     syncColabOneLocaleToNative("ko-KR", true);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("api.ts desktop-only web runtime guards", () => {
+  const originalMyGo = globalWithMyGo.mygo;
+
+  afterEach(() => {
+    globalWithMyGo.mygo = originalMyGo;
+  });
+
+  it("rejects desktop-only migration, updater, and close-behavior mutators outside desktop runtime", async () => {
+    delete globalWithMyGo.mygo;
+    const expected = "该桌面专属操作仅支持在宿主机客户端执行";
+
+    await expect(colabOneGetMigrationExportSummary(null)).rejects.toThrow(expected);
+    await expect(
+      colabOneExportMigrationFile({ modules: ["settings"], password: "secret-password" }),
+    ).rejects.toThrow(expected);
+    await expect(colabOnePickMigrationFile()).rejects.toThrow(expected);
+    await expect(
+      colabOneDecryptMigrationPreview("tok", "secret-password"),
+    ).rejects.toThrow(expected);
+    await expect(
+      colabOneApplyMigrationPreview({ preview_id: "p1", modules: ["settings"] }),
+    ).rejects.toThrow(expected);
+    await expect(colabOneCancelMigrationSession("s1")).rejects.toThrow(expected);
+
+    await expect(colabOneCheckForUpdate(true)).rejects.toThrow(expected);
+    await expect(colabOneStartUpdateInstall()).rejects.toThrow(expected);
+    await expect(colabOneListRollbackVersions(false)).rejects.toThrow(expected);
+    await expect(colabOneStartUpdateRollback("0.1.0")).rejects.toThrow(expected);
+    await expect(colabOneCancelUpdateInstall()).rejects.toThrow(expected);
+    await expect(colabOneSkipUpdateVersion("0.2.0")).rejects.toThrow(expected);
+    await expect(colabOneSetUpdatePreferences(true, false)).rejects.toThrow(expected);
+    await expect(colabOneRelaunchForUpdate()).rejects.toThrow(expected);
+
+    await expect(colabOneSetCloseBehavior("quit")).rejects.toThrow(expected);
+    await expect(colabOneResolveCloseRequest("quit", false)).rejects.toThrow(expected);
   });
 });

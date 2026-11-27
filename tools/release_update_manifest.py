@@ -232,7 +232,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     notes = ""
-    if args.notes_file is not None and args.notes_file.is_file():
+    if args.notes_file is not None:
+        if not args.notes_file.is_file():
+            raise FileNotFoundError(f"Release notes file not found: {args.notes_file}")
         notes = args.notes_file.read_text(encoding="utf-8")
 
     try:

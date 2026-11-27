@@ -1,4 +1,5 @@
 import { ref } from "vue";
+import { isColabOneCloudflareTunnelToken } from "./colabOneSecretToken";
 import { COLABONE_STORAGE_KEYS } from "./storage";
 import type {
   ColabOneHighlightedLine,
@@ -312,8 +313,42 @@ export function colabOneApplyPrivacyInputPaste(
 const COLABONE_SECRET_TOKEN_RE =
   /\b(?:co_wf_[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+|hf_[A-Za-z0-9]{10,}|eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]+)?|sk-[A-Za-z0-9_-]{16,}|(?:sk|co)_[A-Za-z0-9_-]{16,})\b/g;
 
+const COLABONE_CLOUDFLARE_TUNNEL_TOKEN_CANDIDATE_RE =
+  /(?<![A-Za-z0-9_+-])eyJ[A-Za-z0-9_+/=-]{20,}(?![A-Za-z0-9_+-])/g;
+
 const COLABONE_SENSITIVE_QUERY_PARAM_RE =
   /([?&](?:k|ticket|token)=)([^&#\s"'<>)\]}]+)/gi;
+
+function appendCloudflareTunnelTokenMatches(
+  text: string,
+  matches: PrivacyMatchSpan[],
+): void {
+  for (const m of text.matchAll(COLABONE_CLOUDFLARE_TUNNEL_TOKEN_CANDIDATE_RE)) {
+    if (m.index === undefined) continue;
+    let candidate = m[0];
+    if (!isColabOneCloudflareTunnelToken(candidate)) {
+      let matchedPrefix = "";
+      if (candidate.includes("/")) {
+        let cut = candidate.lastIndexOf("/");
+        while (cut >= 23) {
+          const prefix = candidate.slice(0, cut);
+          if (isColabOneCloudflareTunnelToken(prefix)) {
+            matchedPrefix = prefix;
+            break;
+          }
+          cut = candidate.lastIndexOf("/", cut - 1);
+        }
+      }
+      if (!matchedPrefix) continue;
+      candidate = matchedPrefix;
+    }
+    matches.push({
+      start: m.index,
+      end: m.index + candidate.length,
+      replacement: colabOneSynthesizeToken(candidate),
+    });
+  }
+}
 
 function resolvePrivacyMatchSpans(
   matches: PrivacyMatchSpan[],
@@ -352,6 +387,7 @@ function findColabOneSensitiveUrlTailMatches(tail: string): PrivacyMatchSpan[] {
       replacement: colabOneSynthesizeToken(m[0]),
     });
   }
+  appendCloudflareTunnelTokenMatches(tail, matches);
   return resolvePrivacyMatchSpans(matches);
 }
 
@@ -451,6 +487,7 @@ export function buildColabOnePrivacyContext(
     snapshot?.comfy_canvas_settings?.domain,
     snapshot?.runtime?.comfyui?.canvas?.url,
     snapshot?.assign_proxy_settings?.masked_url,
+    snapshot?.live_external_llm?.base_url,
   ];
   for (const candidate of candidates) {
     const host = extractColabOneHostFromInput(candidate);
@@ -522,7 +559,7 @@ function findColabOnePrivacyMatches(
   // Restrict userinfo to RFC-3986/masked chars so CJK text or punctuation after a URL can
   // never be swallowed into a later email address on the same line.
   const urlRe =
-    /\b((?:https?|socks5h?|socks4a?|wss?):\/\/)((?:[A-Za-z0-9._~:%*+-]+@)?(?:\[[0-9a-fA-F:]+\]|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*)(?::\d{1,5})?)/gi;
+    /\b((?:https?|socks5h?|socks4a?|wss?):\/\/)((?:[A-Za-z0-9._~:%*+!$&'(),;=-]+@)?(?:\[[0-9a-fA-F:]+\]|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*)(?::\d{1,5})?)/gi;
   for (const m of text.matchAll(urlRe)) {
     if (m.index === undefined) continue;
     const schemePrefix = m[1];
@@ -584,7 +621,7 @@ function findColabOnePrivacyMatches(
     });
   }
 
-  // 7. Defense-in-depth secret tokens (including workflow share keys) if ever surfaced
+  // 7. Defense-in-depth secret tokens (including workflow share keys & Cloudflare tunnel tokens)
   for (const m of text.matchAll(COLABONE_SECRET_TOKEN_RE)) {
     if (m.index === undefined) continue;
     matches.push({
@@ -593,6 +630,7 @@ function findColabOnePrivacyMatches(
       replacement: colabOneSynthesizeToken(m[0]),
     });
   }
+  appendCloudflareTunnelTokenMatches(text, matches);
 
   // 8. Sensitive URL query parameters (share keys, one-time tickets, auth tokens)
   for (const m of text.matchAll(COLABONE_SENSITIVE_QUERY_PARAM_RE)) {

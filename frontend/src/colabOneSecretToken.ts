@@ -44,6 +44,26 @@ function decodeBase64JsonObject(token: string): Record<string, unknown> | null {
 }
 
 /**
+ * Returns true if the given standalone base64/base64url token decodes to a
+ * Cloudflare Tunnel token JSON object containing non-empty `a`, `t`, and `s`
+ * string fields.
+ */
+export function isColabOneCloudflareTunnelToken(candidate: string): boolean {
+  if (typeof candidate !== "string" || !candidate.startsWith("eyJ")) {
+    return false;
+  }
+  const payload = decodeBase64JsonObject(candidate);
+  if (!payload) return false;
+  for (const key of ["a", "t", "s"] as const) {
+    const value = payload[key];
+    if (typeof value !== "string" || !value) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
  * Extracts a unique, validated Cloudflare Tunnel Token from a pasted install
  * command or token string. Matches the backend rules in `common/public_api.py`.
  */

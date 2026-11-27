@@ -49,6 +49,9 @@ const (
 // or fails authenticated decryption.
 var ErrCorruptVault = errors.New("colabone vault: encrypted vault file is corrupted")
 
+// colabOneSecureVaultFinalPathFn is a package-level seam for offline unit tests.
+var colabOneSecureVaultFinalPathFn = colabOneSecureVaultFinalPath
+
 // colabOneLocalVaultDomainKey is the legacy v1 static application domain key
 // retained solely for transparent backward-compatible decryption of existing v1
 // vault.enc files before upgrading them to v2 on the next write.
@@ -189,7 +192,7 @@ func (b *ColabOneFileSecretBackend) Set(key string, value []byte) error {
 	prev, existed := b.entries[key]
 	b.entries[key] = cloneBytes(value)
 	if err := b.saveLocked(); err != nil {
-		if recoveringCorrupt {
+		if recoveringCorrupt || !b.loaded {
 			b.entries = nil
 			b.loaded = false
 		} else if existed {
@@ -236,7 +239,11 @@ func (b *ColabOneFileSecretBackend) Delete(key string) error {
 	}
 	delete(b.entries, key)
 	if err := b.saveLocked(); err != nil {
-		b.entries[key] = prev
+		if !b.loaded {
+			b.entries = nil
+		} else {
+			b.entries[key] = prev
+		}
 		return err
 	}
 	return nil
@@ -469,7 +476,9 @@ func (b *ColabOneFileSecretBackend) saveLocked() error {
 		return err
 	}
 	renamed = true
-	if err := colabOneSecureVaultFinalPath(b.path); err != nil {
+	if err := colabOneSecureVaultFinalPathFn(b.path); err != nil {
+		b.loaded = false
+		b.entries = nil
 		return err
 	}
 	return nil

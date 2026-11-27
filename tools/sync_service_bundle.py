@@ -52,6 +52,8 @@ def check_service_bundle(root: Path = ROOT, embed_dir: Path | None = None) -> in
     source_files = _collect_source_files(root)
     embedded_files: dict[Path, Path] = {}
     for path in sorted(target.rglob("*")):
+        if "__pycache__" in path.parts or path.suffix == ".pyc":
+            continue
         if path.is_file():
             embedded_files[path.relative_to(target)] = path
 

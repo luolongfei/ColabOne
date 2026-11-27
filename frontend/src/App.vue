@@ -471,6 +471,7 @@ let unsubUpdateOpen: (() => void) | null = null;
 let updateProgressPollTimer: ReturnType<typeof setInterval> | null = null;
 let updatePollInFlight = false;
 let lastUpdatePushAt = 0;
+let updateStateGen = 0;
 let ipcFailures = 0;
 let lastSnapshotRaw: string | null = null;
 let panelsPrefetched = false;
@@ -1025,9 +1026,12 @@ function onPrivacyDefaultChange(raw: unknown) {
 
 const logsOpen = ref(false);
 const logWindowStandalone = ref(false);
-const savedLogWidth = Number(
-  localStorage.getItem(COLABONE_STORAGE_KEYS.logsWidth),
-);
+let savedLogWidth = Number.NaN;
+try {
+  savedLogWidth = Number(localStorage.getItem(COLABONE_STORAGE_KEYS.logsWidth));
+} catch {
+  // Ignore restricted storage contexts.
+}
 const logDrawerWidth = ref(
   Number.isFinite(savedLogWidth) && savedLogWidth >= 320 && savedLogWidth <= 640
     ? Math.round(savedLogWidth)
@@ -1075,7 +1079,11 @@ async function setLogsOpen(nextOpen: boolean) {
 
 function onLogDrawerWidthChange(width: number) {
   logDrawerWidth.value = width;
-  localStorage.setItem(COLABONE_STORAGE_KEYS.logsWidth, String(width));
+  try {
+    localStorage.setItem(COLABONE_STORAGE_KEYS.logsWidth, String(width));
+  } catch {
+    // Ignore restricted storage contexts.
+  }
 }
 
 const activeApiRequest = computed(
@@ -1470,7 +1478,11 @@ function handleGlobalKeydown(e: KeyboardEvent) {
     if (closeModalOpen.value) {
       return;
     }
-    if (updateModalOpen.value) {
+    if (
+      updateModalOpen.value &&
+      !hasVisibleAntModalOverlay() &&
+      !activeOverlayDrawer.value.open
+    ) {
       handleUpdatePopoverOpenChange(false);
       return;
     }
@@ -1658,9 +1670,11 @@ function scheduleSecondaryPanelPrefetch() {
 }
 
 async function syncSnapshot() {
+  if (isWebMode.value && colabOneWebSessionExpired.value) return;
   const snapId = ++snapshotSeq;
   const raw = await colabOneSnapshotRaw();
   if (stopped || snapId < appliedSnapshotSeq) return;
+  if (isWebMode.value && colabOneWebSessionExpired.value) return;
   const unchanged =
     snapshotLoaded.value &&
     !clearingStateError &&
@@ -1739,7 +1753,6 @@ async function syncSnapshot() {
     clockNow.value = Date.now();
   }
   lastSnapshotRaw = mutatedLocally || pendingSettings.size > 0 ? null : raw;
-  colabOneWebSessionExpired.value = false;
   state.value = value;
   snapshotLoaded.value = true;
   syncFormFromSettings(value.settings);
@@ -3013,7 +3026,12 @@ function stopUpdateProgressPoll() {
 function applyUpdateState(
   raw: Partial<ColabOneUpdateState> | null | undefined,
   fromPush = false,
+  expectedGen?: number,
 ) {
+  if (expectedGen !== undefined && expectedGen !== updateStateGen) {
+    return;
+  }
+  updateStateGen += 1;
   if (fromPush) {
     lastUpdatePushAt = Date.now();
   }
@@ -3045,9 +3063,10 @@ function applyUpdateState(
           return;
         }
         updatePollInFlight = true;
+        const pollGen = updateStateGen;
         void colabOneGetUpdateState()
           .then((next) => {
-            if (!stopped) applyUpdateState(next);
+            if (!stopped) applyUpdateState(next, false, pollGen);
           })
           .catch(() => {})
           .finally(() => {
@@ -3220,9 +3239,10 @@ async function handleCheckForUpdate(openModalOnResult = false) {
       );
     }
   } catch (e) {
+    const pollGen = updateStateGen;
     try {
       const latest = await colabOneGetUpdateState();
-      applyUpdateState(latest);
+      applyUpdateState(latest, false, pollGen);
     } catch {
       // Ignore secondary state refresh error.
     }
@@ -3246,9 +3266,10 @@ async function handleStartUpdateInstall() {
     const next = await colabOneStartUpdateInstall();
     applyUpdateState(next);
   } catch (e) {
+    const pollGen = updateStateGen;
     try {
       const latest = await colabOneGetUpdateState();
-      applyUpdateState(latest);
+      applyUpdateState(latest, false, pollGen);
     } catch {
       // Ignore secondary state refresh error.
     }
@@ -3287,9 +3308,10 @@ async function handleStartUpdateRollback(version: string) {
     const next = await colabOneStartUpdateRollback(targetVersion);
     if (!stopped) applyUpdateState(next);
   } catch (e) {
+    const pollGen = updateStateGen;
     try {
       const latest = await colabOneGetUpdateState();
-      if (!stopped) applyUpdateState(latest);
+      if (!stopped) applyUpdateState(latest, false, pollGen);
     } catch {
       // Ignore secondary state refresh error.
     }
@@ -3730,10 +3752,10 @@ async function handleMigrationApply(payload: {
       } catch {
         // Ignore offline fallback errors.
       }
+      const pollGen = updateStateGen;
       try {
-        updateState.value = normalizeColabOneUpdateState(
-          await colabOneGetUpdateState(),
-        );
+        const latest = await colabOneGetUpdateState();
+        if (!stopped) applyUpdateState(latest, false, pollGen);
       } catch {
         // Ignore offline fallback errors.
       }
@@ -3976,9 +3998,13 @@ async function handleWorkflowShareDelete(shareID: string) {
   }
 }
 
-async function handleWorkflowShareCopyLink(url: string) {
-  if (!url) return;
-  await copyWithToast(url, t("workflowShare.toastLinkCopied"), "workflow-share-copy");
+async function handleWorkflowShareCopyLink(url: string): Promise<boolean> {
+  if (!url) return false;
+  return copyWithToast(
+    url,
+    t("workflowShare.toastLinkCopied"),
+    "workflow-share-copy",
+  );
 }
 
 function handleWorkflowShareEnableWebConsole() {
@@ -4009,17 +4035,24 @@ function applyWebConsoleState(
   return true;
 }
 
-async function copyWithToast(text: string, message: string, group?: string) {
+async function copyWithToast(
+  text: string,
+  message: string,
+  group?: string,
+): Promise<boolean> {
   try {
     await colabOneWriteClipboard(text);
     await navigator.clipboard?.writeText(text).catch(() => {});
     notify(message, "success", group);
+    return true;
   } catch {
     try {
       await navigator.clipboard.writeText(text);
       notify(message, "success", group);
+      return true;
     } catch {
       showError(t("common.copyFailed"));
+      return false;
     }
   }
 }
@@ -4177,6 +4210,7 @@ async function handleWebConsoleCopyText(text: string, labelKey: string) {
 function handleWebAuthRequired() {
   if (stopped) return;
   colabOneWebSessionExpired.value = true;
+  snapshotPoller.stop();
   ipcFailures = 0;
   ipcDisconnected.value = false;
   ipcError.value = "";
@@ -4192,10 +4226,10 @@ async function handleWebReconnect() {
   try {
     await fetchColabOneWebCapabilities();
     await syncSnapshot();
-    colabOneWebSessionExpired.value = false;
     ipcFailures = 0;
     ipcDisconnected.value = false;
     ipcError.value = "";
+    snapshotPoller.start();
   } catch (e) {
     if (colabOneWebSessionExpired.value) {
       notify(t("webConsole.webSessionExpiredTitle"), "warning", "web-auth");
@@ -4246,9 +4280,12 @@ onMounted(() => {
     unsubUpdateOpen = colabOneOnUpdateOpen(() => {
       if (!stopped) updateModalOpen.value = true;
     });
+    const initialUpdateGen = updateStateGen;
     void colabOneGetUpdateState()
       .then((st) => {
-        if (!stopped && lastUpdatePushAt === 0) applyUpdateState(st);
+        if (!stopped && lastUpdatePushAt === 0) {
+          applyUpdateState(st, false, initialUpdateGen);
+        }
       })
       .catch(() => {});
     unsubWebConsole = colabOneOnWebConsoleState((st) => {
@@ -7442,6 +7479,7 @@ onUnmounted(() => {
         :width="580"
         :mask-closable="!busy"
         :closable="!busy"
+        :keyboard="!busy"
         :footer="null"
         centered
       >
@@ -7671,6 +7709,7 @@ onUnmounted(() => {
         :width="480"
         :mask-closable="!busy"
         :closable="!busy"
+        :keyboard="!busy"
         :footer="null"
         :z-index="1050"
         centered
@@ -7772,11 +7811,11 @@ onUnmounted(() => {
         :deleting-id="workflowShareDeletingId"
         :last-created-share="workflowShareLastCreated"
         :last-created-copied="workflowShareLastCreatedCopied"
+        :copy-link="handleWorkflowShareCopyLink"
         @update:open="workflowShareModalOpen = $event"
         @create="handleWorkflowShareCreate"
         @revoke="handleWorkflowShareRevoke"
         @delete="handleWorkflowShareDelete"
-        @copy-link="handleWorkflowShareCopyLink"
         @enable-web-console="handleWorkflowShareEnableWebConsole"
         @open-web-console-settings="handleWorkflowShareOpenSettings"
       />

@@ -33,7 +33,7 @@ WS_OP_PONG = 0xA
 
 MAX_HANDSHAKE_BYTES = 16 * 1024
 MAX_WS_FRAME_BYTES = 32 * 1024 * 1024
-MAX_WS_BUFFER_BYTES = 32 * 1024 * 1024
+MAX_WS_BUFFER_BYTES = MAX_WS_FRAME_BYTES + 14
 MAX_PENDING_BUFFER_ITEMS = 256
 MAX_PENDING_BUFFER_BYTES = 4 * 1024 * 1024
 MAX_WS_FRAGMENTS = 1024
@@ -696,6 +696,8 @@ class ColabOneComfyWsMonitor:
         self._sock: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._connected = False
+        self._connecting = False
+        self._conn_gen = 0
         self._last_event: dict[str, Any] | None = None
         self._error_message = ""
         self._done_fired = False
@@ -809,9 +811,17 @@ class ColabOneComfyWsMonitor:
         Returns ``True`` on success, or ``False`` cleanly if unreachable or if
         the WebSocket upgrade handshake fails. Never raises.
         """
+        if "\r" in self.host or "\n" in self.host or not self.host.strip():
+            return False
+
         with self._lock:
             if self._connected and self._thread is not None and self._thread.is_alive():
                 return True
+            if self._connecting:
+                return False
+            self._connecting = True
+            self._conn_gen += 1
+            my_gen = self._conn_gen
             self._stop_event.clear()
             self._last_event = None
             self._done_fired = False
@@ -820,9 +830,6 @@ class ColabOneComfyWsMonitor:
             self._error_prompt_id = ""
             self._last_done_prompt_id = ""
             self._clear_pending_locked()
-
-        if "\r" in self.host or "\n" in self.host or not self.host.strip():
-            return False
 
         sock: socket.socket | None = None
         try:
@@ -886,16 +893,17 @@ class ColabOneComfyWsMonitor:
             sock.setblocking(False)
             thread = threading.Thread(
                 target=self._reader_loop,
-                args=(sock, leftover),
+                args=(sock, leftover, my_gen),
                 name=f"colabone-comfy-ws-{self.client_id[:16] or 'anon'}",
                 daemon=True,
             )
             with self._lock:
-                if self._stop_event.is_set():
+                if self._stop_event.is_set() or self._conn_gen != my_gen:
                     raise RuntimeError("WebSocket monitor stopped during startup")
                 self._sock = sock
                 self._thread = thread
                 self._connected = True
+                self._connecting = False
             thread.start()
             return True
         except Exception:
@@ -905,9 +913,11 @@ class ColabOneComfyWsMonitor:
                 except OSError:
                     pass
             with self._lock:
-                self._sock = None
-                self._thread = None
-                self._connected = False
+                if self._conn_gen == my_gen:
+                    self._sock = None
+                    self._thread = None
+                    self._connected = False
+                    self._connecting = False
             return False
 
     def stop(self) -> None:
@@ -923,13 +933,15 @@ class ColabOneComfyWsMonitor:
             pass
 
         with self._lock:
+            self._conn_gen += 1
+            self._connecting = False
+            self._connected = False
             thread = self._thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=1.5)
 
         self._close_socket()
         with self._lock:
-            self._connected = False
             if self._thread is thread:
                 self._thread = None
 
@@ -983,7 +995,12 @@ class ColabOneComfyWsMonitor:
                     return False
             return True
 
-    def _reader_loop(self, sock: socket.socket, initial_buf: bytearray) -> None:
+    def _reader_loop(
+        self,
+        sock: socket.socket,
+        initial_buf: bytearray,
+        conn_gen: int | None = None,
+    ) -> None:
         buf = bytearray(initial_buf)
         frag_opcode: int | None = None
         frag_chunks: list[bytes] = []
@@ -1116,7 +1133,10 @@ class ColabOneComfyWsMonitor:
                 pass
             self._close_socket(sock)
             with self._lock:
-                self._connected = False
+                if conn_gen is None or self._conn_gen == conn_gen:
+                    self._connected = False
+                    if self._thread is threading.current_thread():
+                        self._thread = None
 
     def _record_event_locked(
         self, event: dict[str, Any], raw_msg_pid: str

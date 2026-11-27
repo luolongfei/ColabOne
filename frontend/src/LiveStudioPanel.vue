@@ -50,9 +50,15 @@ import {
   PhWaveform,
   PhX,
 } from "@phosphor-icons/vue";
+import ColabOnePrivacyInput from "./ColabOnePrivacyInput.vue";
+import ColabOnePrivacyText from "./ColabOnePrivacyText.vue";
 import ColabOneSecretInput from "./ColabOneSecretInput.vue";
 import ColabOneTooltip from "./ColabOneTooltip.vue";
 import { colabOneCommand } from "./api";
+import {
+  buildColabOnePrivacyContext,
+  colabOnePrivacyActive,
+} from "./colabOnePrivacy";
 import {
   COLABONE_LIVE_AUDIO_OUT_SAMPLE_RATE,
   ColabOneLiveAudioPlayer,
@@ -119,6 +125,7 @@ function reportError(err: unknown) {
 
 // Runtime & capability readiness
 const gpuReady = computed(() => props.state.runtime.state === "ready");
+const privacyContext = computed(() => buildColabOnePrivacyContext(props.state));
 const liveStatus = computed(() => props.state.runtime.live_studio);
 const liveRunning = computed(
   () => gpuReady.value && Boolean(liveStatus.value?.running),
@@ -980,6 +987,7 @@ async function fetchSessionToken(): Promise<ColabOneLiveSessionTokenResult> {
 }
 
 async function connectLiveSession(opts?: { localInitiated?: boolean }) {
+  if (isUnmounted) return;
   teardownMediaSession({ preserveAudioPlayer: true });
   localInitiatedStart = Boolean(opts?.localInitiated);
   const player = ensureAudioPlayer();
@@ -1219,6 +1227,10 @@ async function connectLiveSession(opts?: { localInitiated?: boolean }) {
   });
 
   await sessionClient.connect();
+  if (isUnmounted) {
+    teardownMediaSession();
+    return;
+  }
 }
 
 function teardownMediaSession(opts?: {
@@ -1275,7 +1287,7 @@ async function startLiveStudio() {
   try {
     if (llmMode.value === "external_api" && llmDirty.value) {
       const saved = await persistExternalLlmSettings(false);
-      if (!saved) {
+      if (isUnmounted || !saved) {
         return;
       }
     }
@@ -1300,12 +1312,16 @@ async function startLiveStudio() {
       startPayload.local_llm_model_id = props.state.runtime.loaded_model;
     }
     await colabOneCommand("comfyui.live.start", startPayload);
+    if (isUnmounted) return;
     notify(t("live.noticeStarted"), "info");
     emit("sync");
     await connectLiveSession({ localInitiated: true });
+    if (isUnmounted) return;
   } catch (err) {
     localInitiatedStart = false;
-    reportError(err);
+    if (!isUnmounted) {
+      reportError(err);
+    }
   } finally {
     startingOrStopping.value = false;
   }
@@ -1824,21 +1840,20 @@ async function onClipFileSelected(
   if (uploadingAsset.value) return;
   if (!file || !canMutateRemote.value) return;
 
-  if (!COLABONE_LIVE_CLIP_EXT_RE.test(file.name)) {
-    reportError(
-      tb(
-        kind === "driving_video"
-          ? "驱动视频 仅支持格式: mp4, webm, mov, mkv"
-          : "动作视频 仅支持格式: mp4, webm, mov, mkv",
-      ),
-    );
-    return;
-  }
-
   const kindLabel =
     kind === "driving_video"
       ? t("live.fileKindDriving")
       : t("live.fileKindClip");
+  if (!COLABONE_LIVE_CLIP_EXT_RE.test(file.name)) {
+    reportError(
+      t("live.errInvalidClipFormat", {
+        kind: kindLabel,
+        formats: "mp4, webm, mov, mkv",
+      }),
+    );
+    return;
+  }
+
   if (!validateLiveFileSize(file, COLABONE_LIVE_MAX_CLIP_BYTES, kindLabel)) {
     return;
   }
@@ -2458,8 +2473,14 @@ onUnmounted(() => {
       type="error"
       show-icon
       class="co-live-prereq-alert"
-      :message="tb(liveStatus.error)"
-    />
+    >
+      <template #message>
+        <ColabOnePrivacyText
+          :text="tb(liveStatus.error)"
+          :context="privacyContext"
+        />
+      </template>
+    </AAlert>
 
     <!-- Responsive 2-Column Studio Workspace -->
     <div class="co-live-workspace">
@@ -3156,15 +3177,21 @@ onUnmounted(() => {
           </div>
 
           <div v-else class="co-live-llm-form">
-            <label class="co-live-form-field">
+            <div class="co-live-form-field">
               <span>{{ t("live.llmBaseUrlLabel") }}</span>
-              <AInput
-                v-model:value="llmBaseUrl"
+              <ColabOnePrivacyInput
+                :value="llmBaseUrl"
                 size="small"
+                :allow-clear="false"
                 :placeholder="t('live.llmBaseUrlPlaceholder')"
-                @input="llmDirty = true"
+                @update:value="
+                  (v) => {
+                    llmBaseUrl = v;
+                    llmDirty = true;
+                  }
+                "
               />
-            </label>
+            </div>
             <label class="co-live-form-field">
               <span>{{ t("live.llmModelLabel") }}</span>
               <AInput
@@ -3178,7 +3205,7 @@ onUnmounted(() => {
               <div class="co-live-llm-key-head">
                 <span>{{ t("live.llmApiKeyLabel") }}</span>
                 <ATag
-                  v-if="llmHasSavedKey && maskedExternalApiKey"
+                  v-if="llmHasSavedKey && maskedExternalApiKey && !colabOnePrivacyActive"
                   color="success"
                   class="co-live-mini-tag co-mono"
                 >
@@ -3199,7 +3226,10 @@ onUnmounted(() => {
               />
             </div>
             <div v-if="llmTestError" class="co-live-llm-err">
-              {{ tb(llmTestError) }}
+              <ColabOnePrivacyText
+                :text="tb(llmTestError)"
+                :context="privacyContext"
+              />
             </div>
             <div class="co-live-llm-actions">
               <AButton
@@ -3238,6 +3268,9 @@ onUnmounted(() => {
       v-model:open="buildPackModalOpen"
       :title="t('live.buildPackModalTitle')"
       :confirm-loading="buildPackSubmitting"
+      :closable="!buildPackSubmitting"
+      :mask-closable="!buildPackSubmitting"
+      :keyboard="!buildPackSubmitting"
       :ok-text="t('live.buildPackConfirm')"
       :z-index="1050"
       @ok="submitBuildPack"
@@ -3310,6 +3343,9 @@ onUnmounted(() => {
           : t('live.productModalAddTitle')
       "
       :confirm-loading="productSaving"
+      :closable="!productSaving"
+      :mask-closable="!productSaving"
+      :keyboard="!productSaving"
       :z-index="1050"
       @ok="submitProductModal"
     >

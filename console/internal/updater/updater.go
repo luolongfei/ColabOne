@@ -186,6 +186,12 @@ type ColabOneUpdaterConfig struct {
 	OnLog         func(message, source, level string)
 }
 
+type checkFlight struct {
+	done  chan struct{}
+	state ColabOneUpdateState
+	err   error
+}
+
 // ColabOneUpdater orchestrates background/manual update checks, installation,
 // cancellation, preference persistence, and restart handoff.
 //
@@ -206,17 +212,16 @@ type ColabOneUpdater struct {
 	prefs     ColabOneUpdatePreferences
 	pending   ColabOneUpdateInstallable
 
-	channelGen      uint64
-	installGen      uint64
-	checkInFlight   bool
-	checkManual     bool
-	checkWaiters    int
-	checkCancel     context.CancelFunc
-	checkDone       chan struct{}
-	lastCheckErr    error
-	installInFlight bool
-	installCancel   context.CancelFunc
-	installDone     chan struct{}
+	channelGen       uint64
+	installGen       uint64
+	checkInFlight    bool
+	checkManual      bool
+	checkWaiters     int
+	checkCancel      context.CancelFunc
+	checkFlight      *checkFlight
+	installInFlight  bool
+	installCancel    context.CancelFunc
+	installDone      chan struct{}
 	rollbackCached   bool
 	rollbackCacheAt  time.Time
 	rollbackCacheKey string
@@ -436,70 +441,68 @@ func (u *ColabOneUpdater) Check(ctx context.Context, manual bool) (ColabOneUpdat
 	}
 
 	reusingFlight := false
-	var doneCh chan struct{}
+	var flight *checkFlight
 	var prevStatus string
 
 	for {
 		u.mu.Lock()
 		if u.closed || u.installInFlight || u.state.Status == StatusReadyToRestart {
 			closedNow := u.closed
-			st := u.state
+			st := cloneColabOneUpdateState(u.state)
+			var retErr error
+			if closedNow {
+				retErr = context.Canceled
+			}
 			if reusingFlight {
 				u.checkInFlight = false
 				u.checkManual = false
 				u.checkCancel = nil
-				u.checkDone = nil
-				if closedNow {
-					u.lastCheckErr = context.Canceled
-				} else {
-					u.lastCheckErr = nil
+				u.checkFlight = nil
+				if flight != nil {
+					flight.state = cloneColabOneUpdateState(st)
+					flight.err = retErr
 				}
 			}
 			u.mu.Unlock()
-			if reusingFlight && doneCh != nil {
-				close(doneCh)
+			if reusingFlight && flight != nil {
+				close(flight.done)
 			}
-			if closedNow {
-				return st, context.Canceled
-			}
-			return st, nil
+			return st, retErr
 		}
 		if !reusingFlight && u.checkInFlight {
-			waitCh := u.checkDone
+			waitFlight := u.checkFlight
 			var promoteSnap *ColabOneUpdateState
 			if manual && !u.checkManual {
 				u.checkManual = true
 				u.state.Status = StatusChecking
 				u.state.ErrorCode = ErrCodeNone
 				u.state.ErrorMessage = ""
-				cp := u.state
+				cp := cloneColabOneUpdateState(u.state)
 				promoteSnap = &cp
 			}
-			if manual && waitCh != nil {
+			if manual && waitFlight != nil {
 				u.checkWaiters++
 			}
-			st := u.state
+			st := cloneColabOneUpdateState(u.state)
 			u.mu.Unlock()
 
 			if promoteSnap != nil {
 				u.emit(*promoteSnap)
 				u.log("正在检查 ColabOne 客户端更新…", "更新", "info")
 			}
-			if !manual || waitCh == nil {
+			if !manual || waitFlight == nil {
 				return st, nil
 			}
 			select {
-			case <-waitCh:
+			case <-waitFlight.done:
 				u.mu.Lock()
 				u.checkWaiters--
-				finalSt := u.state
-				finalErr := u.lastCheckErr
 				u.mu.Unlock()
-				return finalSt, finalErr
+				return cloneColabOneUpdateState(waitFlight.state), waitFlight.err
 			case <-ctx.Done():
 				u.mu.Lock()
 				u.checkWaiters--
-				finalSt := u.state
+				finalSt := cloneColabOneUpdateState(u.state)
 				u.mu.Unlock()
 				return finalSt, ctx.Err()
 			}
@@ -510,11 +513,10 @@ func (u *ColabOneUpdater) Check(ctx context.Context, manual bool) (ColabOneUpdat
 		startInstallGen := u.installGen
 		if !reusingFlight {
 			prevStatus = u.state.Status
-			doneCh = make(chan struct{})
+			flight = &checkFlight{done: make(chan struct{})}
 			u.checkInFlight = true
 			u.checkManual = manual
-			u.checkDone = doneCh
-			u.lastCheckErr = nil
+			u.checkFlight = flight
 			reusingFlight = true
 		}
 		includePre := u.prefs.IncludePrerelease
@@ -544,7 +546,7 @@ func (u *ColabOneUpdater) Check(ctx context.Context, manual bool) (ColabOneUpdat
 			u.state.ErrorCode = ErrCodeNone
 			u.state.ErrorMessage = ""
 		}
-		checkingSnap := u.state
+		checkingSnap := cloneColabOneUpdateState(u.state)
 		u.mu.Unlock()
 
 		// Forward caller context cancellation to checkCtx without leaking goroutines.
@@ -648,26 +650,27 @@ func (u *ColabOneUpdater) Check(ctx context.Context, manual bool) (ColabOneUpdat
 		u.checkInFlight = false
 		u.checkManual = false
 		u.checkCancel = nil
-		u.checkDone = nil
+		u.checkFlight = nil
 
 		if closedNow {
-			u.lastCheckErr = context.Canceled
-			st := u.state
+			st := cloneColabOneUpdateState(u.state)
+			flight.state = cloneColabOneUpdateState(st)
+			flight.err = context.Canceled
 			u.mu.Unlock()
-			close(doneCh)
+			close(flight.done)
 			return st, context.Canceled
 		}
 
 		if installStarted {
-			u.lastCheckErr = nil
-			st := u.state
+			st := cloneColabOneUpdateState(u.state)
+			flight.state = cloneColabOneUpdateState(st)
+			flight.err = nil
 			u.mu.Unlock()
-			close(doneCh)
+			close(flight.done)
 			return st, nil
 		}
 
 		if checkErr != nil {
-			u.lastCheckErr = checkErr
 			code, detail := ClassifyUpdateError(checkErr)
 			logMsg := formatUpdateErrorLog("检查客户端更新失败", code, detail)
 			if effectiveManual && !closedNow {
@@ -676,9 +679,11 @@ func (u *ColabOneUpdater) Check(ctx context.Context, manual bool) (ColabOneUpdat
 				u.state.ErrorMessage = detail
 				u.state.LastCheckedAt = nowSec
 				u.prefs.LastCheckedAt = nowSec
-				st := u.state
+				st := cloneColabOneUpdateState(u.state)
+				flight.state = cloneColabOneUpdateState(st)
+				flight.err = checkErr
 				u.mu.Unlock()
-				close(doneCh)
+				close(flight.done)
 				u.savePreferences()
 				u.emit(st)
 				u.log(logMsg, "更新", "warning")
@@ -690,9 +695,11 @@ func (u *ColabOneUpdater) Check(ctx context.Context, manual bool) (ColabOneUpdat
 			}
 			u.state.CurrentVersion = current
 			u.state.CanSelfUpdate = canSelf
-			st := u.state
+			st := cloneColabOneUpdateState(u.state)
+			flight.state = cloneColabOneUpdateState(st)
+			flight.err = checkErr
 			u.mu.Unlock()
-			close(doneCh)
+			close(flight.done)
 			if !closedNow {
 				u.log(formatUpdateErrorLog("后台检查客户端更新失败", code, detail), "更新", "info")
 			}
@@ -724,8 +731,10 @@ func (u *ColabOneUpdater) Check(ctx context.Context, manual bool) (ColabOneUpdat
 			u.state.NotesZh = ""
 			u.state.NotesEn = ""
 			st := cloneColabOneUpdateState(u.state)
+			flight.state = cloneColabOneUpdateState(st)
+			flight.err = nil
 			u.mu.Unlock()
-			close(doneCh)
+			close(flight.done)
 			u.savePreferences()
 			u.emit(st)
 			if effectiveManual {
@@ -749,8 +758,10 @@ func (u *ColabOneUpdater) Check(ctx context.Context, manual bool) (ColabOneUpdat
 			u.state.NotesZh = ""
 			u.state.NotesEn = ""
 			st := cloneColabOneUpdateState(u.state)
+			flight.state = cloneColabOneUpdateState(st)
+			flight.err = nil
 			u.mu.Unlock()
-			close(doneCh)
+			close(flight.done)
 			u.savePreferences()
 			u.emit(st)
 			return st, nil
@@ -775,9 +786,11 @@ func (u *ColabOneUpdater) Check(ctx context.Context, manual bool) (ColabOneUpdat
 		u.state.NotesZh = parsedNotes.Zh
 		u.state.NotesEn = parsedNotes.En
 		st := cloneColabOneUpdateState(u.state)
+		flight.state = cloneColabOneUpdateState(st)
+		flight.err = nil
 		u.mu.Unlock()
 
-		close(doneCh)
+		close(flight.done)
 		u.savePreferences()
 		u.emit(st)
 		u.log("发现 ColabOne 新版本 v"+foundVersion, "更新", "info")
@@ -1244,7 +1257,7 @@ func (u *ColabOneUpdater) CancelInstall() ColabOneUpdateState {
 	cancel := u.installCancel
 	inFlight := u.installInFlight
 	doneCh := u.installDone
-	st := u.state
+	st := cloneColabOneUpdateState(u.state)
 	u.mu.Unlock()
 
 	if inFlight && cancel != nil {
@@ -1271,7 +1284,7 @@ func (u *ColabOneUpdater) SkipVersion(version string) (ColabOneUpdateState, erro
 
 	u.mu.Lock()
 	if u.installInFlight || u.state.Status == StatusReadyToRestart {
-		st := u.state
+		st := cloneColabOneUpdateState(u.state)
 		u.mu.Unlock()
 		return st, nil
 	}
@@ -1288,7 +1301,7 @@ func (u *ColabOneUpdater) SkipVersion(version string) (ColabOneUpdateState, erro
 		u.state.NotesZh = ""
 		u.state.NotesEn = ""
 	}
-	st := u.state
+	st := cloneColabOneUpdateState(u.state)
 	u.mu.Unlock()
 
 	u.savePreferences()
@@ -1336,7 +1349,7 @@ func (u *ColabOneUpdater) ApplyImportedPreferences(autoCheck, includePrerelease 
 		u.state.NotesZh = ""
 		u.state.NotesEn = ""
 	}
-	st := u.state
+	st := cloneColabOneUpdateState(u.state)
 	u.mu.Unlock()
 
 	if u.backend != nil {
@@ -1369,7 +1382,7 @@ func (u *ColabOneUpdater) SetPreferences(autoCheck, includePrerelease bool) (Col
 		u.rollbackCacheKey = ""
 		u.state.RollbackVersions = []ColabOneRollbackVersion{}
 	}
-	st := u.state
+	st := cloneColabOneUpdateState(u.state)
 	u.mu.Unlock()
 
 	if u.backend != nil {
@@ -1749,8 +1762,8 @@ func IsManifestNotFoundError(err error) bool {
 }
 
 var (
-	reURLUserInfo   = regexp.MustCompile(`(https?://)[^/\s@]+@`)
-	reURLQuery      = regexp.MustCompile(`(https?://[^\s"'<>]+?)\?[^\s"'<>:]*`)
+	reURLUserInfo   = regexp.MustCompile(`(?i)((?:https?|socks5h?|socks4a?)://)[^\s"'<>/?#]+@`)
+	reURLQuery      = regexp.MustCompile(`(?i)((?:https?|socks5h?|socks4a?)://[^\s"'<>?]+)\?(?:[^\s"'<>:]|:+[^\s"'<>:])*`)
 	reSecretToken   = regexp.MustCompile(`(?i)\b(?:bearer\s+[A-Za-z0-9._\-+/=]+|gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)\b`)
 	reWhitespaceRun = regexp.MustCompile(`\s+`)
 )

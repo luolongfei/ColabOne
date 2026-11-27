@@ -29,6 +29,7 @@ import {
   PhShareNetwork,
   PhTrash,
   PhTreeStructure,
+  PhTShirt,
   PhUsers,
   PhVideoCamera,
 } from "@phosphor-icons/vue";
@@ -67,6 +68,7 @@ const props = withDefaults(
     deletingId?: string;
     lastCreatedShare?: ColabOneWorkflowShareSummary | null;
     lastCreatedCopied?: boolean;
+    copyLink?: (url: string) => Promise<boolean> | boolean;
   }>(),
   {
     loading: false,
@@ -77,6 +79,7 @@ const props = withDefaults(
     deletingId: "",
     lastCreatedShare: null,
     lastCreatedCopied: true,
+    copyLink: undefined,
   },
 );
 
@@ -100,6 +103,8 @@ const validationError = ref("");
 const staleCreatedShareId = ref("");
 const copiedKey = ref("");
 let copiedTimer: ReturnType<typeof setTimeout> | null = null;
+let copySeq = 0;
+let isUnmounted = false;
 
 const studioEntries = computed<ColabOneStudioWorkflowEntry[]>(() =>
   buildColabOneStudioWorkflowEntries(props.workflows),
@@ -248,6 +253,7 @@ watch(
 );
 
 onBeforeUnmount(() => {
+  isUnmounted = true;
   clearCopiedFeedback();
 });
 
@@ -309,10 +315,24 @@ function shareCopyUrl(share: ColabOneWorkflowShareSummary): string {
   return (share.url || share.local_url || "").trim();
 }
 
-function handleCopyLink(url: string, key: string) {
+async function handleCopyLink(url: string, key: string) {
   const cleanUrl = (url || "").trim();
   if (!cleanUrl) return;
-  emit("copyLink", cleanUrl);
+  const seq = ++copySeq;
+  let copied = false;
+  if (props.copyLink) {
+    try {
+      copied = Boolean(await props.copyLink(cleanUrl));
+    } catch {
+      copied = false;
+    }
+  } else {
+    emit("copyLink", cleanUrl);
+    copied = true;
+  }
+  if (!copied || isUnmounted || !props.open || seq !== copySeq) {
+    return;
+  }
   clearCopiedFeedback();
   copiedKey.value = key;
   copiedTimer = setTimeout(() => {
@@ -603,12 +623,20 @@ function entrySubtitle(entry: ColabOneStudioWorkflowEntry): string {
                     class="co-ws-wf-icon"
                     :class="{
                       'is-pipeline':
-                        entry.primary.pipeline?.kind === 'digital_human',
+                        entry.primary.pipeline?.kind === 'digital_human' ||
+                        entry.primary.pipeline?.kind === 'fashion_tryon',
                     }"
                     aria-hidden="true"
                   >
                     <PhVideoCamera
                       v-if="entry.primary.pipeline?.kind === 'digital_human'"
+                      :size="16"
+                      weight="duotone"
+                    />
+                    <PhTShirt
+                      v-else-if="
+                        entry.primary.pipeline?.kind === 'fashion_tryon'
+                      "
                       :size="16"
                       weight="duotone"
                     />

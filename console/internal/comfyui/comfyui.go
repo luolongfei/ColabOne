@@ -102,6 +102,7 @@ var (
 	commitSHARe         = regexp.MustCompile(`\A[a-fA-F0-9]{40}\z`)
 	sha256AnyRe         = regexp.MustCompile(`\A[a-fA-F0-9]{64}\z`)
 	sha256LowerRe       = regexp.MustCompile(`\A[a-f0-9]{64}\z`)
+	signedIntStrRe      = regexp.MustCompile(`\A[+-]?\d+\z`)
 
 	comfyModelExtensions = map[string]bool{
 		".safetensors": true,
@@ -151,6 +152,7 @@ var (
 	allowedPipelineKinds = map[string]bool{
 		"comfy_standard": true,
 		"digital_human":  true,
+		"fashion_tryon":  true,
 	}
 
 	allowedVideoBackends = map[string]bool{
@@ -1827,12 +1829,38 @@ func (f *ColabOneWorkflowField) Validate() error {
 	if f.Default != nil {
 		switch f.FieldType {
 		case "integer":
-			if !isIntValue(f.Default) {
-				return fmt.Errorf("整数字段 %s 的默认值必须为整数", f.Key)
+			switch d := f.Default.(type) {
+			case bool:
+				return fmt.Errorf("整数字段 %s 的默认值不能为布尔值", f.Key)
+			case string:
+				if !signedIntStrRe.MatchString(strings.TrimSpace(d)) {
+					return fmt.Errorf("整数字段 %s 的默认值必须为整数", f.Key)
+				}
+			default:
+				if !isIntValue(f.Default) {
+					return fmt.Errorf("整数字段 %s 的默认值必须为整数", f.Key)
+				}
 			}
 		case "number":
-			if _, _, _, okNum := extractNumericValue(f.Default); !okNum {
-				return fmt.Errorf("数值字段 %s 的默认值必须为数字", f.Key)
+			switch d := f.Default.(type) {
+			case bool:
+				return fmt.Errorf("数值字段 %s 的默认值不能为布尔值", f.Key)
+			case string:
+				trimmed := strings.TrimSpace(d)
+				if trimmed == "" || strings.ContainsAny(trimmed, "xXpP") {
+					return fmt.Errorf("数值字段 %s 的默认值必须为数字", f.Key)
+				}
+				parsed, parseErr := strconv.ParseFloat(trimmed, 64)
+				if parseErr != nil {
+					return fmt.Errorf("数值字段 %s 的默认值必须为数字", f.Key)
+				}
+				if !isFiniteFloat64(parsed) {
+					return fmt.Errorf("数值字段 %s 的默认值必须为有限数字", f.Key)
+				}
+			default:
+				if _, _, _, okNum := extractNumericValue(f.Default); !okNum {
+					return fmt.Errorf("数值字段 %s 的默认值必须为数字", f.Key)
+				}
 			}
 		case "boolean":
 			if _, okBool := f.Default.(bool); !okBool {

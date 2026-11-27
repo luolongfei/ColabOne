@@ -21,6 +21,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1987,6 +1988,33 @@ def _terminate_process_group(proc: subprocess.Popen, timeout: float = 5.0) -> No
             pass
 
 
+def _runtime_http(runtime):
+    if runtime is None:
+        return None
+    getter = getattr(runtime, "_http_session", None)
+    if callable(getter):
+        return getter()
+    return getattr(runtime, "http", None)
+
+
+def _open_secure_log_write(log_path: Path):
+    """Open a regular log file for write with O_NOFOLLOW to prevent symlink clobber."""
+    path = Path(log_path)
+    if path.is_symlink():
+        raise ValueError(f"日志文件不能是符号链接：{path.name}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(str(path), flags, 0o600)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError(f"日志路径不是常规文件：{path.name}")
+    except BaseException:
+        os.close(fd)
+        raise
+    return os.fdopen(fd, "wb")
+
+
 def _run_ffmpeg_command(
     args: list[str],
     task,
@@ -1996,8 +2024,7 @@ def _run_ffmpeg_command(
     stopping: threading.Event | None = None,
 ) -> None:
     """Cancelable process-group subprocess runner for ffmpeg commands."""
-    log.parent.mkdir(parents=True, exist_ok=True)
-    with log.open("wb") as out:
+    with _open_secure_log_write(log) as out:
         proc = subprocess.Popen(
             args,
             cwd=cwd,
@@ -2658,7 +2685,7 @@ class ColabOneDigitalHumanRunner:
         if callable(upload_helper):
             return str(upload_helper(filename, file_path))
         raw_bytes = file_path.read_bytes()
-        http = getattr(getattr(self.manager, "runtime", None), "http", None)
+        http = _runtime_http(getattr(self.manager, "runtime", None))
         base_url = getattr(self.manager, "base_url", "")
         if http is not None and base_url:
             try:
@@ -2738,7 +2765,7 @@ class ColabOneDigitalHumanRunner:
         subfolder = str(item.get("subfolder") or "")
         file_type = str(item.get("type") or "output")
 
-        http = getattr(getattr(self.manager, "runtime", None), "http", None)
+        http = _runtime_http(getattr(self.manager, "runtime", None))
         base_url = getattr(self.manager, "base_url", "")
         if http is not None and base_url:
             view_resp = http.get(
@@ -2863,7 +2890,7 @@ class ColabOneDigitalHumanRunner:
             subfolder = str(item.get("subfolder") or "")
             file_type = str(item.get("type") or "output")
             if fname:
-                http = getattr(getattr(self.manager, "runtime", None), "http", None)
+                http = _runtime_http(getattr(self.manager, "runtime", None))
                 base_url = getattr(self.manager, "base_url", "")
                 if http is not None and base_url:
                     view_resp = http.get(
@@ -4202,7 +4229,7 @@ class ColabOneDigitalHumanRunner:
             anchor_entry = inputs_by_key.get("1.image") or inputs_by_key.get(
                 "pipeline.anchor_image"
             )
-        if anchor_entry is None or not anchor_entry[1].is_file():
+        if anchor_entry is None or anchor_entry[1].is_symlink() or not anchor_entry[1].is_file():
             raise ValueError("请先上传主播参考人像图片")
         _, anchor_src_path = anchor_entry
 
@@ -4443,7 +4470,7 @@ class ColabOneDigitalHumanRunner:
                 audio_entry = inputs_by_key.get("2.audio") or inputs_by_key.get(
                     "pipeline.drive_audio"
                 )
-            if audio_entry is None or not audio_entry[1].is_file():
+            if audio_entry is None or audio_entry[1].is_symlink() or not audio_entry[1].is_file():
                 raise ValueError("请先上传驱动音频文件")
             _, audio_src_path = audio_entry
 
@@ -5604,9 +5631,17 @@ class ColabOneDigitalHumanRunner:
             if use_nvenc:
                 task.note("已启用 GPU NVENC 硬件编码（h264_nvenc · p6 hq）加速终稿拼接封装")
 
-            def _build_concat_final_cmd(*, encode_nvenc: bool) -> list[str]:
+            def _build_concat_final_cmd(
+                video_rate_args: list[str] | None = None,
+                *,
+                encode_nvenc: bool,
+                audio_kbps: int = 192,
+            ) -> list[str]:
                 encode_args = _build_h264_encode_args(
-                    18, preset="fast", use_nvenc=encode_nvenc
+                    18,
+                    preset="fast",
+                    use_nvenc=encode_nvenc,
+                    rate_args=video_rate_args,
                 )
                 return [
                     ffmpeg_bin,
@@ -5627,7 +5662,7 @@ class ColabOneDigitalHumanRunner:
                     "-c:a",
                     "aac",
                     "-b:a",
-                    "192k",
+                    f"{int(audio_kbps)}k",
                     "-ar",
                     str(max(48000, master_sample_rate)),
                     "-movflags",
@@ -5636,22 +5671,32 @@ class ColabOneDigitalHumanRunner:
                     str(final_mp4_path),
                 ]
 
-            final_log_path = work_dir / "ffmpeg_final.log"
-            final_cmd = _build_concat_final_cmd(encode_nvenc=use_nvenc)
-            if not use_nvenc:
-                self._invoke_run_cmd(
-                    final_cmd,
-                    task,
-                    final_log_path,
-                    timeout=1800,
-                    cwd=work_dir,
+            def _run_concat_encode(
+                video_rate_args: list[str] | None,
+                *,
+                log_path: Path,
+                audio_kbps: int = 192,
+            ) -> None:
+                nonlocal use_nvenc
+                cmd = _build_concat_final_cmd(
+                    video_rate_args,
+                    encode_nvenc=use_nvenc,
+                    audio_kbps=audio_kbps,
                 )
-            else:
+                if not use_nvenc:
+                    self._invoke_run_cmd(
+                        cmd,
+                        task,
+                        log_path,
+                        timeout=1800,
+                        cwd=work_dir,
+                    )
+                    return
                 try:
                     self._invoke_run_cmd(
-                        final_cmd,
+                        cmd,
                         task,
-                        final_log_path,
+                        log_path,
                         timeout=1800,
                         cwd=work_dir,
                     )
@@ -5683,14 +5728,150 @@ class ColabOneDigitalHumanRunner:
                     )
                     final_mp4_path.unlink(missing_ok=True)
                     self._invoke_run_cmd(
-                        _build_concat_final_cmd(encode_nvenc=False),
+                        _build_concat_final_cmd(
+                            video_rate_args,
+                            encode_nvenc=False,
+                            audio_kbps=audio_kbps,
+                        ),
                         task,
-                        final_log_path,
+                        log_path,
                         timeout=1800,
                         cwd=work_dir,
                     )
 
+            _run_concat_encode(
+                None,
+                log_path=work_dir / "ffmpeg_final.log",
+            )
+
+            # Auto-reencode if concatenated MP4 exceeds MAX_OUTPUT_BYTES (512 MiB) so GPU work is preserved.
+            if (
+                final_mp4_path.is_file()
+                and final_mp4_path.stat().st_size > MAX_OUTPUT_BYTES
+            ):
+                task.check()
+                oversized_bytes = final_mp4_path.stat().st_size
+                eff_dur = max(1.0, float(duration))
+                audio_kbps = 192
+                for candidate_audio_kbps in (192, 128, 96):
+                    audio_kbps = candidate_audio_kbps
+                    est_audio_bytes = int(
+                        math.ceil((candidate_audio_kbps * 1000 / 8.0) * eff_dur)
+                    )
+                    if est_audio_bytes <= int(MAX_OUTPUT_BYTES * 0.20):
+                        break
+                audio_bytes = int(math.ceil((audio_kbps * 1000 / 8.0) * eff_dur))
+                hard_ceiling_video_kbps = int(
+                    ((MAX_OUTPUT_BYTES * 0.96 - audio_bytes) * 8) / eff_dur / 1000
+                )
+                if hard_ceiling_video_kbps < 80:
+                    raise RuntimeError(
+                        f"终稿视频时长过长（{eff_dur:.1f} 秒，当前体积 {oversized_bytes / (1024**2):.1f} MiB），"
+                        f"即使音频降至 {audio_kbps} kbps，视频物理码率上限仅 {max(0, hard_ceiling_video_kbps)} kbps，"
+                        f"无法在 {MAX_OUTPUT_BYTES // (1024**2)} MiB 上限内保证可用画质；请缩短播报时长或分段导出"
+                    )
+                target_bytes = int(MAX_OUTPUT_BYTES * 0.88)
+                raw_target_kbps = int(
+                    ((target_bytes - audio_bytes) * 8) / eff_dur / 1000
+                )
+                target_video_kbps = min(
+                    hard_ceiling_video_kbps, max(80, raw_target_kbps)
+                )
+                maxrate_kbps = min(
+                    hard_ceiling_video_kbps,
+                    max(target_video_kbps, int(round(target_video_kbps * 1.08))),
+                )
+                bufsize_kbps = max(
+                    maxrate_kbps, int(round(target_video_kbps * 1.5))
+                )
+                reencode_msg = (
+                    f"终稿体积 {oversized_bytes / (1024**2):.1f} MiB 超过 "
+                    f"{MAX_OUTPUT_BYTES // (1024**2)} MiB 上限，正在按目标视频码率 "
+                    f"{target_video_kbps} kbps（音频 {audio_kbps}k）自动重编码以保留本次渲染成果"
+                )
+                _update_task(task, progress=0.955, message=reencode_msg)
+                task.note(reencode_msg, level="warning")
+                final_mp4_path.unlink(missing_ok=True)
+                _run_concat_encode(
+                    [
+                        "-b:v",
+                        f"{target_video_kbps}k",
+                        "-maxrate",
+                        f"{maxrate_kbps}k",
+                        "-bufsize",
+                        f"{bufsize_kbps}k",
+                    ],
+                    audio_kbps=audio_kbps,
+                    log_path=work_dir / "ffmpeg_final_reencode.log",
+                )
+
+                if (
+                    final_mp4_path.is_file()
+                    and final_mp4_path.stat().st_size > MAX_OUTPUT_BYTES
+                ):
+                    task.check()
+                    actual_size = final_mp4_path.stat().st_size
+                    pass2_audio_kbps = min(audio_kbps, 128)
+                    pass2_audio_bytes = int(
+                        math.ceil((pass2_audio_kbps * 1000 / 8.0) * eff_dur)
+                    )
+                    pass2_hard_ceiling = int(
+                        ((MAX_OUTPUT_BYTES * 0.96 - pass2_audio_bytes) * 8)
+                        / eff_dur
+                        / 1000
+                    )
+                    if pass2_hard_ceiling < 80:
+                        raise RuntimeError(
+                            f"终稿重编码后体积仍为 {actual_size / (1024**2):.1f} MiB（时长 {eff_dur:.1f} 秒），"
+                            f"超过 {MAX_OUTPUT_BYTES // (1024**2)} MiB 上限且无可用视频码率余量继续压缩；"
+                            "请缩短播报时长或分段导出"
+                        )
+                    scaled_kbps = int(
+                        target_video_kbps
+                        * ((MAX_OUTPUT_BYTES * 0.88) / float(actual_size))
+                    )
+                    pass2_target_kbps = min(
+                        pass2_hard_ceiling, max(80, scaled_kbps)
+                    )
+                    pass2_msg = (
+                        f"首次重编码后终稿体积仍为 {actual_size / (1024**2):.1f} MiB，超过 "
+                        f"{MAX_OUTPUT_BYTES // (1024**2)} MiB 上限，正在按更严格码率 "
+                        f"{pass2_target_kbps} kbps（音频 {pass2_audio_kbps}k）执行二次重编码"
+                    )
+                    _update_task(task, progress=0.965, message=pass2_msg)
+                    task.note(pass2_msg, level="warning")
+                    final_mp4_path.unlink(missing_ok=True)
+                    _run_concat_encode(
+                        [
+                            "-b:v",
+                            f"{pass2_target_kbps}k",
+                            "-maxrate",
+                            f"{pass2_target_kbps}k",
+                            "-bufsize",
+                            f"{pass2_target_kbps}k",
+                        ],
+                        audio_kbps=pass2_audio_kbps,
+                        log_path=work_dir / "ffmpeg_final_reencode_pass2.log",
+                    )
+
+                if (
+                    final_mp4_path.is_file()
+                    and final_mp4_path.stat().st_size > MAX_OUTPUT_BYTES
+                ):
+                    final_oversized = final_mp4_path.stat().st_size
+                    raise RuntimeError(
+                        f"终稿视频经二次自动重编码后体积仍为 {final_oversized / (1024**2):.1f} MiB"
+                        f"（时长 {eff_dur:.1f} 秒），超过 {MAX_OUTPUT_BYTES // (1024**2)} MiB 上限，无法保存；"
+                        "请缩短播报时长或降低目标分辨率后重试"
+                    )
+
             if final_mp4_path.is_file() and final_mp4_path.stat().st_size > 0:
+                if final_mp4_path.stat().st_size > MAX_OUTPUT_BYTES:
+                    raise RuntimeError(
+                        f"终稿视频体积为 {final_mp4_path.stat().st_size / (1024**2):.1f} MiB"
+                        f"（时长 {max(1.0, float(duration)):.1f} 秒），超过 "
+                        f"{MAX_OUTPUT_BYTES // (1024**2)} MiB 上限，无法保存"
+                    )
                 output_src_path = final_mp4_path
             elif (
                 self._run_cmd_fn is not None

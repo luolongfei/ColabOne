@@ -4013,9 +4013,9 @@ _QWEN3_TTS_WORKER_BODY = textwrap.dedent(
                         f"[colabone-tts] qwen3_tts locking speaker timbre via base repo={repo}",
                         flush=True,
                     )
+                    model = None
                     if self.max_models <= 1:
                         self._evict_key((selected_repo, selected_rev, cache_dir))
-                    model = None
                     base_model = self.get_model(repo, revision, cache_dir, token)
                     try:
                         import numpy as np
@@ -4042,7 +4042,10 @@ _QWEN3_TTS_WORKER_BODY = textwrap.dedent(
                         f"[colabone-tts] qwen3_tts timbre lock fallback to voice_design: {exc}",
                         flush=True,
                     )
-                    if base_model is not None:
+                    had_base = base_model is not None
+                    model = None
+                    base_model = None
+                    if had_base:
                         self._evict_key((repo, revision, cache_dir))
                     model = self.get_model(aux_repo, aux_revision, cache_dir, token)
                     use_voice_design = True
@@ -5419,7 +5422,7 @@ class ColabOneRemoteTtsRunner:
         self._warm_release_gen: int = 0
         self._warm_idle_timer: threading.Timer | None = None
         self._warm_idle_seconds = _COLABONE_WARM_WORKER_IDLE_SECONDS
-        self._foreground_waiting = threading.Event()
+        self._foreground_waiters: int = 0
         self._foreground_done = threading.Condition(threading.Lock())
         self._prefetch_lock = threading.RLock()
         self._prefetch_job: dict[str, Any] | None = None
@@ -7614,12 +7617,11 @@ class ColabOneRemoteTtsRunner:
         return False
 
     def _wait_if_foreground_waiting(self, cancel_ev: threading.Event) -> bool:
-        while self._foreground_waiting.is_set():
-            if self._prefetch_should_stop(cancel_ev):
-                return False
-            with self._foreground_done:
-                if self._foreground_waiting.is_set():
-                    self._foreground_done.wait(timeout=0.2)
+        with self._foreground_done:
+            while self._foreground_waiters > 0:
+                if self._prefetch_should_stop(cancel_ev):
+                    return False
+                self._foreground_done.wait(timeout=0.2)
         return not self._prefetch_should_stop(cancel_ev)
 
     def _run_prefetch_job(
@@ -8117,8 +8119,51 @@ class ColabOneRemoteTtsRunner:
         foreground_marked = False
         try:
             if not _is_background_prefetch:
-                self._foreground_waiting.set()
+                with self._foreground_done:
+                    self._foreground_waiters += 1
                 foreground_marked = True
+
+            # Resolve/cache preset reference audio (acquires preset_lock) BEFORE acquiring
+            # _warm_exec_lock so lock ordering is strictly preset_lock -> _warm_exec_lock.
+            pre_resolved_anchor: tuple[Path, str] | None = None
+            if resolved_ref is None and resolved_preset is not None:
+                supports_design = (
+                    engine["id"] in _VOICE_DESIGN_PRESET_ENGINES
+                    or bool(engine.get("supports_voice_design"))
+                )
+                if not (supports_design and engine["id"] not in _REF_AUDIO_PRESET_ENGINES):
+                    preset_id = str(resolved_preset["id"])
+                    presets_dir = self.engines_dir / "_voice_presets"
+                    cached_wav = presets_dir / f"{preset_id}.wav"
+                    cached_txt = presets_dir / f"{preset_id}.txt"
+                    cached_meta = presets_dir / f"{preset_id}.meta.json"
+                    has_symlink_preset = (
+                        self.engines_dir.is_symlink()
+                        or presets_dir.is_symlink()
+                        or cached_wav.is_symlink()
+                        or cached_txt.is_symlink()
+                        or cached_meta.is_symlink()
+                    )
+                    has_cached_preset = self._is_preset_reference_cached(resolved_preset)
+                    anchor_helper_overridden = (
+                        getattr(self._ensure_preset_reference_audio, "__func__", None)
+                        is not ColabOneRemoteTtsRunner._ensure_preset_reference_audio
+                    )
+                    if (
+                        self.synth_fn is None
+                        or has_cached_preset
+                        or has_symlink_preset
+                        or anchor_helper_overridden
+                    ):
+                        anchor_wav, anchor_text = self._ensure_preset_reference_audio(
+                            task,
+                            resolved_preset,
+                            hf_token=hf_token,
+                        )
+                        pre_resolved_anchor = (
+                            Path(anchor_wav),
+                            str(anchor_text or COLABONE_VOICE_PRESET_ANCHOR_TEXT),
+                        )
 
             with self._warm_exec_lock:
                 # Re-check cache after acquiring lock in case background prefetch just finished it!
@@ -8146,6 +8191,7 @@ class ColabOneRemoteTtsRunner:
                     single_segment_if_fit=True,
                     prefer_warm=True,
                     _warm_lock_held=True,
+                    _pre_resolved_preset_anchor=pre_resolved_anchor,
                 )
 
             master_wav = Path(synth_result["audio_path"])
@@ -8176,9 +8222,10 @@ class ColabOneRemoteTtsRunner:
             )
         finally:
             if foreground_marked:
-                self._foreground_waiting.clear()
                 with self._foreground_done:
-                    self._foreground_done.notify_all()
+                    self._foreground_waiters = max(0, self._foreground_waiters - 1)
+                    if self._foreground_waiters == 0:
+                        self._foreground_done.notify_all()
             shutil.rmtree(tmp_work, ignore_errors=True)
 
     def validate_tts_synthesis_inputs(
@@ -8309,6 +8356,7 @@ class ColabOneRemoteTtsRunner:
         single_segment_if_fit: bool = False,
         prefer_warm: bool = False,
         _warm_lock_held: bool = False,
+        _pre_resolved_preset_anchor: tuple[Path, str] | None = None,
     ) -> dict[str, Any]:
         """Run remote GPU TTS synthesis in an isolated or warm daemon subprocess and assemble master WAV."""
         hf_token = str(hf_token or "").strip()
@@ -8411,45 +8459,55 @@ class ColabOneRemoteTtsRunner:
             else:
                 if not user_voice_prompt and preset_prompt:
                     effective_voice_prompt = preset_prompt
-                presets_dir = self.engines_dir / "_voice_presets"
-                cached_wav = presets_dir / f"{preset_id}.wav"
-                cached_txt = presets_dir / f"{preset_id}.txt"
-                cached_meta = presets_dir / f"{preset_id}.meta.json"
-                has_symlink_preset = (
-                    self.engines_dir.is_symlink()
-                    or presets_dir.is_symlink()
-                    or cached_wav.is_symlink()
-                    or cached_txt.is_symlink()
-                    or cached_meta.is_symlink()
-                )
-                has_cached_preset = self._is_preset_reference_cached(resolved_preset)
-                anchor_helper_overridden = (
-                    getattr(self._ensure_preset_reference_audio, "__func__", None)
-                    is not ColabOneRemoteTtsRunner._ensure_preset_reference_audio
-                )
-                if (
-                    self.synth_fn is None
-                    or has_cached_preset
-                    or has_symlink_preset
-                    or anchor_helper_overridden
-                ):
-                    was_cached_before = has_cached_preset
-                    anchor_wav, anchor_text = self._ensure_preset_reference_audio(
-                        task,
-                        resolved_preset,
-                        hf_token=hf_token,
-                    )
-                    resolved_ref_audio = Path(anchor_wav)
+                if _pre_resolved_preset_anchor is not None:
+                    resolved_ref_audio = Path(_pre_resolved_preset_anchor[0])
                     effective_ref_text = str(
-                        anchor_text or COLABONE_VOICE_PRESET_ANCHOR_TEXT
+                        _pre_resolved_preset_anchor[1]
+                        or COLABONE_VOICE_PRESET_ANCHOR_TEXT
                     )
-                    if not was_cached_before:
-                        self.check_disk(
-                            engine,
-                            allow_unavailable=(self.synth_fn is not None),
-                            ref_audio_path=resolved_ref_audio,
-                            preset=resolved_preset,
+                else:
+                    presets_dir = self.engines_dir / "_voice_presets"
+                    cached_wav = presets_dir / f"{preset_id}.wav"
+                    cached_txt = presets_dir / f"{preset_id}.txt"
+                    cached_meta = presets_dir / f"{preset_id}.meta.json"
+                    has_symlink_preset = (
+                        self.engines_dir.is_symlink()
+                        or presets_dir.is_symlink()
+                        or cached_wav.is_symlink()
+                        or cached_txt.is_symlink()
+                        or cached_meta.is_symlink()
+                    )
+                    has_cached_preset = self._is_preset_reference_cached(resolved_preset)
+                    anchor_helper_overridden = (
+                        getattr(self._ensure_preset_reference_audio, "__func__", None)
+                        is not ColabOneRemoteTtsRunner._ensure_preset_reference_audio
+                    )
+                    if (
+                        not _warm_lock_held
+                        and (
+                            self.synth_fn is None
+                            or has_cached_preset
+                            or has_symlink_preset
+                            or anchor_helper_overridden
                         )
+                    ):
+                        was_cached_before = has_cached_preset
+                        anchor_wav, anchor_text = self._ensure_preset_reference_audio(
+                            task,
+                            resolved_preset,
+                            hf_token=hf_token,
+                        )
+                        resolved_ref_audio = Path(anchor_wav)
+                        effective_ref_text = str(
+                            anchor_text or COLABONE_VOICE_PRESET_ANCHOR_TEXT
+                        )
+                        if not was_cached_before:
+                            self.check_disk(
+                                engine,
+                                allow_unavailable=(self.synth_fn is not None),
+                                ref_audio_path=resolved_ref_audio,
+                                preset=resolved_preset,
+                            )
 
         if resolved_ref_audio is None:
             effective_ref_text = ""

@@ -352,7 +352,7 @@ func writeWindowsLnk(lnkPath, exePath, locale string) error {
 	defer cancel()
 	_, err := runCommandFn(
 		ctx,
-		"powershell.exe",
+		winPowerShellExecutable(),
 		[]string{"-NoProfile", "-NonInteractive", "-Command", winLnkPSScript},
 		env,
 	)

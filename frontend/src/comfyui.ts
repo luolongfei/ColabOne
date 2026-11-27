@@ -64,9 +64,16 @@ export type ColabOneOutputChunkFetcher = (
 const CHUNK_SIZE = 512 * 1024;
 const MAX_OUTPUT_BYTES = 512 * 1024 ** 2;
 const MAX_WORKFLOW_BYTES = 2 * 1024 * 1024;
+const MAX_WORKFLOW_RAW_BYTES = MAX_WORKFLOW_BYTES * 4;
 const MAX_WORKFLOW_NODES = 500;
+const MAX_WORKFLOW_NESTING_DEPTH = 32;
 const MAX_CLASS_TYPE_LENGTH = 160;
 const NODE_ID_RE = /^[a-zA-Z0-9_:-]{1,80}$/;
+const FORBIDDEN_PROTOTYPE_KEYS = new Set([
+  "__proto__",
+  "constructor",
+  "prototype",
+]);
 export const COLABONE_VOICE_PRESET_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 const RESOLUTION_DIM_RE = /^(\d+)[xX](\d+)$/;
 const PORTRAIT_RESOLUTION_FALLBACKS = ["1080x1920", "720x1280"] as const;
@@ -194,13 +201,44 @@ function resolveNumericFieldValue(value: unknown, field: WorkflowField): number 
   return clampColabOneNumericFieldValue(resolved, field);
 }
 
+function exceedsWorkflowNestingDepth(root: unknown, maxDepth: number): boolean {
+  const stack: Array<{ value: unknown; depth: number }> = [
+    { value: root, depth: 1 },
+  ];
+  while (stack.length > 0) {
+    const { value, depth } = stack.pop()!;
+    if (depth > maxDepth) {
+      return true;
+    }
+    if (Array.isArray(value)) {
+      const nextDepth = depth + 1;
+      for (let i = 0; i < value.length; i += 1) {
+        const child = value[i];
+        if (child !== null && typeof child === "object") {
+          if (nextDepth > maxDepth) return true;
+          stack.push({ value: child, depth: nextDepth });
+        }
+      }
+    } else if (isPlainRecord(value)) {
+      const nextDepth = depth + 1;
+      for (const child of Object.values(value)) {
+        if (child !== null && typeof child === "object") {
+          if (nextDepth > maxDepth) return true;
+          stack.push({ value: child, depth: nextDepth });
+        }
+      }
+    }
+  }
+  return false;
+}
+
 export function parseWorkflowImportJSON(raw: string): WorkflowImportResult {
   const trimmed = (raw || "").trim();
   if (!trimmed) {
     return { ok: false, error: t("comfy.errEmptyJson") };
   }
 
-  if (utf8ByteLength(trimmed) > MAX_WORKFLOW_BYTES) {
+  if (utf8ByteLength(trimmed) > MAX_WORKFLOW_RAW_BYTES) {
     return { ok: false, error: t("comfy.errImportTooLarge") };
   }
 
@@ -222,6 +260,14 @@ export function parseWorkflowImportJSON(raw: string): WorkflowImportResult {
     return { ok: false, error: t("comfy.errCanvasFormat") };
   }
 
+  if (exceedsWorkflowNestingDepth(parsed, MAX_WORKFLOW_NESTING_DEPTH)) {
+    return { ok: false, error: t("comfy.errImportTooDeep") };
+  }
+
+  if (utf8ByteLength(JSON.stringify(parsed)) > MAX_WORKFLOW_BYTES) {
+    return { ok: false, error: t("comfy.errImportTooLarge") };
+  }
+
   const entries = Object.entries(parsed);
   if (entries.length === 0) {
     return { ok: false, error: t("comfy.errNoNodes") };
@@ -232,7 +278,7 @@ export function parseWorkflowImportJSON(raw: string): WorkflowImportResult {
   }
 
   for (const [nodeId, nodeValue] of entries) {
-    if (!NODE_ID_RE.test(nodeId)) {
+    if (FORBIDDEN_PROTOTYPE_KEYS.has(nodeId) || !NODE_ID_RE.test(nodeId)) {
       return {
         ok: false,
         error: t("comfy.errImportInvalidNodeId", { id: nodeId }),
@@ -270,6 +316,15 @@ export function parseWorkflowImportJSON(raw: string): WorkflowImportResult {
         return {
           ok: false,
           error: t("comfy.errImportInvalidInputKey", { id: nodeId }),
+        };
+      }
+      if (FORBIDDEN_PROTOTYPE_KEYS.has(inputKey)) {
+        return {
+          ok: false,
+          error: t("comfy.errImportForbiddenKey", {
+            id: nodeId,
+            key: inputKey,
+          }),
         };
       }
     }
@@ -1598,6 +1653,369 @@ export function isColabOneVoiceRefTextRequired(
   return false;
 }
 
+export const COLABONE_FASHION_MAX_REFS_PER_GROUP = 6;
+
+export const COLABONE_FASHION_MODEL_SLOT_KEYS = [
+  "1.image",
+  "pipeline.model_photo_2",
+  "pipeline.model_photo_3",
+  "pipeline.model_photo_4",
+  "pipeline.model_photo_5",
+  "pipeline.model_photo_6",
+] as const;
+
+export const COLABONE_FASHION_GARMENT_SLOT_KEYS = [
+  "2.image",
+  "pipeline.garment_photo_2",
+  "pipeline.garment_photo_3",
+  "pipeline.garment_photo_4",
+  "pipeline.garment_photo_5",
+  "pipeline.garment_photo_6",
+] as const;
+
+export const COLABONE_FASHION_MODEL_ROLES_KEY = "pipeline.model_photo_roles";
+export const COLABONE_FASHION_GARMENT_ROLES_KEY = "pipeline.garment_photo_roles";
+
+export const COLABONE_FASHION_MANAGED_FIELD_KEYS: ReadonlySet<string> =
+  new Set<string>([
+    ...COLABONE_FASHION_MODEL_SLOT_KEYS,
+    COLABONE_FASHION_MODEL_ROLES_KEY,
+    ...COLABONE_FASHION_GARMENT_SLOT_KEYS,
+    COLABONE_FASHION_GARMENT_ROLES_KEY,
+  ]);
+
+export type ColabOneFashionPhotoGroupKind = "model" | "garment";
+
+export const COLABONE_FASHION_MODEL_ROLE_IDS = [
+  "auto",
+  "front",
+  "side",
+  "back",
+  "full_body",
+  "closeup",
+] as const;
+
+export const COLABONE_FASHION_GARMENT_ROLE_IDS = [
+  "auto",
+  "front",
+  "back",
+  "side",
+  "detail",
+  "flatlay",
+] as const;
+
+export interface ColabOneFashionPhotoMeta {
+  order: string[];
+  roles: Record<string, string>;
+}
+
+export interface ColabOneFashionResolvedPhotoEntry {
+  key: string;
+  role: string;
+}
+
+export function getColabOneFashionSlotKeys(
+  group: ColabOneFashionPhotoGroupKind,
+): readonly string[] {
+  return group === "model"
+    ? COLABONE_FASHION_MODEL_SLOT_KEYS
+    : COLABONE_FASHION_GARMENT_SLOT_KEYS;
+}
+
+export function getColabOneFashionRolesFieldKey(
+  group: ColabOneFashionPhotoGroupKind,
+): string {
+  return group === "model"
+    ? COLABONE_FASHION_MODEL_ROLES_KEY
+    : COLABONE_FASHION_GARMENT_ROLES_KEY;
+}
+
+export function getColabOneFashionAllowedRoleIds(
+  group: ColabOneFashionPhotoGroupKind,
+): readonly string[] {
+  return group === "model"
+    ? COLABONE_FASHION_MODEL_ROLE_IDS
+    : COLABONE_FASHION_GARMENT_ROLE_IDS;
+}
+
+export function guessColabOneFashionPhotoRole(
+  group: ColabOneFashionPhotoGroupKind,
+  filename: string,
+  isFirst: boolean,
+): { role: string; guessed: boolean } {
+  const lower = String(filename || "").trim().toLowerCase();
+  if (
+    /(背面|后背|後背|后视|後視|反面)/.test(lower) ||
+    /(?:^|[^a-z])(?:back|rear)(?:$|[^a-z])/.test(lower)
+  ) {
+    return { role: "back", guessed: true };
+  }
+  if (
+    /(侧面|側面|微侧|微側|侧身|側身|侧颜|側顏)/.test(lower) ||
+    /(?:^|[^a-z])(?:side|profile|3quarter)(?:$|[^a-z])/.test(lower)
+  ) {
+    return { role: "side", guessed: true };
+  }
+  if (
+    group === "garment" &&
+    (/(细节|細節|特写|特寫|微距|领口|領口|亮片|水钻|水鑽|刺绣|刺繡|面料)/.test(lower) ||
+      /(?:^|[^a-z])(?:detail|details|closeup|close-up|macro|fabric)(?:$|[^a-z])/.test(
+        lower,
+      ))
+  ) {
+    return { role: "detail", guessed: true };
+  }
+  if (
+    group === "garment" &&
+    (/(平铺|平鋪|配件)/.test(lower) ||
+      /(?:^|[^a-z])(?:flatlay|flat-lay|flat)(?:$|[^a-z])/.test(lower))
+  ) {
+    return { role: "flatlay", guessed: true };
+  }
+  if (
+    group === "model" &&
+    (/(特写|特寫|脸部|臉部|大头|大頭)/.test(lower) ||
+      /(?:^|[^a-z])(?:closeup|close-up|face|portrait)(?:$|[^a-z])/.test(lower))
+  ) {
+    return { role: "closeup", guessed: true };
+  }
+  if (
+    group === "model" &&
+    (/(全身)/.test(lower) ||
+      /(?:^|[^a-z])(?:full|fullbody|full-body|body)(?:$|[^a-z])/.test(lower))
+  ) {
+    return { role: "full_body", guessed: true };
+  }
+  if (
+    /(正面|主图|主圖)/.test(lower) ||
+    /(?:^|[^a-z])(?:front|hero|main)(?:$|[^a-z])/.test(lower)
+  ) {
+    return { role: "front", guessed: true };
+  }
+  return { role: isFirst ? "front" : "auto", guessed: false };
+}
+
+export function parseColabOneFashionPhotoMeta(
+  raw: unknown,
+  group: ColabOneFashionPhotoGroupKind,
+): ColabOneFashionPhotoMeta {
+  if (!raw) {
+    return { order: [], roles: {} };
+  }
+  let parsed: unknown = raw;
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      return { order: [], roles: {} };
+    }
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      return { order: [], roles: {} };
+    }
+  }
+  if (!isPlainRecord(parsed)) {
+    return { order: [], roles: {} };
+  }
+
+  const allowedSlots = new Set<string>(getColabOneFashionSlotKeys(group));
+  const allowedRoles = new Set<string>(getColabOneFashionAllowedRoleIds(group));
+  const order: string[] = [];
+  const roles: Record<string, string> = {};
+
+  if (Array.isArray(parsed.order)) {
+    const seen = new Set<string>();
+    for (const item of parsed.order) {
+      if (typeof item !== "string") continue;
+      const key = item.trim();
+      if (key && allowedSlots.has(key) && !seen.has(key)) {
+        seen.add(key);
+        order.push(key);
+      }
+    }
+  }
+
+  const rawRoles = isPlainRecord(parsed.roles) ? parsed.roles : parsed;
+  for (const [k, v] of Object.entries(rawRoles)) {
+    if (k === "order" || k === "roles") continue;
+    if (typeof v !== "string") continue;
+    const key = k.trim();
+    const role = v.trim().toLowerCase();
+    if (allowedSlots.has(key) && allowedRoles.has(role)) {
+      roles[key] = role;
+    }
+  }
+
+  return { order, roles };
+}
+
+export function serializeColabOneFashionPhotoMeta(
+  meta: ColabOneFashionPhotoMeta,
+): string {
+  const cleanOrder: string[] = [];
+  const seenOrder = new Set<string>();
+  for (const rawKey of meta.order || []) {
+    if (typeof rawKey !== "string") continue;
+    const trimmed = rawKey.trim();
+    if (!trimmed || seenOrder.has(trimmed)) continue;
+    seenOrder.add(trimmed);
+    cleanOrder.push(trimmed);
+  }
+  const cleanRoles: Record<string, string> = {};
+  for (const k of cleanOrder) {
+    const role = meta.roles?.[k];
+    if (typeof role === "string" && role.trim()) {
+      cleanRoles[k] = role.trim().toLowerCase();
+    }
+  }
+  if (cleanOrder.length === 0 && Object.keys(cleanRoles).length === 0) {
+    return "";
+  }
+  return JSON.stringify({ order: cleanOrder, roles: cleanRoles });
+}
+
+export function reconcileColabOneFashionPhotoList(
+  group: ColabOneFashionPhotoGroupKind,
+  activeSlotKeys: readonly string[],
+  rawMeta: unknown,
+): ColabOneFashionResolvedPhotoEntry[] {
+  const allowedSlots = getColabOneFashionSlotKeys(group);
+  const activeSet = new Set<string>(
+    activeSlotKeys.filter((k) => allowedSlots.includes(k)),
+  );
+  if (activeSet.size === 0) {
+    return [];
+  }
+  const meta = parseColabOneFashionPhotoMeta(rawMeta, group);
+  const ordered: string[] = [];
+  const seen = new Set<string>();
+  for (const k of meta.order) {
+    if (activeSet.has(k) && !seen.has(k)) {
+      seen.add(k);
+      ordered.push(k);
+    }
+  }
+  for (const k of allowedSlots) {
+    if (activeSet.has(k) && !seen.has(k)) {
+      seen.add(k);
+      ordered.push(k);
+    }
+  }
+  return ordered.slice(0, COLABONE_FASHION_MAX_REFS_PER_GROUP).map((key, idx) => ({
+    key,
+    role: meta.roles[key] || (idx === 0 ? "front" : "auto"),
+  }));
+}
+
+export function pickColabOneNextFashionSlotKeys(
+  group: ColabOneFashionPhotoGroupKind,
+  occupiedSlotKeys: readonly string[],
+  count: number,
+): string[] {
+  const occupied = new Set<string>(occupiedSlotKeys);
+  const picked: string[] = [];
+  for (const key of getColabOneFashionSlotKeys(group)) {
+    if (picked.length >= count) break;
+    if (!occupied.has(key)) {
+      picked.push(key);
+    }
+  }
+  return picked;
+}
+
+const COLABONE_FASHION_BF16_THRESHOLD_MIB = 65_536;
+const COLABONE_FASHION_MIN_VRAM_BF16_MIB = 65_536;
+const COLABONE_FASHION_MIN_VRAM_INT8_MIB = 22_528;
+const COLABONE_FASHION_BF16_MINIMAX_BYTES =
+  40_234_657_162 + 27_141_342_152 + 1_168_505_312;
+const COLABONE_FASHION_BF16_RMBG3_BYTES =
+  16_452_934_194 + 8_875_719_384 + 336_211_292;
+const COLABONE_FASHION_INT8_MINIMAX_BYTES =
+  20_979_314_802 + 15_687_142_551 + 1_168_505_312;
+const COLABONE_FASHION_INT8_RMBG3_BYTES =
+  8_408_562_474 + 4_858_559_240 + 336_211_292;
+const COLABONE_FASHION_POSE_TOGGLE_KEYS = [
+  "pipeline.pose_1_enabled",
+  "pipeline.pose_2_enabled",
+  "pipeline.pose_3_enabled",
+  "pipeline.pose_4_enabled",
+  "pipeline.pose_5_enabled",
+  "pipeline.pose_6_enabled",
+] as const;
+
+export interface ColabOneFashionPreflightSpec {
+  precision: "bf16" | "int8";
+  minVramMib: number;
+  minDiskMib: number;
+  modelBytes: number;
+}
+
+export function resolveColabOneFashionPreflight(
+  values: Record<string, string | number | boolean> | undefined | null,
+  gpuTotalMib?: number,
+): ColabOneFashionPreflightSpec {
+  const rawMode = hasOwn(values, "pipeline.precision_mode")
+    ? String(values?.["pipeline.precision_mode"] ?? "auto")
+        .trim()
+        .toLowerCase()
+    : "auto";
+  const precision: "bf16" | "int8" =
+    rawMode === "bf16"
+      ? "bf16"
+      : rawMode === "int8"
+        ? "int8"
+        : typeof gpuTotalMib === "number" &&
+            Number.isFinite(gpuTotalMib) &&
+            gpuTotalMib >= COLABONE_FASHION_BF16_THRESHOLD_MIB
+          ? "bf16"
+          : "int8";
+  const cleanup = hasOwn(values, "pipeline.garment_cleanup")
+    ? String(values?.["pipeline.garment_cleanup"] ?? "rmbg3")
+        .trim()
+        .toLowerCase()
+    : "rmbg3";
+  const includeRmbg3 = cleanup === "rmbg3";
+  const modelBytes =
+    precision === "bf16"
+      ? COLABONE_FASHION_BF16_MINIMAX_BYTES +
+        (includeRmbg3 ? COLABONE_FASHION_BF16_RMBG3_BYTES : 0)
+      : COLABONE_FASHION_INT8_MINIMAX_BYTES +
+        (includeRmbg3 ? COLABONE_FASHION_INT8_RMBG3_BYTES : 0);
+  const minVramMib =
+    precision === "bf16"
+      ? COLABONE_FASHION_MIN_VRAM_BF16_MIB
+      : COLABONE_FASHION_MIN_VRAM_INT8_MIB;
+  const minDiskMib = Math.floor(modelBytes / (1024 * 1024)) + 4096;
+  return { precision, minVramMib, minDiskMib, modelBytes };
+}
+
+export function isColabOneFashionCustomPosesEmpty(
+  wf: WorkflowTemplate | undefined | null,
+  values: Record<string, string | number | boolean> | undefined | null,
+): boolean {
+  if (!wf || wf.pipeline?.kind !== "fashion_tryon") {
+    return false;
+  }
+  const customPrompts = hasOwn(values, "pipeline.custom_pose_prompts")
+    ? String(values?.["pipeline.custom_pose_prompts"] ?? "").trim()
+    : "";
+  if (customPrompts.length > 0) {
+    return false;
+  }
+  const pack = hasOwn(values, "pipeline.shot_pack")
+    ? String(values?.["pipeline.shot_pack"] ?? "full_6")
+        .trim()
+        .toLowerCase()
+    : "full_6";
+  if (pack !== "custom") {
+    return false;
+  }
+  return COLABONE_FASHION_POSE_TOGGLE_KEYS.every((key) => {
+    const raw = hasOwn(values, key) ? values?.[key] : true;
+    return !parseBooleanValue(raw, true);
+  });
+}
+
 export function missingRequiredWorkflowFields(
   wf: WorkflowTemplate | undefined,
   values: Record<string, string | number | boolean>,
@@ -1615,6 +2033,18 @@ export function missingRequiredWorkflowFields(
     uploadedInputIds,
     pendingUploads,
   );
+  const isFashionTryOn = wf.pipeline?.kind === "fashion_tryon";
+  const hasAnySlotMedia = (slotKeys: readonly string[]): boolean =>
+    slotKeys.some((slotKey) => {
+      const uploadedId = hasOwn(uploadedInputIds, slotKey)
+        ? uploadedInputIds[slotKey]
+        : undefined;
+      const hasUploaded =
+        typeof uploadedId === "string" && uploadedId.trim().length > 0;
+      const hasPending =
+        hasOwn(pendingUploads, slotKey) && Boolean(pendingUploads[slotKey]);
+      return hasUploaded || hasPending;
+    });
 
   const missing: WorkflowField[] = [];
   for (const field of wf.fields) {
@@ -1629,6 +2059,18 @@ export function missingRequiredWorkflowFields(
       continue;
     }
     if (field.field_type === "image" || field.field_type === "audio") {
+      if (isFashionTryOn && field.key === "1.image") {
+        if (!hasAnySlotMedia(COLABONE_FASHION_MODEL_SLOT_KEYS)) {
+          missing.push(field);
+        }
+        continue;
+      }
+      if (isFashionTryOn && field.key === "2.image") {
+        if (!hasAnySlotMedia(COLABONE_FASHION_GARMENT_SLOT_KEYS)) {
+          missing.push(field);
+        }
+        continue;
+      }
       const uploadedId = hasOwn(uploadedInputIds, field.key)
         ? uploadedInputIds[field.key]
         : undefined;

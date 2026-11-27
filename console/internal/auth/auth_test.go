@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -4362,4 +4363,347 @@ func TestColabLoginClearsFlowOnFailureAndBindsIPv6LoopbackBestEffort(t *testing.
 			t.Fatal("HasPendingFlow() must be false after IPv6 login completion")
 		}
 	})
+}
+
+func TestEnsureDriveQuotaProjectSerializesConcurrentProvisioning(t *testing.T) {
+	t.Run("concurrent callers create only one GCP project and reuse cache", func(t *testing.T) {
+		firstInCreate := make(chan struct{})
+		releaseCreate := make(chan struct{})
+		var createOnce sync.Once
+		var listCalls atomic.Int32
+		var createCalls atomic.Int32
+
+		gcpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/v1/projects":
+				listCalls.Add(1)
+				_, _ = w.Write([]byte(`{"projects":[]}`))
+			case r.Method == http.MethodPost && r.URL.Path == "/v1/projects":
+				createCalls.Add(1)
+				createOnce.Do(func() { close(firstInCreate) })
+				<-releaseCreate
+				_, _ = w.Write([]byte(`{"name":"operations/create-1","done":true}`))
+			case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/services/drive.googleapis.com:enable"):
+				_, _ = w.Write([]byte(`{"name":"operations/enable-1","done":true}`))
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer gcpSrv.Close()
+
+		vault := newMemoryVault()
+		_ = vault.Set("colab", &ColabOneCredentials{
+			Token:        "tok-conc",
+			RefreshToken: "ref-conc",
+			ClientID:     COLABONE_OAUTH_CLIENT_ID,
+			ClientSecret: COLABONE_OAUTH_CLIENT_SECRET,
+			Expiry:       "2099-01-01T00:00:00Z",
+			Scopes:       PUBLIC_SCOPES,
+		})
+		_ = vault.Set("google_profile", map[string]string{
+			"email": "conc@example.com",
+			"sub":   "sub-conc-001",
+		})
+
+		a := NewColabOneAuth(
+			vault,
+			WithCloudResourceManagerBaseURL(gcpSrv.URL),
+			WithServiceUsageBaseURL(gcpSrv.URL),
+			WithHTTPClient(gcpSrv.Client()),
+			WithSleepFn(noSleep),
+		)
+
+		type res struct {
+			pid    string
+			reason string
+		}
+		ch1 := make(chan res, 1)
+		ch2 := make(chan res, 1)
+		go func() {
+			p, r := a.EnsureDriveQuotaProject(context.Background(), nil, false)
+			ch1 <- res{p, r}
+		}()
+
+		<-firstInCreate
+
+		// Start second concurrent caller while first is provisioning, plus a third caller whose ctx cancels.
+		go func() {
+			p, r := a.EnsureDriveQuotaProject(context.Background(), nil, false)
+			ch2 <- res{p, r}
+		}()
+
+		cancelCtx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+		defer cancel()
+		p3, r3 := a.EnsureDriveQuotaProject(cancelCtx, nil, false)
+		if p3 != "" || r3 != "network_error" {
+			t.Fatalf("canceled waiter got (%q, %q), want (\"\", \"network_error\")", p3, r3)
+		}
+
+		close(releaseCreate)
+		r1 := <-ch1
+		r2 := <-ch2
+		if r1.pid == "" || r1.reason != "created_colabone_project" {
+			t.Fatalf("caller 1 got (%q, %q), want created_colabone_project", r1.pid, r1.reason)
+		}
+		if r2.pid != r1.pid || r2.reason != "cached" {
+			t.Fatalf("caller 2 got (%q, %q), want (%q, \"cached\")", r2.pid, r2.reason, r1.pid)
+		}
+		if got := createCalls.Load(); got != 1 {
+			t.Fatalf("POST /v1/projects calls = %d, want 1", got)
+		}
+		if got := listCalls.Load(); got != 1 {
+			t.Fatalf("GET /v1/projects calls = %d, want 1", got)
+		}
+	})
+}
+
+func TestColabLoginIPv6AddrInUseRetryAndIPv4Fallback(t *testing.T) {
+	makeOAuthServers := func(t *testing.T) (*httptest.Server, *httptest.Server) {
+		t.Helper()
+		tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"tok-fb","refresh_token":"ref-fb","expires_in":3600}`))
+		}))
+		t.Cleanup(tokenSrv.Close)
+		userInfoSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"email":"fb@example.com","sub":"sub-fb"}`))
+		}))
+		t.Cleanup(userInfoSrv.Close)
+		return tokenSrv, userInfoSrv
+	}
+
+	t.Run("retries ephemeral port on [::1] EADDRINUSE and uses localhost once bound", func(t *testing.T) {
+		tokenSrv, userInfoSrv := makeOAuthServers(t)
+		a := NewColabOneAuth(
+			newMemoryVault(),
+			WithTokenURI(tokenSrv.URL),
+			WithUserInfoURL(userInfoSrv.URL),
+			WithHTTPClient(tokenSrv.Client()),
+			WithSleepFn(noSleep),
+		)
+
+		var v6Attempts atomic.Int32
+		a.listenFn = func(network, address string) (net.Listener, error) {
+			if network == "tcp6" {
+				if v6Attempts.Add(1) <= 2 {
+					return nil, &net.OpError{Op: "listen", Net: network, Err: syscall.EADDRINUSE}
+				}
+				// Succeed on 3rd attempt (use real loopback listener on ephemeral port if IPv6 unavailable).
+				if l6, err := net.Listen("tcp6", address); err == nil {
+					return l6, nil
+				}
+				return net.Listen("tcp", "127.0.0.1:0")
+			}
+			return net.Listen(network, address)
+		}
+
+		var gotRedirectURI string
+		err := a.ColabLogin(context.Background(), func(authURL string) {
+			u, _ := url.Parse(authURL)
+			gotRedirectURI = u.Query().Get("redirect_uri")
+			state := u.Query().Get("state")
+			go func() {
+				ru, _ := url.Parse(gotRedirectURI)
+				cb := fmt.Sprintf("http://127.0.0.1:%s/?state=%s&code=%s", ru.Port(), url.QueryEscape(state), url.QueryEscape(testAuthCode))
+				if resp, rerr := http.Get(cb); rerr == nil {
+					_, _ = io.ReadAll(resp.Body)
+					_ = resp.Body.Close()
+				}
+			}()
+		})
+		if err != nil {
+			t.Fatalf("ColabLogin failed: %v", err)
+		}
+		if v6Attempts.Load() != 3 {
+			t.Fatalf("v6Attempts = %d, want 3", v6Attempts.Load())
+		}
+		if !strings.HasPrefix(gotRedirectURI, "http://localhost:") {
+			t.Fatalf("redirect_uri = %q, want http://localhost:<port>/", gotRedirectURI)
+		}
+	})
+
+	t.Run("falls back to 127.0.0.1 after 8 [::1] EADDRINUSE failures", func(t *testing.T) {
+		tokenSrv, userInfoSrv := makeOAuthServers(t)
+		a := NewColabOneAuth(
+			newMemoryVault(),
+			WithTokenURI(tokenSrv.URL),
+			WithUserInfoURL(userInfoSrv.URL),
+			WithHTTPClient(tokenSrv.Client()),
+			WithSleepFn(noSleep),
+		)
+
+		var v6Attempts atomic.Int32
+		a.listenFn = func(network, address string) (net.Listener, error) {
+			if network == "tcp6" {
+				v6Attempts.Add(1)
+				return nil, &net.OpError{Op: "listen", Net: network, Err: syscall.EADDRINUSE}
+			}
+			return net.Listen(network, address)
+		}
+
+		var gotRedirectURI string
+		err := a.ColabLogin(context.Background(), func(authURL string) {
+			u, _ := url.Parse(authURL)
+			gotRedirectURI = u.Query().Get("redirect_uri")
+			state := u.Query().Get("state")
+			go func() {
+				cb := gotRedirectURI + "?state=" + url.QueryEscape(state) + "&code=" + url.QueryEscape(testAuthCode)
+				if resp, rerr := http.Get(cb); rerr == nil {
+					_, _ = io.ReadAll(resp.Body)
+					_ = resp.Body.Close()
+				}
+			}()
+		})
+		if err != nil {
+			t.Fatalf("ColabLogin fallback failed: %v", err)
+		}
+		if v6Attempts.Load() != 8 {
+			t.Fatalf("v6Attempts = %d, want 8", v6Attempts.Load())
+		}
+		if !strings.HasPrefix(gotRedirectURI, "http://127.0.0.1:") {
+			t.Fatalf("redirect_uri = %q, want http://127.0.0.1:<port>/", gotRedirectURI)
+		}
+	})
+
+	t.Run("immediately falls back to 127.0.0.1 when IPv6 is unavailable", func(t *testing.T) {
+		tokenSrv, userInfoSrv := makeOAuthServers(t)
+		a := NewColabOneAuth(
+			newMemoryVault(),
+			WithTokenURI(tokenSrv.URL),
+			WithUserInfoURL(userInfoSrv.URL),
+			WithHTTPClient(tokenSrv.Client()),
+			WithSleepFn(noSleep),
+		)
+
+		var v6Attempts atomic.Int32
+		a.listenFn = func(network, address string) (net.Listener, error) {
+			if network == "tcp6" {
+				v6Attempts.Add(1)
+				return nil, errors.New("address family not supported by protocol")
+			}
+			return net.Listen(network, address)
+		}
+
+		var gotRedirectURI string
+		err := a.ColabLogin(context.Background(), func(authURL string) {
+			u, _ := url.Parse(authURL)
+			gotRedirectURI = u.Query().Get("redirect_uri")
+			state := u.Query().Get("state")
+			go func() {
+				cb := gotRedirectURI + "?state=" + url.QueryEscape(state) + "&code=" + url.QueryEscape(testAuthCode)
+				if resp, rerr := http.Get(cb); rerr == nil {
+					_, _ = io.ReadAll(resp.Body)
+					_ = resp.Body.Close()
+				}
+			}()
+		})
+		if err != nil {
+			t.Fatalf("ColabLogin non-IPv6 fallback failed: %v", err)
+		}
+		if v6Attempts.Load() != 1 {
+			t.Fatalf("v6Attempts = %d, want 1", v6Attempts.Load())
+		}
+		if !strings.HasPrefix(gotRedirectURI, "http://127.0.0.1:") {
+			t.Fatalf("redirect_uri = %q, want http://127.0.0.1:<port>/", gotRedirectURI)
+		}
+	})
+}
+
+func TestResetAccountStateRejectsLateFlowCallbacksWithoutOverwritingFreshCredentials(t *testing.T) {
+	var tokenCalls atomic.Int32
+	oauthSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tokenCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/token":
+			_, _ = w.Write([]byte(`{"access_token":"stale-tok","refresh_token":"stale-ref","expires_in":3600}`))
+		case "/userinfo":
+			_, _ = w.Write([]byte(`{"email":"stale@example.com","sub":"sub-stale"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer oauthSrv.Close()
+
+	vault := newMemoryVault()
+	a := NewColabOneAuth(
+		vault,
+		WithTokenURI(oauthSrv.URL+"/token"),
+		WithUserInfoURL(oauthSrv.URL+"/userinfo"),
+		WithHTTPClient(oauthSrv.Client()),
+		WithLoopbackTimeout(5*time.Second),
+		WithSleepFn(noSleep),
+	)
+
+	// 1. Direct colabFinishWithFlow with stale flow after ResetAccountState is rejected.
+	a.mu.Lock()
+	staleFlow, err := a.newOAuthFlow("http://127.0.0.1:12345/")
+	if err != nil {
+		a.mu.Unlock()
+		t.Fatalf("newOAuthFlow: %v", err)
+	}
+	a.flow = staleFlow
+	a.mu.Unlock()
+
+	a.ResetAccountState()
+	_ = vault.Set("colab", &ColabOneCredentials{Token: "fresh-imported-tok", RefreshToken: "fresh-ref", Expiry: "2099-01-01T00:00:00Z"})
+	_ = vault.Set("google_profile", map[string]string{"email": "fresh@example.com", "sub": "sub-fresh"})
+
+	if _, err := a.colabFinishWithFlow(context.Background(), testAuthCode, staleFlow); !errors.Is(err, ErrAuthCodeInvalid) {
+		t.Fatalf("direct stale colabFinishWithFlow err = %v, want ErrAuthCodeInvalid", err)
+	}
+	if tokenCalls.Load() != 0 {
+		t.Fatalf("stale flow contacted token server %d times, want 0", tokenCalls.Load())
+	}
+
+	// 2. Late HTTP callback to an active ColabLogin after ResetAccountState is rejected cleanly
+	// and preserves the fresh imported credentials in vault.
+	authURLCh := make(chan string, 1)
+	loginErrCh := make(chan error, 1)
+	go func() {
+		loginErrCh <- a.ColabLogin(context.Background(), func(u string) {
+			authURLCh <- u
+		})
+	}()
+
+	rawAuthURL := <-authURLCh
+	parsed, err := url.Parse(rawAuthURL)
+	if err != nil {
+		t.Fatalf("parse authURL: %v", err)
+	}
+
+	a.ResetAccountState()
+	_ = vault.Set("colab", &ColabOneCredentials{Token: "fresh-imported-tok-2", RefreshToken: "fresh-ref-2", Expiry: "2099-01-01T00:00:00Z"})
+	_ = vault.Set("google_profile", map[string]string{"email": "fresh2@example.com", "sub": "sub-fresh-2"})
+
+	cbURL := parsed.Query().Get("redirect_uri") +
+		"?state=" + url.QueryEscape(parsed.Query().Get("state")) +
+		"&code=" + url.QueryEscape(testAuthCode)
+	resp, err := http.Get(cbURL)
+	if err != nil {
+		t.Fatalf("late callback GET failed: %v", err)
+	}
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if !strings.Contains(string(bodyBytes), "is-error") {
+		t.Fatalf("expected error HTML page for stale callback after reset, got: %s", string(bodyBytes))
+	}
+
+	if err := <-loginErrCh; !errors.Is(err, ErrAuthCodeInvalid) {
+		t.Fatalf("ColabLogin after ResetAccountState err = %v, want ErrAuthCodeInvalid", err)
+	}
+	if tokenCalls.Load() != 0 {
+		t.Fatalf("late loopback callback contacted token server %d times, want 0", tokenCalls.Load())
+	}
+
+	var stored ColabOneCredentials
+	if ok, _ := vault.GetJSON("colab", &stored); !ok || stored.Token != "fresh-imported-tok-2" {
+		t.Fatalf("fresh credentials overwritten: ok=%v creds=%+v", ok, stored)
+	}
+	var prof map[string]string
+	if ok, _ := vault.GetJSON("google_profile", &prof); !ok || prof["sub"] != "sub-fresh-2" {
+		t.Fatalf("fresh profile overwritten: ok=%v prof=%+v", ok, prof)
+	}
 }

@@ -155,7 +155,7 @@ export interface ColabOneVoicePreviewMeta {
   voiceLabel?: string;
 }
 export interface ColabOneComfyPipelineSpec {
-  kind: "comfy_standard" | "digital_human";
+  kind: "comfy_standard" | "digital_human" | "fashion_tryon";
   video_backend?:
     | "infinitetalk"
     | "longcat_avatar"

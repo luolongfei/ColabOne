@@ -239,28 +239,60 @@ export async function colabOneSetLocale(value: string): Promise<void> {
   return ColabOneDesktop.setLocale(value);
 }
 
-export const colabOneGetMigrationExportSummary = (
+const DESKTOP_ONLY_WEB_ERROR = "该桌面专属操作仅支持在宿主机客户端执行";
+
+export async function colabOneGetMigrationExportSummary(
   uiPrefs: ColabOneMigrationUIPrefs | null,
-) => ColabOneDesktop.getMigrationExportSummary(uiPrefs);
+): Promise<ColabOneMigrationExportSummary> {
+  if (!isColabOneDesktopRuntime()) {
+    throw new Error(DESKTOP_ONLY_WEB_ERROR);
+  }
+  return ColabOneDesktop.getMigrationExportSummary(uiPrefs);
+}
 
-export const colabOneExportMigrationFile = (
+export async function colabOneExportMigrationFile(
   req: ColabOneMigrationExportRequest,
-) => ColabOneDesktop.exportMigrationFile(req);
+): Promise<ColabOneMigrationExportResult> {
+  if (!isColabOneDesktopRuntime()) {
+    throw new Error(DESKTOP_ONLY_WEB_ERROR);
+  }
+  return ColabOneDesktop.exportMigrationFile(req);
+}
 
-export const colabOnePickMigrationFile = () =>
-  ColabOneDesktop.pickMigrationFile();
+export async function colabOnePickMigrationFile(): Promise<ColabOneMigrationPickResult> {
+  if (!isColabOneDesktopRuntime()) {
+    throw new Error(DESKTOP_ONLY_WEB_ERROR);
+  }
+  return ColabOneDesktop.pickMigrationFile();
+}
 
-export const colabOneDecryptMigrationPreview = (
+export async function colabOneDecryptMigrationPreview(
   fileToken: string,
   password: string,
-) => ColabOneDesktop.decryptMigrationPreview(fileToken, password);
+): Promise<ColabOneMigrationPreview> {
+  if (!isColabOneDesktopRuntime()) {
+    throw new Error(DESKTOP_ONLY_WEB_ERROR);
+  }
+  return ColabOneDesktop.decryptMigrationPreview(fileToken, password);
+}
 
-export const colabOneApplyMigrationPreview = (
+export async function colabOneApplyMigrationPreview(
   req: ColabOneMigrationApplyRequest,
-) => ColabOneDesktop.applyMigrationPreview(req);
+): Promise<ColabOneMigrationApplyResult> {
+  if (!isColabOneDesktopRuntime()) {
+    throw new Error(DESKTOP_ONLY_WEB_ERROR);
+  }
+  return ColabOneDesktop.applyMigrationPreview(req);
+}
 
-export const colabOneCancelMigrationSession = (sessionID = "") =>
-  ColabOneDesktop.cancelMigrationSession(sessionID);
+export async function colabOneCancelMigrationSession(
+  sessionID = "",
+): Promise<void> {
+  if (!isColabOneDesktopRuntime()) {
+    throw new Error(DESKTOP_ONLY_WEB_ERROR);
+  }
+  return ColabOneDesktop.cancelMigrationSession(sessionID);
+}
 
 export async function colabOneGetLogDrawerState(): Promise<ColabOneLogDrawerState> {
   if (!isColabOneDesktopRuntime()) {
@@ -351,16 +383,25 @@ export async function colabOneGetUpdateState(): Promise<ColabOneUpdateState> {
 export async function colabOneCheckForUpdate(
   manual: boolean,
 ): Promise<ColabOneUpdateState> {
+  if (!isColabOneDesktopRuntime()) {
+    throw new Error(DESKTOP_ONLY_WEB_ERROR);
+  }
   return ColabOneDesktop.checkForUpdate(manual);
 }
 
 export async function colabOneStartUpdateInstall(): Promise<ColabOneUpdateState> {
+  if (!isColabOneDesktopRuntime()) {
+    throw new Error(DESKTOP_ONLY_WEB_ERROR);
+  }
   return ColabOneDesktop.startUpdateInstall();
 }
 
 export async function colabOneListRollbackVersions(
   forceRefresh = false,
 ): Promise<ColabOneRollbackVersion[]> {
+  if (!isColabOneDesktopRuntime()) {
+    throw new Error(DESKTOP_ONLY_WEB_ERROR);
+  }
   const res = await ColabOneDesktop.listRollbackVersions(forceRefresh);
   return Array.isArray(res) ? res : [];
 }
@@ -368,16 +409,25 @@ export async function colabOneListRollbackVersions(
 export async function colabOneStartUpdateRollback(
   version: string,
 ): Promise<ColabOneUpdateState> {
+  if (!isColabOneDesktopRuntime()) {
+    throw new Error(DESKTOP_ONLY_WEB_ERROR);
+  }
   return ColabOneDesktop.startUpdateRollback(version);
 }
 
 export async function colabOneCancelUpdateInstall(): Promise<ColabOneUpdateState> {
+  if (!isColabOneDesktopRuntime()) {
+    throw new Error(DESKTOP_ONLY_WEB_ERROR);
+  }
   return ColabOneDesktop.cancelUpdateInstall();
 }
 
 export async function colabOneSkipUpdateVersion(
   version: string,
 ): Promise<ColabOneUpdateState> {
+  if (!isColabOneDesktopRuntime()) {
+    throw new Error(DESKTOP_ONLY_WEB_ERROR);
+  }
   return ColabOneDesktop.skipUpdateVersion(version);
 }
 
@@ -385,10 +435,16 @@ export async function colabOneSetUpdatePreferences(
   autoCheck: boolean,
   includePrerelease: boolean,
 ): Promise<ColabOneUpdateState> {
+  if (!isColabOneDesktopRuntime()) {
+    throw new Error(DESKTOP_ONLY_WEB_ERROR);
+  }
   return ColabOneDesktop.setUpdatePreferences(autoCheck, includePrerelease);
 }
 
 export async function colabOneRelaunchForUpdate(): Promise<void> {
+  if (!isColabOneDesktopRuntime()) {
+    throw new Error(DESKTOP_ONLY_WEB_ERROR);
+  }
   return ColabOneDesktop.relaunchForUpdate();
 }
 
@@ -470,6 +526,9 @@ export async function colabOneGetCloseBehavior(): Promise<ColabOneCloseBehaviorS
 export async function colabOneSetCloseBehavior(
   behavior: ColabOneCloseBehavior,
 ): Promise<ColabOneCloseBehaviorState> {
+  if (!isColabOneDesktopRuntime()) {
+    throw new Error(DESKTOP_ONLY_WEB_ERROR);
+  }
   const res = await ColabOneDesktop.setCloseBehavior(behavior);
   if (res && typeof res.behavior === "string") {
     return {
@@ -490,6 +549,9 @@ export async function colabOneResolveCloseRequest(
   action: ColabOneCloseAction,
   remember: boolean,
 ): Promise<void> {
+  if (!isColabOneDesktopRuntime()) {
+    throw new Error(DESKTOP_ONLY_WEB_ERROR);
+  }
   return ColabOneDesktop.resolveCloseRequest(action, remember);
 }
 
@@ -541,8 +603,6 @@ export async function colabOneGetWebConsoleState(): Promise<ColabOneWebConsoleSt
   const res = await ColabOneDesktop.getWebConsoleState();
   return normalizeColabOneWebConsoleState(res);
 }
-
-const DESKTOP_ONLY_WEB_ERROR = "该桌面专属操作仅支持在宿主机客户端执行";
 
 export async function colabOneUpdateWebConsole(
   req: ColabOneWebConsoleUpdateRequest,

@@ -420,10 +420,14 @@ def create_colabone_app(runtime, token, background=False):
         return runtime.export_comfy_output_to_drive(output_id)
 
     @app.delete("/api/v1/comfyui/outputs/{output_id}", dependencies=auth)
-    def comfyui_delete_output(output_id: str):
+    def comfyui_delete_output(
+        output_id: str,
+        runtime_only: bool = Query(default=False),
+    ):
         runtime.touch()
-        runtime.comfy.store.delete_output(output_id)
-        runtime._mark_dirty("comfy_output:" + output_id)
+        runtime.comfy.store.delete_output(output_id, runtime_only=runtime_only)
+        if not runtime_only:
+            runtime._mark_dirty("comfy_output:" + output_id)
         return {"ok": True}
 
     @app.get("/api/v1/live/status", dependencies=auth)

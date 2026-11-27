@@ -620,6 +620,78 @@ const SYMLINK_DIR_LABELS: Record<string, ColabOneLocaleTable> = {
     "ja-JP": "出力キャッシュファイル",
     "ko-KR": "출력 캐시 파일",
   },
+  "rclone 目录": {
+    "zh-CN": "rclone 目录",
+    "en-US": "rclone directory",
+    "zh-TW": "rclone 目錄",
+    "zh-HK": "rclone 目錄",
+    "ja-JP": "rclone ディレクトリ",
+    "ko-KR": "rclone 디렉터리",
+  },
+  "rclone 二进制文件": {
+    "zh-CN": "rclone 二进制文件",
+    "en-US": "rclone binary",
+    "zh-TW": "rclone 二進位檔案",
+    "zh-HK": "rclone 二進位檔案",
+    "ja-JP": "rclone バイナリ",
+    "ko-KR": "rclone 바이너리",
+  },
+  云盘工作流目录: {
+    "zh-CN": "云盘工作流目录",
+    "en-US": "Drive workflows directory",
+    "zh-TW": "雲端硬碟工作流程目錄",
+    "zh-HK": "雲端硬碟工作流目錄",
+    "ja-JP": "ドライブのワークフローディレクトリ",
+    "ko-KR": "드라이브 워크플로 디렉터리",
+  },
+  云盘工作流文件: {
+    "zh-CN": "云盘工作流文件",
+    "en-US": "Drive workflow file",
+    "zh-TW": "雲端硬碟工作流程檔案",
+    "zh-HK": "雲端硬碟工作流檔案",
+    "ja-JP": "ドライブのワークフローファイル",
+    "ko-KR": "드라이브 워크플로 파일",
+  },
+  云盘作品目录: {
+    "zh-CN": "云盘作品目录",
+    "en-US": "Drive outputs directory",
+    "zh-TW": "雲端硬碟作品目錄",
+    "zh-HK": "雲端硬碟作品目錄",
+    "ja-JP": "ドライブの出力ディレクトリ",
+    "ko-KR": "드라이브 결과물 디렉터리",
+  },
+  云盘作品文件: {
+    "zh-CN": "云盘作品文件",
+    "en-US": "Drive output file",
+    "zh-TW": "雲端硬碟作品檔案",
+    "zh-HK": "雲端硬碟作品檔案",
+    "ja-JP": "ドライブの出力ファイル",
+    "ko-KR": "드라이브 결과물 파일",
+  },
+  云盘回收目录: {
+    "zh-CN": "云盘回收目录",
+    "en-US": "Drive trash directory",
+    "zh-TW": "雲端硬碟回收目錄",
+    "zh-HK": "雲端硬碟回收目錄",
+    "ja-JP": "ドライブのゴミ箱ディレクトリ",
+    "ko-KR": "드라이브 휴지통 디렉터리",
+  },
+  云盘回收目标: {
+    "zh-CN": "云盘回收目标",
+    "en-US": "Drive trash target",
+    "zh-TW": "雲端硬碟回收目標",
+    "zh-HK": "雲端硬碟回收目標",
+    "ja-JP": "ドライブのゴミ箱移動先",
+    "ko-KR": "드라이브 휴지통 대상",
+  },
+  日志文件: {
+    "zh-CN": "日志文件",
+    "en-US": "Log file",
+    "zh-TW": "日誌檔案",
+    "zh-HK": "日誌檔案",
+    "ja-JP": "ログファイル",
+    "ko-KR": "로그 파일",
+  },
   内置女声缓存目录: {
     "zh-CN": "内置女声缓存目录",
     "en-US": "Built-in female voice cache directory",
@@ -2153,6 +2225,7 @@ const COMFY_WORKFLOW_NAMES = new Set<string>([
   "口播数字人 · 96GB 电影级旗舰版",
   "口播数字人 · InfiniteTalk 长视频版（配 AI 2x 超分）",
   "口播数字人 · LongCat-Avatar 旗舰高清版（原生 720p）",
+  "AI 模特换装棚拍（仅非商用）",
 ]);
 
 const COMFY_WS_NODE_OR_PHASE_LABELS = new Set<string>([
@@ -2212,6 +2285,23 @@ const COMFY_WS_NODE_OR_PHASE_LABELS = new Set<string>([
   "正在封装无损 FFV1 中间视频并写入输出清单",
   "正在将 SeedVR2 超分帧封装为无损 FFV1 中间视频",
   "正在将 FlashVSR+ 超分帧封装为无损 FFV1 中间视频",
+  // server/fashion_tryon.py workflow node titles
+  "加载 Bria RMBG 3.0 抠图模型",
+  "加载 RMBG 3.0 视觉文本编码器",
+  "加载 FLUX.2 VAE",
+  "加载待清洗服装图",
+  "RMBG 3.0 软透明遮罩编码",
+  "RMBG 3.0 采样生成软遮罩",
+  "解码软透明通道",
+  "输出服装软遮罩",
+  "加载 MiniMax-H3-Image 扩散主模型",
+  "加载 Qwen3-VL-32B 视觉编码器",
+  "加载 MiniMax-H3 VAE",
+  "MiniMax-H3 多参考图条件编码",
+  "空负向条件（CFG 1.0 蒸馏）",
+  "MiniMax-H3 极速采样",
+  "解码高清棚拍图像",
+  "保存试穿棚拍成片",
 ]);
 
 const UNHANDLED_PROGRESS_TAIL_RE =
@@ -2373,6 +2463,724 @@ const PATTERN_RULES: PatternRule[] = [
       const seg = formatSegmentLabel(m[1]!, m[2]!, loc);
       const rest = translateInner(m[3]!, loc);
       return `${seg} · ${rest}`;
+    },
+  },
+  // === server/fashion_tryon.py dynamic progress, node titles, logs & errors ===
+  {
+    re: /^智能抠衣清洗（(.+?)） · (.+)$/s,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!, loc);
+      const rest = translateInner(m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Smart Garment Cleanup (${label}) · ${rest}`;
+        case "zh-TW":
+          return `智慧去背清洗（${label}） · ${rest}`;
+        case "zh-HK":
+          return `智能退地清洗（${label}） · ${rest}`;
+        case "ja-JP":
+          return `スマート衣装切り抜き（${label}） · ${rest}`;
+        case "ko-KR":
+          return `스마트 의상 정리 (${label}) · ${rest}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^智能抠衣清洗（(.+?)）$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Smart Garment Cleanup (${label})`;
+        case "zh-TW":
+          return `智慧去背清洗（${label}）`;
+        case "zh-HK":
+          return `智能退地清洗（${label}）`;
+        case "ja-JP":
+          return `スマート衣装切り抜き（${label}）`;
+        case "ko-KR":
+          return `스마트 의상 정리 (${label})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^第 (\d+)\/(\d+) 张 · ([^·]+?) · (.+)$/s,
+    format: (m, loc) => {
+      const idx = m[1]!;
+      const total = m[2]!;
+      const shotLabel = translateInner(m[3]!.trim(), loc);
+      const rest = translateInner(m[4]!.trim(), loc);
+      switch (loc) {
+        case "en-US":
+          return `Shot ${idx}/${total} · ${shotLabel} · ${rest}`;
+        case "zh-TW":
+        case "zh-HK":
+          return `第 ${idx}/${total} 張 · ${shotLabel} · ${rest}`;
+        case "ja-JP":
+          return `${idx}/${total} 枚目 · ${shotLabel} · ${rest}`;
+        case "ko-KR":
+          return `${idx}/${total}컷 · ${shotLabel} · ${rest}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^第 (\d+)\/(\d+) 张 · (.+)$/s,
+    format: (m, loc) => {
+      const idx = m[1]!;
+      const total = m[2]!;
+      const shotLabel = translateInner(m[3]!.trim(), loc);
+      switch (loc) {
+        case "en-US":
+          return `Shot ${idx}/${total} · ${shotLabel}`;
+        case "zh-TW":
+        case "zh-HK":
+          return `第 ${idx}/${total} 張 · ${shotLabel}`;
+        case "ja-JP":
+          return `${idx}/${total} 枚目 · ${shotLabel}`;
+        case "ko-KR":
+          return `${idx}/${total}컷 · ${shotLabel}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^自定义姿势 (\d+)$/,
+    format: (m, loc) => {
+      const idx = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Custom Pose ${idx}`;
+        case "zh-TW":
+        case "zh-HK":
+          return `自訂姿勢 ${idx}`;
+        case "ja-JP":
+          return `カスタムポーズ ${idx}`;
+        case "ko-KR":
+          return `사용자 지정 포즈 ${idx}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^服装背面参考图 (\d+)$/,
+    format: (m, loc) => {
+      const idx = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Garment Rear Reference ${idx}`;
+        case "zh-TW":
+        case "zh-HK":
+          return `服裝背面參考圖 ${idx}`;
+        case "ja-JP":
+          return `衣装背面参考写真 ${idx}`;
+        case "ko-KR":
+          return `의상 뒷면 참고 사진 ${idx}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^服装参考图 (\d+)$/,
+    format: (m, loc) => {
+      const idx = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Garment Reference ${idx}`;
+        case "zh-TW":
+        case "zh-HK":
+          return `服裝參考圖 ${idx}`;
+        case "ja-JP":
+          return `衣装参考写真 ${idx}`;
+        case "ko-KR":
+          return `의상 참고 사진 ${idx}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^参考图 (\d+)$/,
+    format: (m, loc) => {
+      const idx = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Reference Image ${idx}`;
+        case "zh-TW":
+        case "zh-HK":
+          return `參考圖 ${idx}`;
+        case "ja-JP":
+          return `参照画像 ${idx}`;
+        case "ko-KR":
+          return `참조 이미지 ${idx}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^AI 模特换装棚拍 · 已自动选择：(满血 BF16 旗舰精度（80G\/96G）|INT8 轻量量化精度（24G\+）)( \+ Bria RMBG 3\.0 软透明抠衣)?$/,
+    format: (m, loc) => {
+      const isBf16 = m[1]!.includes("BF16");
+      const hasRmbg = Boolean(m[2]);
+      switch (loc) {
+        case "en-US": {
+          const tier = isBf16
+            ? "Full BF16 Flagship Precision (80-96 GB)"
+            : "INT8 Lightweight Quantized Precision (24 GB+)";
+          const cleanup = hasRmbg ? " + Bria RMBG 3.0 Soft Garment Matting" : "";
+          return `AI Fashion Studio Try-On · Auto-selected: ${tier}${cleanup}`;
+        }
+        case "zh-TW": {
+          const tier = isBf16
+            ? "滿血 BF16 旗艦精度（80G/96G）"
+            : "INT8 輕量量化精度（24G+）";
+          const cleanup = hasRmbg ? " + Bria RMBG 3.0 軟去背" : "";
+          return `AI 模特兒換裝棚拍 · 已自動選擇：${tier}${cleanup}`;
+        }
+        case "zh-HK": {
+          const tier = isBf16
+            ? "滿血 BF16 旗艦精度（80G/96G）"
+            : "INT8 輕量量化精度（24G+）";
+          const cleanup = hasRmbg ? " + Bria RMBG 3.0 軟退地" : "";
+          return `AI 模特兒換裝棚拍 · 已自動選擇：${tier}${cleanup}`;
+        }
+        case "ja-JP": {
+          const tier = isBf16
+            ? "フル BF16 フラグシップ精度（80G/96G）"
+            : "INT8 軽量量子化精度（24G+）";
+          const cleanup = hasRmbg ? " + Bria RMBG 3.0 ソフト衣装切り抜き" : "";
+          return `AI モデル着せ替えスタジオ · 自動選択: ${tier}${cleanup}`;
+        }
+        case "ko-KR": {
+          const tier = isBf16
+            ? "풀 BF16 플래그십 정밀도 (80G/96G)"
+            : "INT8 경량 양자화 정밀도 (24G+)";
+          const cleanup = hasRmbg ? " + Bria RMBG 3.0 소프트 의상 누끼" : "";
+          return `AI 모델 가상 피팅 스튜디오 · 자동 선택: ${tier}${cleanup}`;
+        }
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在使用 Bria RMBG 3\.0 对(?:「(.+?)」|(.+?))执行软透明抠衣清洗（保留薄纱与羽毛细节）$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1] || m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Running Bria RMBG 3.0 soft-alpha matting on ${label} (preserving sheer tulle and feathers)`;
+        case "zh-TW":
+          return `正在使用 Bria RMBG 3.0 對「${label}」執行軟去背清洗（保留薄紗與羽毛細節）`;
+        case "zh-HK":
+          return `正在使用 Bria RMBG 3.0 對「${label}」執行軟退地清洗（保留薄紗與羽毛細節）`;
+        case "ja-JP":
+          return `Bria RMBG 3.0 で「${label}」のソフト透過切り抜きを実行中（チュール・羽根の細部を保持）`;
+        case "ko-KR":
+          return `Bria RMBG 3.0으로 "${label}" 소프트 알파 누끼 정리 중 (시스루 튤 및 깃털 디테일 보존)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Bria RMBG 3\.0 未返回遮罩，已回退使用裁边后的(.+)$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Bria RMBG 3.0 returned no matte; fell back to trimmed ${label}`;
+        case "zh-TW":
+          return `Bria RMBG 3.0 未傳回遮罩，已回退使用裁邊後的${label}`;
+        case "zh-HK":
+          return `Bria RMBG 3.0 未返回遮罩，已回退使用裁邊後的${label}`;
+        case "ja-JP":
+          return `Bria RMBG 3.0 からマスクが返されなかったため、トリミング済みの${label}を使用します`;
+        case "ko-KR":
+          return `Bria RMBG 3.0이 마스크를 반환하지 않아 여백 정리된 ${label}로 대체합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Bria RMBG 3\.0 未返回遮罩，已回退使用原图继续生成「(.+?)」$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Bria RMBG 3.0 returned no matte; fell back to original image for "${label}"`;
+        case "zh-TW":
+          return `Bria RMBG 3.0 未傳回遮罩，已回退使用原圖繼續產生「${label}」`;
+        case "zh-HK":
+          return `Bria RMBG 3.0 未返回遮罩，已回退使用原圖繼續生成「${label}」`;
+        case "ja-JP":
+          return `Bria RMBG 3.0 からマスクが返されなかったため、元画像にフォールバックして「${label}」の生成を続行します`;
+        case "ko-KR":
+          return `Bria RMBG 3.0이 마스크를 반환하지 않아 원본 이미지로 대체해 "${label}" 생성을 계속합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Bria RMBG 3\.0 返回的遮罩图像异常（(.+?)），已回退使用原图继续生成「(.+?)」$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      const label = translateInner(m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Bria RMBG 3.0 returned an invalid matte image (${detail}); fell back to original image for "${label}"`;
+        case "zh-TW":
+          return `Bria RMBG 3.0 傳回的遮罩影像異常（${detail}），已回退使用原圖繼續產生「${label}」`;
+        case "zh-HK":
+          return `Bria RMBG 3.0 返回的遮罩圖像異常（${detail}），已回退使用原圖繼續生成「${label}」`;
+        case "ja-JP":
+          return `Bria RMBG 3.0 が返したマスク画像が異常です（${detail}）。元画像にフォールバックして「${label}」の生成を続行します`;
+        case "ko-KR":
+          return `Bria RMBG 3.0이 반환한 마스크 이미지에 오류가 있어 (${detail}) 원본 이미지로 대체해 "${label}" 생성을 계속합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^释放 ComfyUI 显存请求返回异常状态（HTTP (\d+)）$/,
+    format: (m, loc) => {
+      const status = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `ComfyUI VRAM release request returned unexpected status (HTTP ${status})`;
+        case "zh-TW":
+          return `釋放 ComfyUI 顯示記憶體請求傳回異常狀態（HTTP ${status}）`;
+        case "zh-HK":
+          return `釋放 ComfyUI 顯存請求返回異常狀態（HTTP ${status}）`;
+        case "ja-JP":
+          return `ComfyUI の VRAM 解放リクエストが異常なステータスを返しました（HTTP ${status}）`;
+        case "ko-KR":
+          return `ComfyUI VRAM 해제 요청이 비정상 상태를 반환했습니다 (HTTP ${status})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^释放 ComfyUI 显存失败：(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to release ComfyUI VRAM: ${detail}`;
+        case "zh-TW":
+          return `釋放 ComfyUI 顯示記憶體失敗：${detail}`;
+        case "zh-HK":
+          return `釋放 ComfyUI 顯存失敗：${detail}`;
+        case "ja-JP":
+          return `ComfyUI の VRAM 解放に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `ComfyUI VRAM 해제에 실패했습니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(模特参考图|服装参考图|棚拍场景参考图|输入图片)「(.+?)」不能是符号链接$/,
+    format: (m, loc) => {
+      const label = translateFashionImageLabel(m[1]!, m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${label} cannot be a symbolic link`;
+        case "zh-TW":
+          return `${label}不可為符號連結`;
+        case "zh-HK":
+          return `${label}不能是符號連結`;
+        case "ja-JP":
+          return `${label}にシンボリックリンクは使用できません`;
+        case "ko-KR":
+          return `${label}은(는) 심볼릭 링크일 수 없습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(模特参考图|服装参考图|棚拍场景参考图|输入图片)「(.+?)」文件不存在或已失效，请重新上传$/,
+    format: (m, loc) => {
+      const label = translateFashionImageLabel(m[1]!, m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${label} does not exist or has expired; please upload again`;
+        case "zh-TW":
+          return `${label}檔案不存在或已失效，請重新上傳`;
+        case "zh-HK":
+          return `${label}檔案不存在或已失效，請重新上傳`;
+        case "ja-JP":
+          return `${label}のファイルが存在しないか無効になっています。再度アップロードしてください`;
+        case "ko-KR":
+          return `${label} 파일이 존재하지 않거나 만료되었습니다. 다시 업로드해 주세요`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(模特参考图|服装参考图|棚拍场景参考图|输入图片)「(.+?)」仅支持 PNG、JPEG 或 WebP 图片格式（当前为 (.+?)）$/,
+    format: (m, loc) => {
+      const label = translateFashionImageLabel(m[1]!, m[2]!, loc);
+      const rawExt = m[3]!;
+      const ext =
+        rawExt === "未知"
+          ? {
+              "zh-CN": "未知",
+              "en-US": "unknown",
+              "zh-TW": "未知",
+              "zh-HK": "未知",
+              "ja-JP": "不明",
+              "ko-KR": "알 수 없음",
+            }[loc]
+          : rawExt;
+      switch (loc) {
+        case "en-US":
+          return `${label} only supports PNG, JPEG, or WebP image formats (got ${ext})`;
+        case "zh-TW":
+          return `${label}僅支援 PNG、JPEG 或 WebP 圖片格式（目前為 ${ext}）`;
+        case "zh-HK":
+          return `${label}僅支援 PNG、JPEG 或 WebP 圖片格式（目前為 ${ext}）`;
+        case "ja-JP":
+          return `${label}は PNG、JPEG、WebP 形式のみ対応しています（現在: ${ext}）`;
+        case "ko-KR":
+          return `${label}은(는) PNG, JPEG 또는 WebP 이미지 형식만 지원합니다 (현재: ${ext})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(模特参考图|服装参考图|棚拍场景参考图|输入图片)「(.+?)」图片文件为空，请重新上传$/,
+    format: (m, loc) => {
+      const label = translateFashionImageLabel(m[1]!, m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${label} image file is empty; please upload again`;
+        case "zh-TW":
+          return `${label}圖片檔案為空，請重新上傳`;
+        case "zh-HK":
+          return `${label}圖片檔案為空，請重新上傳`;
+        case "ja-JP":
+          return `${label}の画像ファイルが空です。再度アップロードしてください`;
+        case "ko-KR":
+          return `${label} 이미지 파일이 비어 있습니다. 다시 업로드해 주세요`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(模特参考图|服装参考图|棚拍场景参考图|输入图片)「(.+?)」文件不可读取，请重新上传$/,
+    format: (m, loc) => {
+      const label = translateFashionImageLabel(m[1]!, m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${label} file cannot be read; please upload again`;
+        case "zh-TW":
+          return `${label}檔案無法讀取，請重新上傳`;
+        case "zh-HK":
+          return `${label}檔案無法讀取，請重新上傳`;
+        case "ja-JP":
+          return `${label}のファイルを読み取れません。再度アップロードしてください`;
+        case "ko-KR":
+          return `${label} 파일을 읽을 수 없습니다. 다시 업로드해 주세요`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(模特参考图|服装参考图|棚拍场景参考图|输入图片)「(.+?)」仅支持有效的 PNG、JPEG 或 WebP 图片文件$/,
+    format: (m, loc) => {
+      const label = translateFashionImageLabel(m[1]!, m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${label} only supports valid PNG, JPEG, or WebP image files`;
+        case "zh-TW":
+          return `${label}僅支援有效的 PNG、JPEG 或 WebP 圖片檔案`;
+        case "zh-HK":
+          return `${label}僅支援有效的 PNG、JPEG 或 WebP 圖片檔案`;
+        case "ja-JP":
+          return `${label}は有効な PNG、JPEG、WebP 画像ファイルのみ対応しています`;
+        case "ko-KR":
+          return `${label}은(는) 유효한 PNG, JPEG 또는 WebP 이미지 파일만 지원합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(模特参考图|服装参考图|棚拍场景参考图|输入图片)「(.+?)」(?:图片)?尺寸无效(，请重新上传)?$/,
+    format: (m, loc) => {
+      const label = translateFashionImageLabel(m[1]!, m[2]!, loc);
+      const reupload = Boolean(m[3]);
+      switch (loc) {
+        case "en-US":
+          return reupload
+            ? `${label} has invalid image dimensions; please upload again`
+            : `${label} has invalid image dimensions`;
+        case "zh-TW":
+          return reupload
+            ? `${label}圖片尺寸無效，請重新上傳`
+            : `${label}尺寸無效`;
+        case "zh-HK":
+          return reupload
+            ? `${label}圖片尺寸無效，請重新上傳`
+            : `${label}尺寸無效`;
+        case "ja-JP":
+          return reupload
+            ? `${label}の画像サイズが無効です。再度アップロードしてください`
+            : `${label}の画像サイズが無効です`;
+        case "ko-KR":
+          return reupload
+            ? `${label}의 이미지 크기가 올바르지 않습니다. 다시 업로드해 주세요`
+            : `${label}의 이미지 크기가 올바르지 않습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(模特参考图|服装参考图|棚拍场景参考图|输入图片)「(.+?)」(?:图片)?分辨率超过上限（最多 1600 万像素）$/,
+    format: (m, loc) => {
+      const label = translateFashionImageLabel(m[1]!, m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${label} exceeds the maximum resolution limit (up to 16 megapixels)`;
+        case "zh-TW":
+          return `${label}圖片解析度超過上限（最多 1600 萬像素）`;
+        case "zh-HK":
+          return `${label}圖片解像度超過上限（最多 1600 萬像素）`;
+        case "ja-JP":
+          return `${label}の解像度が上限（最大 1,600 万画素）を超えています`;
+        case "ko-KR":
+          return `${label}의 해상도가 최대 한도 (1,600만 화소)를 초과했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(模特参考图|服装参考图|棚拍场景参考图|输入图片)「(.+?)」(?:图片)?已损坏或无法解码，请重新上传有效的 PNG、JPEG 或 WebP 图片$/,
+    format: (m, loc) => {
+      const label = translateFashionImageLabel(m[1]!, m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `${label} is corrupted or cannot be decoded; please upload a valid PNG, JPEG, or WebP image`;
+        case "zh-TW":
+          return `${label}圖片已損壞或無法解碼，請重新上傳有效的 PNG、JPEG 或 WebP 圖片`;
+        case "zh-HK":
+          return `${label}圖片已損壞或無法解碼，請重新上傳有效的 PNG、JPEG 或 WebP 圖片`;
+        case "ja-JP":
+          return `${label}の画像が破損しているかデコードできません。有効な PNG、JPEG、WebP 画像を再度アップロードしてください`;
+        case "ko-KR":
+          return `${label} 이미지가 손상되었거나 디코딩할 수 없습니다. 유효한 PNG, JPEG 또는 WebP 이미지를 다시 업로드해 주세요`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Bria RMBG 3\.0 未返回遮罩，已回退使用原图继续生成「(.+?)」$/,
+    format: (m, loc) => {
+      const label = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Bria RMBG 3.0 returned no matte; fell back to the original image for "${label}"`;
+        case "zh-TW":
+          return `Bria RMBG 3.0 未傳回遮罩，已回退使用原圖繼續產生「${label}」`;
+        case "zh-HK":
+          return `Bria RMBG 3.0 未返回遮罩，已回退使用原圖繼續生成「${label}」`;
+        case "ja-JP":
+          return `Bria RMBG 3.0 からマスクが返されなかったため、元画像で「${label}」の生成を続行します`;
+        case "ko-KR":
+          return `Bria RMBG 3.0이 마스크를 반환하지 않아 원본 이미지로 "${label}" 생성을 계속합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Bria RMBG 3\.0 返回的遮罩图像异常（(.+?)），已回退使用原图继续生成「(.+?)」$/,
+    format: (m, loc) => {
+      const reason = translateInner(m[1]!, loc);
+      const label = translateInner(m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Bria RMBG 3.0 returned an invalid matte (${reason}); fell back to the original image for "${label}"`;
+        case "zh-TW":
+          return `Bria RMBG 3.0 傳回的遮罩影像異常（${reason}），已回退使用原圖繼續產生「${label}」`;
+        case "zh-HK":
+          return `Bria RMBG 3.0 返回的遮罩圖像異常（${reason}），已回退使用原圖繼續生成「${label}」`;
+        case "ja-JP":
+          return `Bria RMBG 3.0 から返されたマスク画像が不正なため（${reason}）、元画像で「${label}」の生成を続行します`;
+        case "ko-KR":
+          return `Bria RMBG 3.0이 반환한 마스크 이미지가 올바르지 않아 (${reason}) 원본 이미지로 "${label}" 생성을 계속합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^释放 ComfyUI 显存请求返回异常状态（HTTP (\d+)）$/,
+    format: (m, loc) => {
+      const code = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `ComfyUI VRAM free request returned unexpected status (HTTP ${code})`;
+        case "zh-TW":
+          return `釋放 ComfyUI 顯示記憶體要求傳回異常狀態（HTTP ${code}）`;
+        case "zh-HK":
+          return `釋放 ComfyUI 顯存請求返回異常狀態（HTTP ${code}）`;
+        case "ja-JP":
+          return `ComfyUI VRAM 解放リクエストが異常ステータスを返しました（HTTP ${code}）`;
+        case "ko-KR":
+          return `ComfyUI VRAM 해제 요청이 비정상 상태를 반환했습니다 (HTTP ${code})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^释放 ComfyUI 显存失败：(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to free ComfyUI VRAM: ${detail}`;
+        case "zh-TW":
+          return `釋放 ComfyUI 顯示記憶體失敗：${detail}`;
+        case "zh-HK":
+          return `釋放 ComfyUI 顯存失敗：${detail}`;
+        case "ja-JP":
+          return `ComfyUI の VRAM 解放に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `ComfyUI VRAM 해제 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^服装细节特写「(.+?)」已自动跳过抠图，完整保留微距纹理$/,
+    format: (m, loc) => {
+      const filename = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Garment detail close-up "${filename}" skipped matting automatically to preserve macro texture`;
+        case "zh-TW":
+          return `服裝細節特寫「${filename}」已自動略過去背，完整保留微距紋理`;
+        case "zh-HK":
+          return `服裝細節特寫「${filename}」已自動跳過退地，完整保留微距紋理`;
+        case "ja-JP":
+          return `衣装細部クローズアップ「${filename}」は切り抜きを自動スキップし、マクロ質感をそのまま保持します`;
+        case "ko-KR":
+          return `의상 디테일 클로즈업 "${filename}"은 매크로 질감 보존을 위해 누끼를 자동 건너뛰었습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^第 (\d+) 张「(.+?)」未返回生成图像$/,
+    format: (m, loc) => {
+      const idx = m[1]!;
+      const shotLabel = translateInner(m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Shot #${idx} (${shotLabel}) returned no generated image`;
+        case "zh-TW":
+          return `第 ${idx} 張「${shotLabel}」未傳回產生影像`;
+        case "zh-HK":
+          return `第 ${idx} 張「${shotLabel}」未返回生成圖像`;
+        case "ja-JP":
+          return `${idx} 枚目「${shotLabel}」の生成画像が返されませんでした`;
+        case "ko-KR":
+          return `${idx}번째 컷 (${shotLabel})에서 생성된 이미지를 받지 못했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^AI 模特换装棚拍完成：已保存 (\d+) 张高清多姿态成片与 (\d+) 张抠衣质检图（耗时 (.+?)）$/,
+    format: (m, loc) => {
+      const count = m[1]!;
+      const cutoutCount = m[2]!;
+      const dur = translateZhDuration(m[3]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `AI Fashion Studio Try-On complete: saved ${count} high-res multi-pose outputs and ${cutoutCount} cutout QC images (took ${dur})`;
+        case "zh-TW":
+          return `AI 模特兒換裝棚拍完成：已儲存 ${count} 張高畫質多姿態成片與 ${cutoutCount} 張去背質檢圖（耗時 ${dur}）`;
+        case "zh-HK":
+          return `AI 模特兒換裝棚拍完成：已儲存 ${count} 張高清多姿態成片與 ${cutoutCount} 張退地質檢圖（耗時 ${dur}）`;
+        case "ja-JP":
+          return `AI モデル着せ替えスタジオ完了: 高精細マルチポーズ画像 ${count} 枚と切り抜き確認画像 ${cutoutCount} 枚を保存しました（所要 ${dur}）`;
+        case "ko-KR":
+          return `AI 모델 가상 피팅 스튜디오 완료: 고해상도 멀티 포즈 결과물 ${count}장과 누끼 검수 이미지 ${cutoutCount}장 저장됨 (소요 ${dur})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^AI 模特换装棚拍完成：已保存 (\d+) 张高清多姿态成片与 (\d+) 张抠衣质检图（耗时 (.+?)）$/,
+    format: (m, loc) => {
+      const lookbook = m[1]!;
+      const cutout = m[2]!;
+      const dur = translateZhDuration(m[3]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `AI Fashion Studio Try-On complete: saved ${lookbook} high-res multi-pose outputs and ${cutout} garment cutout QA images (took ${dur})`;
+        case "zh-TW":
+          return `AI 模特兒換裝棚拍完成：已儲存 ${lookbook} 張高畫質多姿態成片與 ${cutout} 張去背質檢圖（耗時 ${dur}）`;
+        case "zh-HK":
+          return `AI 模特兒換裝棚拍完成：已儲存 ${lookbook} 張高清多姿態成片與 ${cutout} 張退地質檢圖（耗時 ${dur}）`;
+        case "ja-JP":
+          return `AI モデル着せ替えスタジオ完了: 高精細マルチポーズ画像 ${lookbook} 枚と衣装切り抜き確認画像 ${cutout} 枚を保存しました（所要 ${dur}）`;
+        case "ko-KR":
+          return `AI 모델 가상 피팅 스튜디오 완료: 고해상도 멀티 포즈 결과물 ${lookbook}장과 의상 누끼 검수 이미지 ${cutout}장 저장됨 (소요 ${dur})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^AI 模特换装棚拍完成：已保存 (\d+) 张高清多姿态成片（耗时 (.+?)）$/,
+    format: (m, loc) => {
+      const count = m[1]!;
+      const dur = translateZhDuration(m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `AI Fashion Studio Try-On complete: saved ${count} high-res multi-pose outputs (took ${dur})`;
+        case "zh-TW":
+          return `AI 模特兒換裝棚拍完成：已儲存 ${count} 張高畫質多姿態成片（耗時 ${dur}）`;
+        case "zh-HK":
+          return `AI 模特兒換裝棚拍完成：已儲存 ${count} 張高清多姿態成片（耗時 ${dur}）`;
+        case "ja-JP":
+          return `AI モデル着せ替えスタジオ完了: 高精細マルチポーズ画像 ${count} 枚を保存しました（所要 ${dur}）`;
+        case "ko-KR":
+          return `AI 모델 가상 피팅 스튜디오 완료: 고해상도 멀티 포즈 결과물 ${count}장 저장됨 (소요 ${dur})`;
+        default:
+          return m[0];
+      }
     },
   },
 
@@ -12386,6 +13194,178 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
+    re: /^visible_when 条件 (.+?) 的字符串值长度不能超过 (\d+)$/,
+    format: (m, loc) => {
+      const key = m[1]!;
+      const max = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `visible_when condition ${key} string value length cannot exceed ${max}`;
+        case "zh-TW":
+          return `visible_when 條件 ${key} 的字串值長度不可超過 ${max}`;
+        case "zh-HK":
+          return `visible_when 條件 ${key} 的字串值長度不能超過 ${max}`;
+        case "ja-JP":
+          return `visible_when 条件 ${key} の文字列の長さは ${max} 以内である必要があります`;
+        case "ko-KR":
+          return `visible_when 조건 ${key}의 문자열 값 길이는 ${max}자를 초과할 수 없습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^字段 (.+?) 的 visible_when 引用了(不存在|未声明)的字段[:：]\s*(.+)$/,
+    format: (m, loc) => {
+      const field = m[1]!;
+      const ref = m[3]!;
+      switch (loc) {
+        case "en-US":
+          return `Field ${field} visible_when references an undeclared field: ${ref}`;
+        case "zh-TW":
+          return `欄位 ${field} 的 visible_when 參照了不存在的欄位：${ref}`;
+        case "zh-HK":
+          return `欄位 ${field} 的 visible_when 引用了不存在的欄位：${ref}`;
+        case "ja-JP":
+          return `フィールド ${field} の visible_when が未定義のフィールドを参照しています: ${ref}`;
+        case "ko-KR":
+          return `필드 ${field}의 visible_when이 선언되지 않은 필드를 참조합니다: ${ref}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^整数字段 (.+?) 的默认值(必须为整数|不能为布尔值)$/,
+    format: (m, loc) => {
+      const key = m[1]!;
+      const isBoolErr = m[2] === "不能为布尔值";
+      if (isBoolErr) {
+        switch (loc) {
+          case "en-US":
+            return `Default value of integer field ${key} cannot be a boolean`;
+          case "zh-TW":
+            return `整數欄位 ${key} 的預設值不可為布林值`;
+          case "zh-HK":
+            return `整數欄位 ${key} 的預設值不能為布林值`;
+          case "ja-JP":
+            return `整数フィールド ${key} の既定値に真偽値は指定できません`;
+          case "ko-KR":
+            return `정수 필드 ${key}의 기본값은 불리언일 수 없습니다`;
+          default:
+            return m[0];
+        }
+      }
+      switch (loc) {
+        case "en-US":
+          return `Default value of integer field ${key} must be an integer`;
+        case "zh-TW":
+          return `整數欄位 ${key} 的預設值必須為整數`;
+        case "zh-HK":
+          return `整數欄位 ${key} 的預設值必須為整數`;
+        case "ja-JP":
+          return `整数フィールド ${key} の既定値は整数である必要があります`;
+        case "ko-KR":
+          return `정수 필드 ${key}의 기본값은 정수여야 합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^数值字段 (.+?) 的默认值(必须为数字|不能为布尔值|必须为有限数字)$/,
+    format: (m, loc) => {
+      const key = m[1]!;
+      const reason = m[2]!;
+      if (reason === "不能为布尔值") {
+        switch (loc) {
+          case "en-US":
+            return `Default value of number field ${key} cannot be a boolean`;
+          case "zh-TW":
+            return `數值欄位 ${key} 的預設值不可為布林值`;
+          case "zh-HK":
+            return `數值欄位 ${key} 的預設值不能為布林值`;
+          case "ja-JP":
+            return `数値フィールド ${key} の既定値に真偽値は指定できません`;
+          case "ko-KR":
+            return `숫자 필드 ${key}의 기본값은 불리언일 수 없습니다`;
+          default:
+            return m[0];
+        }
+      }
+      if (reason === "必须为有限数字") {
+        switch (loc) {
+          case "en-US":
+            return `Default value of number field ${key} must be a finite number`;
+          case "zh-TW":
+            return `數值欄位 ${key} 的預設值必須為有限數字`;
+          case "zh-HK":
+            return `數值欄位 ${key} 的預設值必須為有限數字`;
+          case "ja-JP":
+            return `数値フィールド ${key} の既定値は有限の数値である必要があります`;
+          case "ko-KR":
+            return `숫자 필드 ${key}의 기본값은 유한한 숫자여야 합니다`;
+          default:
+            return m[0];
+        }
+      }
+      switch (loc) {
+        case "en-US":
+          return `Default value of number field ${key} must be a number`;
+        case "zh-TW":
+          return `數值欄位 ${key} 的預設值必須為數字`;
+        case "zh-HK":
+          return `數值欄位 ${key} 的預設值必須為數字`;
+        case "ja-JP":
+          return `数値フィールド ${key} の既定値は数値である必要があります`;
+        case "ko-KR":
+          return `숫자 필드 ${key}의 기본값은 숫자여야 합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^布尔字段 (.+?) 的默认值必须为布尔值$/,
+    format: (m, loc) => {
+      const key = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Default value of boolean field ${key} must be a boolean`;
+        case "zh-TW":
+          return `布林欄位 ${key} 的預設值必須為布林值`;
+        case "zh-HK":
+          return `布林欄位 ${key} 的預設值必須為布林值`;
+        case "ja-JP":
+          return `真偽値フィールド ${key} の既定値は真偽値である必要があります`;
+        case "ko-KR":
+          return `불리언 필드 ${key}의 기본값은 불리언이어야 합니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^字段 (.+?) 不接受布尔值覆盖$/,
+    format: (m, loc) => {
+      const key = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Field ${key} does not accept a boolean override`;
+        case "zh-TW":
+          return `欄位 ${key} 不接受布林值覆寫`;
+        case "zh-HK":
+          return `欄位 ${key} 不接受布林值覆蓋`;
+        case "ja-JP":
+          return `フィールド ${key} は真偽値の上書きを受け付けません`;
+        case "ko-KR":
+          return `필드 ${key}은(는) 불리언 덮어쓰기를 허용하지 않습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
     re: /^分段时长必须在 ([\d.]+) 到 ([\d.]+) 秒之间$/,
     format: (m, loc) => {
       const [, lo, hi] = m;
@@ -13223,7 +14203,10 @@ const PATTERN_RULES: PatternRule[] = [
       ) {
         return false;
       }
-      if (COMFY_WS_NODE_OR_PHASE_LABELS.has(right)) {
+      if (
+        COMFY_WS_NODE_OR_PHASE_LABELS.has(right) ||
+        /^参考图 \d+$/.test(right)
+      ) {
         return true;
       }
       return (
@@ -15945,7 +16928,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^已撤销工作流分享链接 ([0-9a-hjkmnp-tv-z]+) 并注销关联访客会话$/,
+    re: /^已撤销工作流分享链接 ([0-9A-Za-z_-]+) 并注销关联访客会话$/,
     format: (m, loc) => {
       const id = m[1]!;
       switch (loc) {
@@ -15965,7 +16948,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^已删除工作流分享记录 ([0-9a-hjkmnp-tv-z]+)$/,
+    re: /^已删除工作流分享记录 ([0-9A-Za-z_-]+)$/,
     format: (m, loc) => {
       const id = m[1]!;
       switch (loc) {
@@ -15979,6 +16962,66 @@ const PATTERN_RULES: PatternRule[] = [
           return `ワークフロー共有履歴 ${id} を削除しました`;
         case "ko-KR":
           return `워크플로 공유 기록 ${id}을(를) 삭제했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^RTMP 推流编码失败[:：]\s*(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `RTMP stream encoding failed: ${detail}`;
+        case "zh-TW":
+          return `RTMP 串流推播編碼失敗：${detail}`;
+        case "zh-HK":
+          return `RTMP 推流編碼失敗：${detail}`;
+        case "ja-JP":
+          return `RTMP 配信のエンコードに失敗しました: ${detail}`;
+        case "ko-KR":
+          return `RTMP 스트림 인코딩 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^input 项数量超出上限（最多 (\d+) 项）$/,
+    format: (m, loc) => {
+      const limit = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Number of input items exceeds the limit (maximum ${limit})`;
+        case "zh-TW":
+          return `input 項目數量超出上限（最多 ${limit} 項）`;
+        case "zh-HK":
+          return `input 項目數量超出上限（最多 ${limit} 項）`;
+        case "ja-JP":
+          return `input 項目数が上限を超えています（最大 ${limit} 件）`;
+        case "ko-KR":
+          return `input 항목 수가 한도를 초과했습니다 (최대 ${limit}개)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^日志路径不是常规文件：(.+)$/,
+    format: (m, loc) => {
+      const name = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Log path is not a regular file: ${name}`;
+        case "zh-TW":
+          return `日誌路徑不是一般檔案：${name}`;
+        case "zh-HK":
+          return `日誌路徑不是常規檔案：${name}`;
+        case "ja-JP":
+          return `ログパスが通常のファイルではありません: ${name}`;
+        case "ko-KR":
+          return `로그 경로가 일반 파일이 아닙니다: ${name}`;
         default:
           return m[0];
       }
@@ -16618,6 +17661,75 @@ const LIVE_STUDIO_LABELS: Record<string, ColabOneLocaleTable> = {
     "ko-KR": "알 수 없음",
   },
 };
+
+function translateFashionImageLabel(
+  kind: string,
+  filename: string,
+  loc: ColabOneLocale,
+): string {
+  switch (kind) {
+    case "模特参考图":
+      switch (loc) {
+        case "en-US":
+          return `Model reference photo "${filename}"`;
+        case "zh-TW":
+          return `模特兒參考圖「${filename}」`;
+        case "zh-HK":
+          return `模特兒參考圖「${filename}」`;
+        case "ja-JP":
+          return `モデル参考写真「${filename}」`;
+        case "ko-KR":
+          return `모델 참고 사진 "${filename}"`;
+        default:
+          return `${kind}「${filename}」`;
+      }
+    case "服装参考图":
+      switch (loc) {
+        case "en-US":
+          return `Garment reference photo "${filename}"`;
+        case "zh-TW":
+          return `服裝參考圖「${filename}」`;
+        case "zh-HK":
+          return `服裝參考圖「${filename}」`;
+        case "ja-JP":
+          return `衣装参考写真「${filename}」`;
+        case "ko-KR":
+          return `의상 참고 사진 "${filename}"`;
+        default:
+          return `${kind}「${filename}」`;
+      }
+    case "棚拍场景参考图":
+      switch (loc) {
+        case "en-US":
+          return `Studio scene reference photo "${filename}"`;
+        case "zh-TW":
+          return `棚拍場景參考圖「${filename}」`;
+        case "zh-HK":
+          return `棚拍場景參考圖「${filename}」`;
+        case "ja-JP":
+          return `スタジオ背景参考写真「${filename}」`;
+        case "ko-KR":
+          return `스튜디오 배경 참고 사진 "${filename}"`;
+        default:
+          return `${kind}「${filename}」`;
+      }
+    default:
+      switch (loc) {
+        case "en-US":
+          return `Input image "${filename}"`;
+        case "zh-TW":
+          return `輸入圖片「${filename}」`;
+        case "zh-HK":
+          return `輸入圖片「${filename}」`;
+        case "ja-JP":
+          return `入力画像「${filename}」`;
+        case "ko-KR":
+          return `입력 이미지 "${filename}"`;
+        default:
+          return `${kind}「${filename}」`;
+      }
+  }
+}
 
 function translateLiveStudioLabel(raw: string, loc: ColabOneLocale): string {
   const key = raw.trim();

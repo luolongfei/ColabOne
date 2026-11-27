@@ -56,9 +56,17 @@ type ColabOneDesktop struct {
 	logMu            sync.Mutex
 	logWin           *mygo.Window
 	logStateGen      atomic.Uint64
-	trayMu           sync.Mutex
-	tray             *mygo.Tray
-	splashMu         sync.Mutex
+	trayMu             sync.Mutex
+	tray               *mygo.Tray
+	trayRefreshMu      sync.Mutex
+	trayRefreshRunning bool
+	trayRefreshPending bool
+	focusMainMu        sync.Mutex
+	focusMainRunning   bool
+	focusMainPending   bool
+	runOnMainFn        func(func())
+	isAppReadyFn       func() bool
+	splashMu           sync.Mutex
 	splashWin        *mygo.Window
 	splashState      *colabOneSplashViewState
 	splashFadeTimer  *time.Timer
@@ -203,14 +211,80 @@ func revealColabOneWindow(w *mygo.Window) {
 	w.Focus()
 }
 
-func (d *ColabOneDesktop) focusMainWindow() {
-	if !mygo.App.IsReady() || d.appQuitting.Load() {
+func (d *ColabOneDesktop) isAppReady() bool {
+	if d.isAppReadyFn != nil {
+		return d.isAppReadyFn()
+	}
+	return mygo.App.IsReady()
+}
+
+func (d *ColabOneDesktop) scheduleDetachedMainTask(
+	mu *sync.Mutex,
+	running *bool,
+	pending *bool,
+	task func(),
+) {
+	if d.appQuitting.Load() || !d.isAppReady() {
 		return
 	}
-	mygo.RunOnMain(func() {
-		if d.appQuitting.Load() {
-			return
+	mu.Lock()
+	*pending = true
+	if *running {
+		mu.Unlock()
+		return
+	}
+	*running = true
+	mu.Unlock()
+
+	runOnMain := d.runOnMainFn
+	if runOnMain == nil {
+		runOnMain = mygo.RunOnMain
+	}
+	go func() {
+		completed := false
+		defer func() {
+			if !completed {
+				mu.Lock()
+				*pending = false
+				*running = false
+				mu.Unlock()
+			}
+		}()
+		for {
+			mu.Lock()
+			if !*pending || d.appQuitting.Load() {
+				*pending = false
+				*running = false
+				completed = true
+				mu.Unlock()
+				return
+			}
+			*pending = false
+			mu.Unlock()
+
+			if d.appQuitting.Load() || !d.isAppReady() {
+				mu.Lock()
+				*pending = false
+				*running = false
+				completed = true
+				mu.Unlock()
+				return
+			}
+			runOnMain(func() {
+				if d.appQuitting.Load() {
+					return
+				}
+				task()
+			})
 		}
+	}()
+}
+
+func (d *ColabOneDesktop) focusMainWindow() {
+	if !d.isAppReady() || d.appQuitting.Load() {
+		return
+	}
+	d.scheduleDetachedMainTask(&d.focusMainMu, &d.focusMainRunning, &d.focusMainPending, func() {
 		if d.showMain != nil {
 			d.showMain()
 		}

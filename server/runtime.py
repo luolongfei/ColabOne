@@ -17,6 +17,7 @@ import threading
 import time
 import uuid
 import copy
+import weakref
 from functools import wraps
 from http.cookiejar import DefaultCookiePolicy
 from pathlib import Path
@@ -84,6 +85,13 @@ def _create_http_session() -> requests.Session:
     session.trust_env = False
     session.cookies.set_policy(DefaultCookiePolicy(allowed_domains=[]))
     return session
+
+
+def _close_http_session(session: requests.Session) -> None:
+    try:
+        session.close()
+    except Exception:
+        pass
 
 _BEARER_SECRET_RE = re.compile(r"(?i)\bBearer\s+[^\s'\"`,;}\]]+")
 _HF_TOKEN_RE = re.compile(r"\bhf_[A-Za-z0-9_-]{4,}\b")
@@ -340,13 +348,17 @@ class ColabOneRuntime:
         self._workflow_auto_release_grace_seconds = 3.0
         self._unassign_lock = threading.Lock()
         self._unassigned = False
+        self._live_starting = False
         self.http = http or _create_http_session()
         self.http.trust_env = False
         if isinstance(self.http, requests.Session):
             self.http.cookies.set_policy(DefaultCookiePolicy(allowed_domains=[]))
         self._http_local = threading.local()
         self._http_sessions_lock = threading.Lock()
-        self._http_sessions: list[requests.Session] = []
+        self._http_sessions: weakref.WeakSet[requests.Session] = weakref.WeakSet()
+        self._http_finalizers: weakref.WeakKeyDictionary[
+            requests.Session, weakref.finalize
+        ] = weakref.WeakKeyDictionary()
         self.drive = drive or ColabOneDrive(root, catalog, http=self.http)
         self._dirty_seq: dict[str, int] = {}
         self._seq_counter = 0
@@ -431,25 +443,33 @@ class ColabOneRuntime:
         if session is None:
             session = _create_http_session()
             self._http_local.session = session
+            fin: weakref.finalize | None = None
+            try:
+                fin = weakref.finalize(
+                    threading.current_thread(), _close_http_session, session
+                )
+            except TypeError:
+                fin = None
             with self._http_sessions_lock:
-                self._http_sessions.append(session)
+                self._http_sessions.add(session)
+                if fin is not None:
+                    self._http_finalizers[session] = fin
         return session
 
     def close_http_sessions(self) -> None:
         with self._http_sessions_lock:
             sessions = list(self._http_sessions)
+            finalizers = [self._http_finalizers.pop(s, None) for s in sessions]
             self._http_sessions.clear()
+            self._http_finalizers.clear()
         self._http_local = threading.local()
+        for fin in finalizers:
+            if fin is not None:
+                fin.detach()
         for session in sessions:
-            try:
-                session.close()
-            except Exception:
-                pass
+            _close_http_session(session)
         if isinstance(self.http, requests.Session):
-            try:
-                self.http.close()
-            except Exception:
-                pass
+            _close_http_session(self.http)
         close_drive = getattr(self.drive, "close_http_sessions", None)
         if callable(close_drive):
             close_drive()
@@ -469,10 +489,14 @@ class ColabOneRuntime:
             except Exception:
                 pass
 
-    def busy(self, *, _use_cached_queue: bool = False):
+    def busy(
+        self, *, _use_cached_queue: bool = False, _ignore_live_starting: bool = False
+    ):
         held_fn = getattr(self.lock, "held_by_current_thread", None)
         already_locked = bool(held_fn()) if callable(held_fn) else False
         with self.lock:
+            if self._live_starting and not _ignore_live_starting:
+                return True
             tasks = list(self.tasks.values())
         if any(t.state == "running" for t in tasks):
             return True
@@ -612,6 +636,7 @@ class ColabOneRuntime:
                 "comfyui_longcat_native",
                 "comfyui_workflow_auto_release",
                 "comfyui_live_studio",
+                "comfyui_fashion_tryon",
                 "comfyui_share_guard",
             ],
             "comfyui": comfy_status,
@@ -935,7 +960,8 @@ class ColabOneRuntime:
             target.parent.mkdir(parents=True, exist_ok=True)
             partial = target.with_name(target.name + ".part")
             stats = task.transfer
-            stats.file, stats.index = file.path, index
+            with stats.lock:
+                stats.file, stats.index = file.path, index
             if (
                 target.exists()
                 and target.stat().st_size == file.size
@@ -943,8 +969,9 @@ class ColabOneRuntime:
             ):
                 receipt[file.path] = file.sha256
                 done += file.size
-                stats.downloaded = done
-                stats.resumed += file.size
+                with stats.lock:
+                    stats.downloaded = done
+                    stats.resumed += file.size
                 task.note(
                     f"文件 {index}/{len(model.files)} 已存在且校验通过，跳过：{file.path}"
                 )
@@ -963,7 +990,8 @@ class ColabOneRuntime:
             headers = {"Authorization": f"Bearer {clean_token}"} if clean_token else {}
             url = f"https://huggingface.co/{file.repo}/resolve/{file.revision}/{quote(file.path)}"
             if file.size > CHUNK:
-                resumed_before = stats.resumed
+                with stats.lock:
+                    resumed_before = stats.resumed
                 try:
                     parallel_file(
                         url,
@@ -982,11 +1010,13 @@ class ColabOneRuntime:
                     task.note("下载源忽略范围请求，自动切换为单连接下载", "warning")
                     partial.unlink(missing_ok=True)
                     metadata_path(partial).unlink(missing_ok=True)
-                    stats.resumed = resumed_before
+                    with stats.lock:
+                        stats.resumed = resumed_before
                     self._download_single(url, headers, partial, file, task, done)
             else:
                 self._download_single(url, headers, partial, file, task, done)
-            stats.phase = "verifying"
+            with stats.lock:
+                stats.phase = "verifying"
             task.update(message="校验 SHA-256 · " + file.path)
             task.note(f"文件 {index}/{len(model.files)} 传输完成，正在校验 SHA-256")
             if (
@@ -1000,11 +1030,15 @@ class ColabOneRuntime:
             metadata_path(partial).unlink(missing_ok=True)
             receipt[file.path] = file.sha256
             done += file.size
-            stats.downloaded = done
+            with stats.lock:
+                stats.downloaded = done
             task.note(f"文件 {index}/{len(model.files)} 校验通过，已保存到远端")
-        elapsed = max(time.monotonic() - task.transfer.started, 0.1)
+        with task.transfer.lock:
+            elapsed = max(time.monotonic() - task.transfer.started, 0.1)
+            received_bytes = task.transfer.received
+            resumed_bytes = task.transfer.resumed
         task.note(
-            f"全部文件已验证：{total / 1024**3:.2f} GiB，用时 {elapsed:.1f} 秒，平均传输 {task.transfer.received / elapsed / 1024**2:.1f} MiB/s；复用 {task.transfer.resumed / 1024**2:.1f} MiB"
+            f"全部文件已验证：{total / 1024**3:.2f} GiB，用时 {elapsed:.1f} 秒，平均传输 {received_bytes / elapsed / 1024**2:.1f} MiB/s；复用 {resumed_bytes / 1024**2:.1f} MiB"
         )
         atomic_json(directory / "verified.json", receipt)
 
@@ -1016,9 +1050,10 @@ class ColabOneRuntime:
             partial.unlink()
             offset = 0
         stats = task.transfer
-        stats.downloaded = done + offset
-        stats.resumed += offset
-        stats.phase = "downloading"
+        with stats.lock:
+            stats.downloaded = done + offset
+            stats.resumed += offset
+            stats.phase = "downloading"
         if offset == file.size:
             return
         max_attempts = 3
@@ -1061,7 +1096,8 @@ class ColabOneRuntime:
                     req_headers["Range"] = f"bytes={offset}-"
                 before_offset = offset
                 response_status = 0
-                stats.active = 1
+                with stats.lock:
+                    stats.active = 1
                 try:
                     with self._http_session().get(
                         url, headers=req_headers, stream=True, timeout=(10, 30)
@@ -1074,16 +1110,18 @@ class ColabOneRuntime:
                         response_status = response.status_code
                         if response_status == 416 and offset > 0:
                             error_attempts += 1
-                            stats.resumed = max(0, stats.resumed - offset)
+                            with stats.lock:
+                                stats.resumed = max(0, stats.resumed - offset)
+                                stats.downloaded = done
                             partial.unlink(missing_ok=True)
                             offset = 0
-                            stats.downloaded = done
                             if error_attempts >= max_attempts:
                                 raise RuntimeError("单连接下载失败（HTTP 416）")
                             continue
                         response.raise_for_status()
                         if offset and response_status != 206:
-                            stats.resumed = max(0, stats.resumed - offset)
+                            with stats.lock:
+                                stats.resumed = max(0, stats.resumed - offset)
                             offset = 0
                         if response_status == 206:
                             cr = response.headers.get("Content-Range", "").strip()
@@ -1104,14 +1142,20 @@ class ColabOneRuntime:
                                     stream.write(block)
                                     offset += len(block)
                                     stats.wire(len(block))
-                                    stats.downloaded = done + offset
-                                    task.update(progress=(done + offset) / stats.total)
                                     now = time.monotonic()
-                                    if now - stats.last_report >= 5:
-                                        stats.last_report = now
+                                    should_report = False
+                                    with stats.lock:
+                                        stats.downloaded = done + offset
+                                        total_bytes = stats.total
+                                        cur_downloaded = stats.downloaded
+                                        if now - stats.last_report >= 5:
+                                            stats.last_report = now
+                                            should_report = True
+                                    task.update(progress=(done + offset) / total_bytes)
+                                    if should_report:
                                         view = stats.snapshot()
                                         task.note(
-                                            f"进度 {100 * stats.downloaded / stats.total:.1f}% · {stats.downloaded / 1024**3:.2f}/{stats.total / 1024**3:.2f} GiB · {view['speed_bps'] / 1024**2:.1f} MiB/s · 单连接"
+                                            f"进度 {100 * cur_downloaded / total_bytes:.1f}% · {cur_downloaded / 1024**3:.2f}/{total_bytes / 1024**3:.2f} GiB · {view['speed_bps'] / 1024**2:.1f} MiB/s · 单连接"
                                         )
                             finally:
                                 stream.flush()
@@ -1197,7 +1241,8 @@ class ColabOneRuntime:
                 finally:
                     with active_lock:
                         active_response[0] = None
-                    stats.active = 0
+                    with stats.lock:
+                        stats.active = 0
         finally:
             if task_lock is not None:
                 with task_lock:
@@ -1249,11 +1294,15 @@ class ColabOneRuntime:
             prev_cancel_hook = getattr(task, "cancel_hook", None)
             task.cancel_hook = _cancel_active_response
         try:
+            max_asset_bytes = 2 * 1024**3
+            max_asset_seconds = 600.0
             for i, asset in enumerate(config["assets"]):
                 task.check()
                 task.note(f"下载引擎组件 {i + 1}/{len(config['assets'])}")
                 task.update(message="安装远端 CUDA 推理引擎")
                 target = root / f"asset-{i}.tar.gz"
+                asset_started = time.monotonic()
+                downloaded_bytes = 0
                 try:
                     with self._http_session().get(
                         asset["url"], stream=True, timeout=(15, 60)
@@ -1267,8 +1316,13 @@ class ColabOneRuntime:
                         with target.open("wb") as out:
                             for chunk in r.iter_content(1024**2):
                                 task.check()
+                                if time.monotonic() - asset_started > max_asset_seconds:
+                                    raise RuntimeError("推理引擎下载超时，请稍后重试")
                                 if not chunk:
                                     continue
+                                downloaded_bytes += len(chunk)
+                                if downloaded_bytes > max_asset_bytes:
+                                    raise RuntimeError("推理引擎安装包大小异常")
                                 out.write(chunk)
                             out.flush()
                             try:
@@ -2093,23 +2147,27 @@ class ColabOneRuntime:
             raise RuntimeError("推理进程已退出，模型未加载成功，请查看运行日志")
         self.loaded, self.active_options = model_id, options or {}
 
+    @staticmethod
+    def _terminate_engine_proc(proc) -> None:
+        if proc:
+            if proc.poll() is None:
+                proc.terminate()
+            try:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+
     def _stop_engine(self):
         with self._engine_lifecycle_lock:
             with self.lock:
                 proc = self.proc
                 self.proc, self.loaded = None, None
                 self.active_options = {}
-            if proc:
-                if proc.poll() is None:
-                    proc.terminate()
-                try:
-                    proc.wait(timeout=15)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    try:
-                        proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        pass
+            self._terminate_engine_proc(proc)
 
     def unload(self):
         self._refresh_comfy_queue_if_needed()
@@ -2117,8 +2175,11 @@ class ColabOneRuntime:
             with self.lock:
                 if self.busy():
                     raise ColabOneConflictError("请先停止当前任务")
+                proc = self.proc
+                self.proc, self.loaded = None, None
+                self.active_options = {}
                 comfy_running = self.comfy.is_running()
-            self._stop_engine()
+            self._terminate_engine_proc(proc)
         if callable(
             getattr(self.comfy.tts, "cancel_prefetch_and_release_warm_worker", None)
         ):
@@ -2549,6 +2610,7 @@ class ColabOneRuntime:
                     return
             time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
 
+        self._refresh_comfy_queue_if_needed()
         with self.lock:
             if (
                 self.stopping.is_set()
@@ -3071,158 +3133,163 @@ class ColabOneRuntime:
                 raise ColabOneConflictError("实例正在准备释放")
             if self.busy():
                 raise ColabOneConflictError("请先等待当前任务完成或停止后再启动实时演播")
-        payload = (
-            config.model_dump()
-            if hasattr(config, "model_dump")
-            else dict(config or {})
-        )
-        cfg_view = (
-            payload.get("config")
-            if isinstance(payload.get("config"), dict)
-            else (
-                payload.get("session")
-                if isinstance(payload.get("session"), dict)
-                else payload
-            )
-        )
-        raw_secrets = self._extract_live_secrets(payload)
-        llm_mode = str(cfg_view.get("llm_mode") or "local_gguf").strip().lower()
-        canvas_config = payload.get("canvas_config")
+            self._live_starting = True
         try:
-            # 1. Fail-fast VRAM preflight BEFORE stopping any running workload.
-            gpu = self.gpu_info()
-            loaded_vram_mib = self._loaded_model_vram_mib()
-            need_unload_llm = False
-            if llm_mode == "local_gguf":
-                vram = self.live.check_vram(
-                    payload, gpu, loaded_model_vram_mib=loaded_vram_mib
+            payload = (
+                config.model_dump()
+                if hasattr(config, "model_dump")
+                else dict(config or {})
+            )
+            cfg_view = (
+                payload.get("config")
+                if isinstance(payload.get("config"), dict)
+                else (
+                    payload.get("session")
+                    if isinstance(payload.get("session"), dict)
+                    else payload
                 )
-                if not vram.get("ok"):
-                    raise ValueError(self._format_live_vram_error(vram))
-            else:
-                vram_solo = self.live.check_vram(
-                    payload, gpu, loaded_model_vram_mib=0
-                )
-                if not vram_solo.get("ok"):
-                    raise ValueError(self._format_live_vram_error(vram_solo))
-                if self.loaded or self.proc:
-                    vram_with_llm = self.live.check_vram(
-                        payload, gpu, loaded_model_vram_mib=loaded_vram_mib
-                    )
-                    if not (
-                        vram_with_llm.get("ok")
-                        and vram_with_llm.get("can_co_locate_llm")
-                    ):
-                        need_unload_llm = True
-
-            # 2. Stop offline ComfyUI (process + tasks + warm TTS) BEFORE acquiring
-            #    _live_lifecycle_lock so _live_lifecycle_lock and _comfy_lifecycle_lock
-            #    are never held simultaneously.
-            with self.lock:
-                has_comfy_task = any(
-                    t.state == "running"
-                    and t.kind
-                    in (
-                        "comfyui_start",
-                        "comfyui_run",
-                        "comfyui_tts_preview",
-                        "live_build_pack",
-                    )
-                    for t in self.tasks.values()
-                )
-            if (
-                self.comfy.is_running()
-                or self.comfy.proc is not None
-                or has_comfy_task
-            ):
-                self._stop_comfy_process_only()
-            elif callable(
-                getattr(self.comfy.tts, "cancel_prefetch_and_release_warm_worker", None)
-            ):
-                self.comfy.tts.cancel_prefetch_and_release_warm_worker(
-                    "live_studio_start"
-                )
-
-            # 3. Acquire _live_lifecycle_lock to re-evaluate VRAM/LLM state and start Live Studio.
-            with self._live_lifecycle_lock:
-                with self.lock:
-                    if self.quiescing or self.stopping.is_set():
-                        raise ColabOneConflictError("实例正在准备释放")
-                    if self.busy():
-                        raise ColabOneConflictError(
-                            "请先等待当前任务完成或停止后再启动实时演播"
-                        )
-                    llm_active = bool(self.loaded or self.proc)
-                gpu_now = self.gpu_info()
+            )
+            raw_secrets = self._extract_live_secrets(payload)
+            llm_mode = str(cfg_view.get("llm_mode") or "local_gguf").strip().lower()
+            canvas_config = payload.get("canvas_config")
+            try:
+                # 1. Fail-fast VRAM preflight BEFORE stopping any running workload.
+                gpu = self.gpu_info()
                 loaded_vram_mib = self._loaded_model_vram_mib()
                 need_unload_llm = False
                 if llm_mode == "local_gguf":
-                    vram_now = self.live.check_vram(
-                        payload, gpu_now, loaded_model_vram_mib=loaded_vram_mib
+                    vram = self.live.check_vram(
+                        payload, gpu, loaded_model_vram_mib=loaded_vram_mib
                     )
-                    if not vram_now.get("ok"):
-                        raise ValueError(self._format_live_vram_error(vram_now))
+                    if not vram.get("ok"):
+                        raise ValueError(self._format_live_vram_error(vram))
                 else:
-                    vram_solo_now = self.live.check_vram(
-                        payload, gpu_now, loaded_model_vram_mib=0
+                    vram_solo = self.live.check_vram(
+                        payload, gpu, loaded_model_vram_mib=0
                     )
-                    if not vram_solo_now.get("ok"):
-                        raise ValueError(self._format_live_vram_error(vram_solo_now))
-                    if llm_active:
-                        vram_with_llm_now = self.live.check_vram(
-                            payload, gpu_now, loaded_model_vram_mib=loaded_vram_mib
+                    if not vram_solo.get("ok"):
+                        raise ValueError(self._format_live_vram_error(vram_solo))
+                    if self.loaded or self.proc:
+                        vram_with_llm = self.live.check_vram(
+                            payload, gpu, loaded_model_vram_mib=loaded_vram_mib
                         )
                         if not (
-                            vram_with_llm_now.get("ok")
-                            and vram_with_llm_now.get("can_co_locate_llm")
+                            vram_with_llm.get("ok")
+                            and vram_with_llm.get("can_co_locate_llm")
                         ):
                             need_unload_llm = True
-                if need_unload_llm:
-                    self._stop_engine()
-                    loaded_vram_mib = 0
-                    gpu_now = self.gpu_info()
 
-                started_canvas_here = False
-                if (
-                    isinstance(canvas_config, dict)
-                    and canvas_config
-                    and not self.comfy.canvas.enabled
-                ):
-                    self.comfy.canvas.start(canvas_config)
-                    started_canvas_here = True
-
-                try:
-                    result = self.live.start(
-                        payload,
-                        gpu_info=gpu_now,
-                        loaded_model_vram_mib=loaded_vram_mib,
-                        on_activity=self.touch,
+                # 2. Stop offline ComfyUI (process + tasks + warm TTS) BEFORE acquiring
+                #    _live_lifecycle_lock so _live_lifecycle_lock and _comfy_lifecycle_lock
+                #    are never held simultaneously.
+                with self.lock:
+                    has_comfy_task = any(
+                        t.state == "running"
+                        and t.kind
+                        in (
+                            "comfyui_start",
+                            "comfyui_run",
+                            "comfyui_tts_preview",
+                            "live_build_pack",
+                        )
+                        for t in self.tasks.values()
                     )
-                except Exception:
-                    if started_canvas_here:
-                        try:
-                            self.comfy.canvas.stop()
-                        except Exception:
-                            pass
-                    raise
-            self.touch()
-            return result
-        except ColabOneConflictError:
-            raise
-        except ValueError as exc:
-            raw_msg = str(exc) or type(exc).__name__
-            scrubbed = _scrub_secret_text(raw_msg, *raw_secrets)
-            if scrubbed != raw_msg:
-                raise ValueError(scrubbed) from None
-            raise
-        except KeyError:
-            raise
-        except Exception as exc:
-            raw_msg = str(exc) or type(exc).__name__
-            scrubbed = _scrub_secret_text(raw_msg, *raw_secrets)
-            if scrubbed != raw_msg:
-                raise RuntimeError(scrubbed) from None
-            raise
+                if (
+                    self.comfy.is_running()
+                    or self.comfy.proc is not None
+                    or has_comfy_task
+                ):
+                    self._stop_comfy_process_only()
+                elif callable(
+                    getattr(self.comfy.tts, "cancel_prefetch_and_release_warm_worker", None)
+                ):
+                    self.comfy.tts.cancel_prefetch_and_release_warm_worker(
+                        "live_studio_start"
+                    )
+
+                # 3. Acquire _live_lifecycle_lock to re-evaluate VRAM/LLM state and start Live Studio.
+                with self._live_lifecycle_lock:
+                    with self.lock:
+                        if self.quiescing or self.stopping.is_set():
+                            raise ColabOneConflictError("实例正在准备释放")
+                        if self.busy(_ignore_live_starting=True):
+                            raise ColabOneConflictError(
+                                "请先等待当前任务完成或停止后再启动实时演播"
+                            )
+                        llm_active = bool(self.loaded or self.proc)
+                    gpu_now = self.gpu_info()
+                    loaded_vram_mib = self._loaded_model_vram_mib()
+                    need_unload_llm = False
+                    if llm_mode == "local_gguf":
+                        vram_now = self.live.check_vram(
+                            payload, gpu_now, loaded_model_vram_mib=loaded_vram_mib
+                        )
+                        if not vram_now.get("ok"):
+                            raise ValueError(self._format_live_vram_error(vram_now))
+                    else:
+                        vram_solo_now = self.live.check_vram(
+                            payload, gpu_now, loaded_model_vram_mib=0
+                        )
+                        if not vram_solo_now.get("ok"):
+                            raise ValueError(self._format_live_vram_error(vram_solo_now))
+                        if llm_active:
+                            vram_with_llm_now = self.live.check_vram(
+                                payload, gpu_now, loaded_model_vram_mib=loaded_vram_mib
+                            )
+                            if not (
+                                vram_with_llm_now.get("ok")
+                                and vram_with_llm_now.get("can_co_locate_llm")
+                            ):
+                                need_unload_llm = True
+                    if need_unload_llm:
+                        self._stop_engine()
+                        loaded_vram_mib = 0
+                        gpu_now = self.gpu_info()
+
+                    started_canvas_here = False
+                    if (
+                        isinstance(canvas_config, dict)
+                        and canvas_config
+                        and not self.comfy.canvas.enabled
+                    ):
+                        self.comfy.canvas.start(canvas_config)
+                        started_canvas_here = True
+
+                    try:
+                        result = self.live.start(
+                            payload,
+                            gpu_info=gpu_now,
+                            loaded_model_vram_mib=loaded_vram_mib,
+                            on_activity=self.touch,
+                        )
+                    except Exception:
+                        if started_canvas_here:
+                            try:
+                                self.comfy.canvas.stop()
+                            except Exception:
+                                pass
+                        raise
+                self.touch()
+                return result
+            except ColabOneConflictError:
+                raise
+            except ValueError as exc:
+                raw_msg = str(exc) or type(exc).__name__
+                scrubbed = _scrub_secret_text(raw_msg, *raw_secrets)
+                if scrubbed != raw_msg:
+                    raise ValueError(scrubbed) from None
+                raise
+            except KeyError:
+                raise
+            except Exception as exc:
+                raw_msg = str(exc) or type(exc).__name__
+                scrubbed = _scrub_secret_text(raw_msg, *raw_secrets)
+                if scrubbed != raw_msg:
+                    raise RuntimeError(scrubbed) from None
+                raise
+        finally:
+            with self.lock:
+                self._live_starting = False
 
     def stop_live_studio(self) -> dict:
         with self._live_lifecycle_lock:
@@ -3481,7 +3548,18 @@ class ColabOneRuntime:
                     raise RuntimeError(scrubbed) from None
                 raise
 
-        return self.submit("live_build_pack", avatar_id, _execute)
+        with self._comfy_lifecycle_lock:
+            if callable(
+                getattr(self.comfy.tts, "cancel_prefetch_and_release_warm_worker", None)
+            ):
+                self.comfy.tts.cancel_prefetch_and_release_warm_worker("live_build_pack")
+            self._refresh_comfy_queue_if_needed()
+            with self.lock:
+                if self.quiescing or self.stopping.is_set():
+                    raise ColabOneConflictError("实例正在准备释放")
+                if self.busy():
+                    raise ColabOneConflictError("请等待当前任务完成，或先停止它")
+                return self.submit("live_build_pack", avatar_id, _execute)
 
     def delete(self, model_id):
         self._refresh_comfy_queue_if_needed()

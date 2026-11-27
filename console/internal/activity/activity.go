@@ -1753,7 +1753,11 @@ func redactSecretJSONObject(s string) (string, bool) {
 			stack[topIdx] = jsonStateObjValue
 
 		case jsonStateObjValue:
-			if s[pos] == '{' {
+			if markerLen := matchRedactionPlaceholderPrefix(s[pos:]); markerLen > 0 {
+				b.WriteString(redactedValue)
+				pos = scanUnquotedSecretTail(s, pos+markerLen)
+				stack[topIdx] = jsonStateObjComma
+			} else if s[pos] == '{' {
 				b.WriteByte('{')
 				pos++
 				stack[topIdx] = jsonStateObjComma
@@ -1801,6 +1805,10 @@ func redactSecretJSONObject(s string) (string, bool) {
 				b.WriteByte(']')
 				pos++
 				stack = stack[:topIdx]
+			} else if markerLen := matchRedactionPlaceholderPrefix(s[pos:]); markerLen > 0 {
+				b.WriteString(redactedValue)
+				pos = scanUnquotedSecretTail(s, pos+markerLen)
+				stack[topIdx] = jsonStateArrComma
 			} else if s[pos] == '{' {
 				b.WriteByte('{')
 				pos++
@@ -1904,7 +1912,11 @@ func redactUnclosedSecretJSONObject(text string, openIdx int) (string, int, bool
 			stack[topIdx] = jsonStateObjValue
 
 		case jsonStateObjValue:
-			if text[pos] == '{' {
+			if markerLen := matchRedactionPlaceholderPrefix(text[pos:]); markerLen > 0 {
+				b.WriteString(redactedValue)
+				pos = scanUnquotedSecretTail(text, pos+markerLen)
+				stack[topIdx] = jsonStateObjComma
+			} else if text[pos] == '{' {
 				b.WriteByte('{')
 				pos++
 				stack[topIdx] = jsonStateObjComma
@@ -1929,6 +1941,10 @@ func redactUnclosedSecretJSONObject(text string, openIdx int) (string, int, bool
 				b.WriteString(text[pos:end])
 				pos = end
 				stack[topIdx] = jsonStateObjComma
+			} else if end := scanUnquotedSecretTail(text, pos); end > pos {
+				b.WriteString(redactedValue)
+				pos = end
+				stack[topIdx] = jsonStateObjComma
 			} else {
 				goto done
 			}
@@ -1951,6 +1967,10 @@ func redactUnclosedSecretJSONObject(text string, openIdx int) (string, int, bool
 				b.WriteByte(']')
 				pos++
 				stack = stack[:topIdx]
+			} else if markerLen := matchRedactionPlaceholderPrefix(text[pos:]); markerLen > 0 {
+				b.WriteString(redactedValue)
+				pos = scanUnquotedSecretTail(text, pos+markerLen)
+				stack[topIdx] = jsonStateArrComma
 			} else if text[pos] == '{' {
 				b.WriteByte('{')
 				pos++
@@ -1974,6 +1994,10 @@ func redactUnclosedSecretJSONObject(text string, openIdx int) (string, int, bool
 				stack[topIdx] = jsonStateArrComma
 			} else if end, ok := scanJSONBareScalar(text, pos); ok {
 				b.WriteString(text[pos:end])
+				pos = end
+				stack[topIdx] = jsonStateArrComma
+			} else if end := scanUnquotedSecretTail(text, pos); end > pos {
+				b.WriteString(redactedValue)
 				pos = end
 				stack[topIdx] = jsonStateArrComma
 			} else {

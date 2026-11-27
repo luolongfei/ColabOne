@@ -242,6 +242,7 @@ def test_server_app_boots_offline_with_protocol_7_and_auth_contract(tmp_path, mo
             "comfyui_longcat_native",
             "comfyui_workflow_auto_release",
             "comfyui_live_studio",
+            "comfyui_fashion_tryon",
             "comfyui_share_guard",
         ]
         assert status["state"] == "ready"
@@ -1217,9 +1218,61 @@ def test_web_and_go_brand_icons_stay_in_sync_with_master_software_logo():
     assert "../console/internal/brandicon/apple-touch-icon.png" in index_html
 
 
-def test_share_digital_human_ids_match_catalog():
+def test_fashion_tryon_ts_constants_and_share_digital_human_ids_match_python_and_catalog():
+    from server.fashion_tryon import (
+        COLABONE_FASHION_BF16_THRESHOLD_MIB,
+        COLABONE_FASHION_MIN_VRAM_BF16_MIB,
+        COLABONE_FASHION_MIN_VRAM_INT8_MIB,
+        resolve_colabone_fashion_models,
+    )
+
+    comfyui_ts = (ROOT / "frontend" / "src" / "comfyui.ts").read_text(encoding="utf-8")
+
+    def _parse_ts_int_sum(const_name: str) -> int:
+        match = re.search(
+            rf"\bconst\s+{const_name}\s*=\s*([^;]+);",
+            comfyui_ts,
+            re.MULTILINE,
+        )
+        assert match is not None, f"Missing {const_name} in frontend/src/comfyui.ts"
+        expr = match.group(1)
+        terms = [part.strip() for part in expr.split("+")]
+        assert terms, f"Empty numeric expression for {const_name}"
+        total = 0
+        for term in terms:
+            cleaned = term.replace("_", "")
+            assert cleaned.isdigit(), f"Non-integer term {term!r} in {const_name}"
+            total += int(cleaned)
+        return total
+
+    assert _parse_ts_int_sum("COLABONE_FASHION_BF16_THRESHOLD_MIB") == COLABONE_FASHION_BF16_THRESHOLD_MIB
+    assert _parse_ts_int_sum("COLABONE_FASHION_MIN_VRAM_BF16_MIB") == COLABONE_FASHION_MIN_VRAM_BF16_MIB
+    assert _parse_ts_int_sum("COLABONE_FASHION_MIN_VRAM_INT8_MIB") == COLABONE_FASHION_MIN_VRAM_INT8_MIB
+
+    bf16_base_models, _ = resolve_colabone_fashion_models("bf16", garment_cleanup="off")
+    bf16_full_models, _ = resolve_colabone_fashion_models("bf16", garment_cleanup="rmbg3")
+    int8_base_models, _ = resolve_colabone_fashion_models("int8", garment_cleanup="off")
+    int8_full_models, _ = resolve_colabone_fashion_models("int8", garment_cleanup="rmbg3")
+
+    bf16_minimax_bytes = sum(int(m["size"]) for m in bf16_base_models)
+    bf16_rmbg3_bytes = sum(int(m["size"]) for m in bf16_full_models) - bf16_minimax_bytes
+    int8_minimax_bytes = sum(int(m["size"]) for m in int8_base_models)
+    int8_rmbg3_bytes = sum(int(m["size"]) for m in int8_full_models) - int8_minimax_bytes
+
+    assert _parse_ts_int_sum("COLABONE_FASHION_BF16_MINIMAX_BYTES") == bf16_minimax_bytes
+    assert _parse_ts_int_sum("COLABONE_FASHION_BF16_RMBG3_BYTES") == bf16_rmbg3_bytes
+    assert _parse_ts_int_sum("COLABONE_FASHION_INT8_MINIMAX_BYTES") == int8_minimax_bytes
+    assert _parse_ts_int_sum("COLABONE_FASHION_INT8_RMBG3_BYTES") == int8_rmbg3_bytes
+
     comfy_raw = json.loads((ROOT / "catalog" / "comfyui.json").read_text(encoding="utf-8"))
     catalog = ComfyCatalog.model_validate(comfy_raw)
+    by_id = {tpl.id: tpl for tpl in catalog.templates}
+
+    fashion_tpl = by_id["fashion-tryon-h3"]
+    assert fashion_tpl.min_vram_mib == COLABONE_FASHION_MIN_VRAM_INT8_MIB
+    expected_int8_rmbg3_disk_mib = ((int8_minimax_bytes + int8_rmbg3_bytes) // (1024 * 1024)) + 4096
+    assert fashion_tpl.min_disk_mib >= expected_int8_rmbg3_disk_mib
+
     catalog_dh_ids = {
         tpl.id
         for tpl in catalog.templates

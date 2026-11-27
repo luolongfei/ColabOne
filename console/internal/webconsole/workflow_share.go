@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -80,6 +81,8 @@ const (
 	maxWorkflowSharePreviewsPerShare   = 128
 	maxWorkflowShareOutputsTracked     = 4096
 	maxWorkflowShareUploadBodyBytes    = int64(96 << 20)
+	maxWorkflowShareConcurrentUploads  = 2
+	maxGuestOverrideStringRunes        = 200000
 	workflowShareTaskRetention         = 2 * time.Minute
 	workflowShareRateLimitMaxPerIP     = 5
 	workflowShareRateLimitMaxGlobal    = 25
@@ -89,7 +92,24 @@ const (
 var (
 	workflowShareIDRe          = regexp.MustCompile(`^[0-9a-hjkmnp-tv-z]{12}$`)
 	workflowShareWorkflowIDRe  = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,80}$`)
+	workflowShareVoicePresetRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+	guestHostUnixPathRe        = regexp.MustCompile(`(?:^|[\s"'(\[:=])/(?:content|home|Users|tmp|var|etc|root|opt|mnt|proc|sys|Volumes)/`)
+	guestHostWinPathRe         = regexp.MustCompile(`(?i)(?:^|[\s"'(\[:=])[a-z]:\\`)
+	guestSensitiveTokenRe      = regexp.MustCompile(`(?i)\b(?:hf_[a-z0-9]{8,}|ya29\.[a-z0-9._-]{8,}|co_wf_[a-z0-9._-]{8,}|co_web_[a-z0-9._-]{8,}|sk-[a-z0-9_-]{12,}|bearer\s+[a-z0-9._~+/-]{8,})`)
 	builtinDigitalHumanIDs     = []string{"digital-human-infinitetalk", "digital-human-longcat"}
+	guestAllowedTtsPreviewFields = []string{
+		"preview_id",
+		"cached",
+		"engine_id",
+		"voice_preset",
+		"text",
+		"sample_rate",
+		"duration_seconds",
+		"mime",
+		"size",
+		"sha256",
+		"data",
+	}
 	guestAllowedOutputFields   = []string{
 		"id",
 		"workflow_id",
@@ -1826,13 +1846,17 @@ func (w *ColabOneWebConsole) reconcileShareOutputsMap(snap map[string]any, stamp
 				w.shareTasks[tid] = tt
 				tasksChanged = true
 			}
-		} else if tt.FinishedAt == 0 &&
-			hostState == "ready" &&
-			(tt.HostRuntimeID == "" || tt.HostRuntimeID == currentHostRuntimeID) &&
-			nowUnix-tt.StartedAt > 30 {
-			tt.FinishedAt = nowUnix
-			w.shareTasks[tid] = tt
-			tasksChanged = true
+		} else if tt.FinishedAt == 0 && hostState == "ready" {
+			if tt.HostRuntimeID != "" && currentHostRuntimeID != "" && tt.HostRuntimeID != currentHostRuntimeID {
+				tt.FinishedAt = nowUnix
+				tt.FallbackClosed = true
+				w.shareTasks[tid] = tt
+				tasksChanged = true
+			} else if (tt.HostRuntimeID == "" || tt.HostRuntimeID == currentHostRuntimeID) && nowUnix-tt.StartedAt > 30 {
+				tt.FinishedAt = nowUnix
+				w.shareTasks[tid] = tt
+				tasksChanged = true
+			}
 		}
 	}
 
@@ -1898,6 +1922,9 @@ func (w *ColabOneWebConsole) reconcileShareOutputsMap(snap map[string]any, stamp
 			}
 			continue
 		}
+		if strings.EqualFold(strings.TrimSpace(shareAsString(outMap["storage"])), "drive") {
+			continue
+		}
 
 		outTaskID := strings.TrimSpace(shareAsString(outMap["task_id"]))
 		outCreated := shareAsFloat64(outMap["created_at"])
@@ -1912,7 +1939,7 @@ func (w *ColabOneWebConsole) reconcileShareOutputsMap(snap map[string]any, stamp
 				cp := tt
 				matchedTask = &cp
 			}
-		} else if hostState == "ready" && !strings.EqualFold(strings.TrimSpace(shareAsString(outMap["storage"])), "drive") {
+		} else if hostState == "ready" {
 			// Fallback attribution for un-upgraded remote instances that omit task_id on comfy_outputs.
 			// Uses same-clock remote timestamps, requires matching HostRuntimeID, never matches
 			// storage="drive" or tasks lacking RemoteCreatedAt, and prefers strict interval bracketing.
@@ -2044,12 +2071,14 @@ func isCrossSiteSubresourceRequest(r *http.Request) bool {
 func computeWorkflowShareSwitchSignature(
 	hmacKey []byte,
 	sessionDigest [32]byte,
-	targetShareID, targetNonceB64, tokenNonceB64 string,
+	currentShareID, targetShareID, targetNonceB64, tokenNonceB64 string,
 	expUnix int64,
 ) []byte {
 	mac := hmac.New(sha256.New, hmacKey)
 	mac.Write([]byte(workflowShareSwitchHMACContext))
 	mac.Write([]byte(hex.EncodeToString(sessionDigest[:])))
+	mac.Write([]byte(":"))
+	mac.Write([]byte(currentShareID))
 	mac.Write([]byte(":"))
 	mac.Write([]byte(targetShareID))
 	mac.Write([]byte(":"))
@@ -2064,7 +2093,7 @@ func computeWorkflowShareSwitchSignature(
 func generateWorkflowShareSwitchToken(
 	hmacKey []byte,
 	sessionDigest [32]byte,
-	targetShareID, targetNonceB64 string,
+	currentShareID, targetShareID, targetNonceB64 string,
 	now time.Time,
 ) (string, error) {
 	if len(hmacKey) != workflowShareHMACKeyBytes {
@@ -2076,7 +2105,7 @@ func generateWorkflowShareSwitchToken(
 	}
 	tokenNonceB64 := base64.RawURLEncoding.EncodeToString(nonceRaw)
 	expUnix := now.Add(workflowShareSwitchTokenTTL).Unix()
-	sig := computeWorkflowShareSwitchSignature(hmacKey, sessionDigest, targetShareID, targetNonceB64, tokenNonceB64, expUnix)
+	sig := computeWorkflowShareSwitchSignature(hmacKey, sessionDigest, currentShareID, targetShareID, targetNonceB64, tokenNonceB64, expUnix)
 	sigB64 := base64.RawURLEncoding.EncodeToString(sig)
 	return targetShareID + "." + tokenNonceB64 + "." + strconv.FormatInt(expUnix, 10) + "." + sigB64, nil
 }
@@ -2084,6 +2113,7 @@ func generateWorkflowShareSwitchToken(
 func (w *ColabOneWebConsole) verifyWorkflowShareSwitchTokenLocked(
 	rawToken string,
 	sessionDigest [32]byte,
+	currentShareID string,
 	now time.Time,
 ) (string, string, bool) {
 	if len(w.shareHMACKey) != workflowShareHMACKeyBytes {
@@ -2113,7 +2143,7 @@ func (w *ColabOneWebConsole) verifyWorkflowShareSwitchTokenLocked(
 	if !exists {
 		return "", workflowShareErrInvalid, false
 	}
-	expectedSig := computeWorkflowShareSwitchSignature(w.shareHMACKey, sessionDigest, targetShareID, rec.NonceB64, tokenNonceB64, expUnix)
+	expectedSig := computeWorkflowShareSwitchSignature(w.shareHMACKey, sessionDigest, currentShareID, targetShareID, rec.NonceB64, tokenNonceB64, expUnix)
 	if subtle.ConstantTimeCompare(sigBytes, expectedSig) != 1 {
 		return "", workflowShareErrInvalid, false
 	}
@@ -2264,7 +2294,7 @@ func (w *ColabOneWebConsole) handleWorkflowShareEntry(rw http.ResponseWriter, r 
 			}
 
 			if showConfirm {
-				switchToken, tokErr := generateWorkflowShareSwitchToken(hmacKeyCopy, currentDigest, targetShareID, targetNonceB64, now)
+				switchToken, tokErr := generateWorkflowShareSwitchToken(hmacKeyCopy, currentDigest, currentShareID, targetShareID, targetNonceB64, now)
 				if tokErr != nil {
 					http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
 					return
@@ -2335,17 +2365,31 @@ func (w *ColabOneWebConsole) handleWorkflowShareEntry(rw http.ResponseWriter, r 
 		return
 	}
 
+	newDigest := sha256.Sum256([]byte(token))
 	consumed := false
+	consumedAt := now.Unix()
 	rec := w.workflowShares[targetShareID]
 	if rec.SingleUse {
-		rec.ConsumedAt = now.Unix()
+		rec.ConsumedAt = consumedAt
 		w.workflowShares[targetShareID] = rec
 		consumed = true
 	}
 	w.mu.Unlock()
 
 	if consumed {
-		_ = w.persistWorkflowShares()
+		if err := w.persistWorkflowShares(); err != nil {
+			w.mu.Lock()
+			if !w.closed {
+				delete(w.shareSessions, newDigest)
+				if curRec, ok := w.workflowShares[targetShareID]; ok && curRec.ConsumedAt == consumedAt {
+					curRec.ConsumedAt = 0
+					w.workflowShares[targetShareID] = curRec
+				}
+			}
+			w.mu.Unlock()
+			w.handleWorkflowShareErrorPage(rw, r, http.StatusServiceUnavailable, workflowShareErrInvalid)
+			return
+		}
 	}
 	w.persistWorkflowShareSessions()
 	w.setWorkflowShareCookie(rw, r, token, now)
@@ -2395,13 +2439,14 @@ func (w *ColabOneWebConsole) handleWorkflowShareSwitch(rw http.ResponseWriter, r
 		return
 	}
 	curSession, curExists := w.shareSessions[currentDigest]
-	if !curExists || curSession.shareID != currentShareID || !now.Before(curSession.expiresAt) {
+	curRec, curRecExists := w.workflowShares[currentShareID]
+	if !curExists || curSession.shareID != currentShareID || !now.Before(curSession.expiresAt) || !curRecExists || curRec.RevokedAt > 0 {
 		w.mu.Unlock()
 		w.handleWorkflowShareErrorPage(rw, r, http.StatusUnauthorized, workflowShareErrMissing)
 		return
 	}
 
-	targetShareID, reason, ok := w.verifyWorkflowShareSwitchTokenLocked(rawToken, currentDigest, now)
+	targetShareID, reason, ok := w.verifyWorkflowShareSwitchTokenLocked(rawToken, currentDigest, currentShareID, now)
 	if !ok {
 		w.mu.Unlock()
 		status := http.StatusForbidden
@@ -2430,17 +2475,34 @@ func (w *ColabOneWebConsole) handleWorkflowShareSwitch(rw http.ResponseWriter, r
 		return
 	}
 
+	newDigest := sha256.Sum256([]byte(newToken))
 	consumed := false
+	consumedAt := now.Unix()
 	rec := w.workflowShares[targetShareID]
 	if rec.SingleUse {
-		rec.ConsumedAt = now.Unix()
+		rec.ConsumedAt = consumedAt
 		w.workflowShares[targetShareID] = rec
 		consumed = true
 	}
 	w.mu.Unlock()
 
 	if consumed {
-		_ = w.persistWorkflowShares()
+		if err := w.persistWorkflowShares(); err != nil {
+			w.mu.Lock()
+			if !w.closed {
+				delete(w.shareSessions, newDigest)
+				if oldRec, oldOK := w.workflowShares[currentShareID]; oldOK && oldRec.RevokedAt == 0 && now.Before(curSession.expiresAt) {
+					w.shareSessions[currentDigest] = curSession
+				}
+				if tgtRec, ok := w.workflowShares[targetShareID]; ok && tgtRec.ConsumedAt == consumedAt {
+					tgtRec.ConsumedAt = 0
+					w.workflowShares[targetShareID] = tgtRec
+				}
+			}
+			w.mu.Unlock()
+			w.handleWorkflowShareErrorPage(rw, r, http.StatusServiceUnavailable, workflowShareErrInvalid)
+			return
+		}
 	}
 	w.persistWorkflowShareSessions()
 	w.setWorkflowShareCookie(rw, r, newToken, now)
@@ -2558,7 +2620,7 @@ func (w *ColabOneWebConsole) handleShareSnapshot(rw http.ResponseWriter, r *http
 	}
 
 	guestTasks := make([]map[string]any, 0)
-	busyOther := isHostLiveStudioRunning(hostRuntime)
+	busyOther := isHostBusyWithExclusiveWorkload(hostRuntime)
 	hasGuestComfyRunTask := false
 	for _, rawTask := range shareAsSlice(hostRuntime["tasks"]) {
 		tm := shareAsMap(rawTask)
@@ -2709,8 +2771,17 @@ func (w *ColabOneWebConsole) handleShareCommand(rw http.ResponseWriter, r *http.
 	prefix := prefixBuf[:prefixN]
 
 	bodyLimit := normalLimit
+	var releaseUploadSlot func()
 	if peekCommandAction(prefix) == "comfyui.input.upload" {
 		bodyLimit = mediaLimit
+		var acquired bool
+		releaseUploadSlot, acquired = w.acquireShareUploadSlot(r.Context())
+		if !acquired {
+			rw.Header().Set("Retry-After", "2")
+			writeJSONError(rw, http.StatusTooManyRequests, "当前上传任务较多，请稍后再试")
+			return
+		}
+		defer releaseUploadSlot()
 	}
 	if r.ContentLength > bodyLimit {
 		writeJSONError(rw, http.StatusRequestEntityTooLarge, "请求体超出限制")
@@ -2805,8 +2876,8 @@ func (w *ColabOneWebConsole) handleShareCommand(rw http.ResponseWriter, r *http.
 			writeJSONError(rw, http.StatusBadRequest, "当前算力服务暂未就绪，请联系分享者开启")
 			return
 		}
-		if isHostLiveStudioRunning(rt) {
-			writeJSONError(rw, http.StatusConflict, "当前实时演播正在运行，暂不可执行工作流，请稍后再试")
+		if isHostBusyWithExclusiveWorkload(rt) {
+			writeJSONError(rw, http.StatusConflict, "云端算力当前正忙，暂不可执行该操作，请稍后再试")
 			return
 		}
 		hostRuntimeID := strings.TrimSpace(shareAsString(rt["id"]))
@@ -2829,6 +2900,16 @@ func (w *ColabOneWebConsole) handleShareCommand(rw http.ResponseWriter, r *http.
 		return
 
 	case "comfyui.input.upload":
+		if releaseUploadSlot == nil {
+			var acquired bool
+			releaseUploadSlot, acquired = w.acquireShareUploadSlot(r.Context())
+			if !acquired {
+				rw.Header().Set("Retry-After", "2")
+				writeJSONError(rw, http.StatusTooManyRequests, "当前上传任务较多，请稍后再试")
+				return
+			}
+			defer releaseUploadSlot()
+		}
 		res, err := w.opts.CallBridge(r.Context(), "comfyui.input.upload", payload)
 		if err != nil {
 			writeBridgeErr(err)
@@ -2876,9 +2957,11 @@ func (w *ColabOneWebConsole) handleShareCommand(rw http.ResponseWriter, r *http.
 			}
 		}
 
-		// Inspect pre-run host state for Live Studio / auto_release protection and pre-existing outputs.
+		// Inspect pre-run host state for exclusive workload / auto_release protection,
+		// workflow override schema validation, and pre-existing outputs.
 		preSnapOK := false
 		var hostRuntimeID string
+		var targetWF map[string]any
 		var preExistingIDs []string
 		if snapRaw, snapErr := w.opts.CallBridge(r.Context(), "snapshot", nil); snapErr == nil {
 			var snap map[string]any
@@ -2886,17 +2969,19 @@ func (w *ColabOneWebConsole) handleShareCommand(rw http.ResponseWriter, r *http.
 				preSnapOK = true
 				rt := shareAsMap(snap["runtime"])
 				hostRuntimeID = strings.TrimSpace(shareAsString(rt["id"]))
-				if isHostLiveStudioRunning(rt) {
-					writeJSONError(rw, http.StatusConflict, "当前实时演播正在运行，暂不可执行工作流，请稍后再试")
+				if isHostBusyWithExclusiveWorkload(rt) {
+					writeJSONError(rw, http.StatusConflict, "云端算力当前正忙，暂不可执行该操作，请稍后再试")
 					return
 				}
 				autoRelease := shareAsMap(shareAsMap(rt["comfyui"])["auto_release"])
-				if shareAsBool(autoRelease["enabled"]) {
-					if runtimeExplicitlySupportsCapability(rt, "comfyui_share_guard") {
-						cleanPayload["skip_auto_release"] = true
-					} else {
-						writeJSONError(rw, http.StatusConflict, "宿主机已开启任务完成后自动释放算力，请稍后再试")
-						return
+				if shareAsBool(autoRelease["enabled"]) && !runtimeExplicitlySupportsCapability(rt, "comfyui_share_guard") {
+					writeJSONError(rw, http.StatusConflict, "宿主机已开启任务完成后自动释放算力，请稍后再试")
+					return
+				}
+				for _, rawWF := range shareAsSlice(snap["workflows"]) {
+					if wm := shareAsMap(rawWF); wm != nil && strings.TrimSpace(shareAsString(wm["id"])) == wfID {
+						targetWF = wm
+						break
 					}
 				}
 				for _, rawOut := range shareAsSlice(snap["comfy_outputs"]) {
@@ -2908,6 +2993,15 @@ func (w *ColabOneWebConsole) handleShareCommand(rw http.ResponseWriter, r *http.
 				}
 			}
 		}
+
+		if err := validateGuestWorkflowOverrides(cleanPayload["overrides"], targetWF); err != nil {
+			writeJSONError(rw, http.StatusBadRequest, err.Error())
+			return
+		}
+		// Always mark guest workflow runs with skip_auto_release so they can never
+		// trigger or disarm host workflow_auto_release (controller strips this flag
+		// automatically when targeting older remotes without comfyui_share_guard).
+		cleanPayload["skip_auto_release"] = true
 
 		res, err := w.opts.CallBridge(r.Context(), "comfyui.run", cleanPayload)
 		if err != nil {
@@ -2956,8 +3050,8 @@ func (w *ColabOneWebConsole) handleShareCommand(rw http.ResponseWriter, r *http.
 			if json.Unmarshal([]byte(snapRaw), &snap) == nil && snap != nil {
 				rt := shareAsMap(snap["runtime"])
 				hostRuntimeID = strings.TrimSpace(shareAsString(rt["id"]))
-				if isHostLiveStudioRunning(rt) {
-					writeJSONError(rw, http.StatusConflict, "当前实时演播正在运行，暂不可执行工作流，请稍后再试")
+				if isHostBusyWithExclusiveWorkload(rt) {
+					writeJSONError(rw, http.StatusConflict, "云端算力当前正忙，暂不可执行该操作，请稍后再试")
 					return
 				}
 			}
@@ -2989,15 +3083,16 @@ func (w *ColabOneWebConsole) handleShareCommand(rw http.ResponseWriter, r *http.
 			if pid := strings.TrimSpace(shareAsString(previewObj["preview_id"])); pid != "" {
 				w.recordSharePreview(shareID, pid)
 			}
+			cleanPreview := sanitizeGuestTtsPreviewMap(previewObj)
 			if taskMap := shareAsMap(previewObj["task"]); taskMap != nil {
 				if tid := strings.TrimSpace(shareAsString(taskMap["id"])); tid != "" {
 					w.recordShareTask(shareID, tid, "", hostRuntimeID, nil, shareAsFloat64(taskMap["created_at"]), true)
 				}
-				previewObj["task"] = sanitizeGuestTaskMap(taskMap)
-				if encoded, encErr := encodeJSONNoEscape(previewObj); encErr == nil {
-					writeRawJSON(string(encoded))
-					return
-				}
+				cleanPreview["task"] = sanitizeGuestTaskMap(taskMap)
+			}
+			if encoded, encErr := encodeJSONNoEscape(cleanPreview); encErr == nil {
+				writeRawJSON(string(encoded))
+				return
 			}
 		}
 		writeRawJSON(res)
@@ -3029,6 +3124,13 @@ func (w *ColabOneWebConsole) handleShareCommand(rw http.ResponseWriter, r *http.
 			writeBridgeErr(err)
 			return
 		}
+		var assetObj map[string]any
+		if json.Unmarshal([]byte(res), &assetObj) == nil && assetObj != nil {
+			if encoded, encErr := encodeJSONNoEscape(sanitizeGuestTtsPreviewMap(assetObj)); encErr == nil {
+				writeRawJSON(string(encoded))
+				return
+			}
+		}
 		writeRawJSON(res)
 		return
 
@@ -3037,56 +3139,13 @@ func (w *ColabOneWebConsole) handleShareCommand(rw http.ResponseWriter, r *http.
 			writeJSONError(rw, http.StatusForbidden, "当前分享链接未开放数字人语音试听功能")
 			return
 		}
-		if status, msg := w.requireShareReadyRuntime(r.Context()); status != 0 {
-			writeJSONError(rw, status, msg)
-			return
-		}
+		// Guest mode never probes host local disk cache; return an empty miss so UI falls through cleanly.
 		engineID := strings.TrimSpace(shareAsString(payload["engine_id"]))
-		if engineID == "" {
-			writeJSON(rw, http.StatusOK, map[string]any{"engine_id": "", "items": []any{}})
-			return
-		}
-		presetItems := make([]map[string]any, 0)
-		for _, rawItem := range shareAsSlice(payload["items"]) {
-			im := shareAsMap(rawItem)
-			if im == nil {
-				continue
-			}
-			vp := strings.TrimSpace(shareAsString(im["voice_preset"]))
-			if vp == "" || strings.EqualFold(vp, "custom") {
-				continue
-			}
-			// Guest cache lookup is strictly preset-only (strip custom text/prompts/refs).
-			presetItems = append(presetItems, map[string]any{
-				"voice_preset": vp,
-			})
-		}
-		if len(presetItems) == 0 {
-			writeJSON(rw, http.StatusOK, map[string]any{"engine_id": engineID, "items": []any{}})
-			return
-		}
-		lookupPayload := map[string]any{
+		writeJSON(rw, http.StatusOK, map[string]any{
+			"found":     false,
 			"engine_id": engineID,
-			"items":     presetItems,
-		}
-		res, err := w.opts.CallBridge(r.Context(), action, lookupPayload)
-		if err != nil {
-			writeBridgeErr(err)
-			return
-		}
-		var lookupRes map[string]any
-		if json.Unmarshal([]byte(res), &lookupRes) == nil && lookupRes != nil {
-			for _, rawItem := range shareAsSlice(lookupRes["items"]) {
-				im := shareAsMap(rawItem)
-				if im == nil {
-					continue
-				}
-				if pid := strings.TrimSpace(shareAsString(im["preview_id"])); pid != "" {
-					w.recordSharePreview(shareID, pid)
-				}
-			}
-		}
-		writeRawJSON(res)
+			"items":     []any{},
+		})
 		return
 
 	case "comfyui.tts.preview.cache.read":
@@ -3094,51 +3153,12 @@ func (w *ColabOneWebConsole) handleShareCommand(rw http.ResponseWriter, r *http.
 			writeJSONError(rw, http.StatusForbidden, "当前分享链接未开放数字人语音试听功能")
 			return
 		}
-		if status, msg := w.requireShareReadyRuntime(r.Context()); status != 0 {
-			writeJSONError(rw, status, msg)
-			return
-		}
-		previewID := strings.TrimSpace(shareAsString(payload["preview_id"]))
-		if previewID != "" {
-			if !w.ownsPreviewForShare(shareID, previewID) {
-				writeJSONError(rw, http.StatusForbidden, "当前分享链接未授权访问该试听音频")
-				return
-			}
-			res, err := w.opts.CallBridge(r.Context(), action, map[string]any{"preview_id": previewID})
-			if err != nil {
-				writeBridgeErr(err)
-				return
-			}
-			writeRawJSON(res)
-			return
-		}
-		engineID := strings.TrimSpace(shareAsString(payload["engine_id"]))
-		voicePreset := strings.TrimSpace(shareAsString(payload["voice_preset"]))
-		hasCustomField := strings.TrimSpace(shareAsString(payload["preview_text"])) != "" ||
-			strings.TrimSpace(shareAsString(payload["voice_prompt"])) != "" ||
-			strings.TrimSpace(shareAsString(payload["emotion_prompt"])) != "" ||
-			strings.TrimSpace(shareAsString(payload["ref_audio_input_id"])) != "" ||
-			strings.TrimSpace(shareAsString(payload["emotion_ref_input_id"])) != ""
-		if engineID == "" || voicePreset == "" || strings.EqualFold(voicePreset, "custom") || hasCustomField {
-			// Guest mode never probes host custom preview cache; report a clean cache miss.
-			writeJSON(rw, http.StatusOK, map[string]any{"cached": false, "local_cached": false})
-			return
-		}
-		res, err := w.opts.CallBridge(r.Context(), action, map[string]any{
-			"engine_id":    engineID,
-			"voice_preset": voicePreset,
+		// Guest mode never reads host local disk cache; report a clean cache miss.
+		writeJSON(rw, http.StatusOK, map[string]any{
+			"found":        false,
+			"cached":       false,
+			"local_cached": false,
 		})
-		if err != nil {
-			writeBridgeErr(err)
-			return
-		}
-		var readRes map[string]any
-		if json.Unmarshal([]byte(res), &readRes) == nil && readRes != nil {
-			if pid := strings.TrimSpace(shareAsString(readRes["preview_id"])); pid != "" {
-				w.recordSharePreview(shareID, pid)
-			}
-		}
-		writeRawJSON(res)
 		return
 
 	case "comfyui.output.asset":
@@ -3263,27 +3283,6 @@ func (w *ColabOneWebConsole) handleShareCommand(rw http.ResponseWriter, r *http.
 	}
 }
 
-func (w *ColabOneWebConsole) requireShareReadyRuntime(ctx context.Context) (int, string) {
-	if w.opts.CallBridge == nil {
-		return http.StatusServiceUnavailable, "控制器桥接未初始化"
-	}
-	snapRaw, err := w.opts.CallBridge(ctx, "snapshot", nil)
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return http.StatusGatewayTimeout, sanitizeGuestBridgeError(err.Error())
-		}
-		return http.StatusBadRequest, "当前算力服务暂未就绪，请联系分享者开启"
-	}
-	var snap map[string]any
-	if json.Unmarshal([]byte(snapRaw), &snap) != nil || snap == nil {
-		return http.StatusBadRequest, "当前算力服务暂未就绪，请联系分享者开启"
-	}
-	if strings.TrimSpace(shareAsString(shareAsMap(snap["runtime"])["state"])) != "ready" {
-		return http.StatusBadRequest, "当前算力服务暂未就绪，请联系分享者开启"
-	}
-	return 0, ""
-}
-
 func (w *ColabOneWebConsole) handleShareOutputMedia(rw http.ResponseWriter, r *http.Request, shareID, id string) {
 	if status, msg := w.requireShareLiveOutput(r.Context(), shareID, id); status != 0 {
 		writeHeadAwareJSONError(rw, r, status, msg)
@@ -3336,43 +3335,237 @@ func runtimeExplicitlySupportsCapability(rt map[string]any, capName string) bool
 	return false
 }
 
+func (w *ColabOneWebConsole) acquireShareUploadSlot(ctx context.Context) (func(), bool) {
+	if ctx != nil && ctx.Err() != nil {
+		return nil, false
+	}
+	sem := w.shareUploadSem
+	if sem == nil {
+		return func() {}, true
+	}
+	select {
+	case sem <- struct{}{}:
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				<-sem
+			})
+		}, true
+	default:
+		return nil, false
+	}
+}
+
 func isHostLiveStudioRunning(rt map[string]any) bool {
 	return shareAsBool(shareAsMap(rt["live_studio"])["running"])
 }
 
-func sanitizeGuestBridgeError(raw string) string {
-	msg := strings.TrimSpace(raw)
-	if msg == "" {
-		return "操作暂时不可用，请联系分享者检查云端服务状态"
+func isHostLLMLoaded(rt map[string]any) bool {
+	return strings.TrimSpace(shareAsString(rt["loaded_model"])) != ""
+}
+
+func isHostBusyWithExclusiveWorkload(rt map[string]any) bool {
+	return isHostLiveStudioRunning(rt) || isHostLLMLoaded(rt)
+}
+
+func containsGuestSensitiveBridgeHint(msg string) bool {
+	if guestHostUnixPathRe.MatchString(msg) || guestHostWinPathRe.MatchString(msg) || guestSensitiveTokenRe.MatchString(msg) {
+		return true
 	}
+	lower := strings.ToLower(msg)
 	for _, hostHint := range []string{
 		"立即热更新",
 		"热更新服务",
-		"Google 云盘",
+		"热更新",
+		"google 云盘",
 		"云盘凭据",
 		"授权与挂载",
-		"My Drive",
-		"ColabOne_Drive",
+		"my drive",
+		"colabone_drive",
+		"google drive",
+		"drive_file_id",
+		"drive_path",
 		"实时演播",
+		"live_studio",
+		"live studio",
+		"loaded_model",
+		"authorization:",
+		"token=",
+		"traceback (most recent",
+		"http://127.0.0.1",
+		"http://localhost",
 	} {
-		if strings.Contains(msg, hostHint) {
-			return "操作暂时不可用，请联系分享者检查云端服务状态"
+		if strings.Contains(lower, hostHint) {
+			return true
 		}
+	}
+	return false
+}
+
+func sanitizeGuestBridgeError(raw string) string {
+	msg := strings.TrimSpace(raw)
+	if msg == "" || containsGuestSensitiveBridgeHint(msg) {
+		return "操作暂时不可用，请联系分享者检查云端服务状态"
 	}
 	return msg
 }
 
 func sanitizeGuestDriveExportError(raw string) string {
 	msg := strings.TrimSpace(raw)
-	if msg == "" {
+	if msg == "" || containsGuestSensitiveBridgeHint(msg) {
 		return "当前暂无法保存到宿主云盘，请联系分享者检查云盘状态"
 	}
-	for _, hostHint := range []string{"立即热更新", "热更新服务", "云盘凭据", "授权与挂载", "Google 云盘", "My Drive", "ColabOne_Drive", "实时演播"} {
-		if strings.Contains(msg, hostHint) {
-			return "当前暂无法保存到宿主云盘，请联系分享者检查云盘状态"
+	return msg
+}
+
+func sanitizeGuestTtsPreviewMap(src map[string]any) map[string]any {
+	out := make(map[string]any, len(guestAllowedTtsPreviewFields))
+	for _, k := range guestAllowedTtsPreviewFields {
+		if v, ok := src[k]; ok {
+			out[k] = v
 		}
 	}
-	return msg
+	return out
+}
+
+func shareAsFiniteFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		if math.IsNaN(n) || math.IsInf(n, 0) {
+			return 0, false
+		}
+		return n, true
+	case float32:
+		f := float64(n)
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return 0, false
+		}
+		return f, true
+	case int64:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case json.Number:
+		f, err := n.Float64()
+		if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+			return 0, false
+		}
+		return f, true
+	default:
+		return 0, false
+	}
+}
+
+func validateGuestWorkflowOverrides(rawOverrides any, targetWF map[string]any) error {
+	if rawOverrides == nil {
+		return nil
+	}
+	overridesMap, ok := rawOverrides.(map[string]any)
+	if !ok {
+		return errors.New("工作流参数格式无效")
+	}
+	if len(overridesMap) == 0 {
+		return nil
+	}
+	if targetWF == nil {
+		return errors.New("无法校验工作流参数，请稍后再试")
+	}
+	fieldsByKey := make(map[string]map[string]any)
+	for _, rawField := range shareAsSlice(targetWF["fields"]) {
+		fm := shareAsMap(rawField)
+		if fm == nil {
+			continue
+		}
+		if key := strings.TrimSpace(shareAsString(fm["key"])); key != "" {
+			fieldsByKey[key] = fm
+		}
+	}
+	for k, v := range overridesMap {
+		fieldDef, declared := fieldsByKey[k]
+		if !declared {
+			return errors.New("包含未声明的工作流参数")
+		}
+		ft := strings.ToLower(strings.TrimSpace(shareAsString(fieldDef["field_type"])))
+		switch ft {
+		case "image", "audio":
+			return errors.New("媒体素材参数必须通过已上传素材传入")
+		case "boolean":
+			if _, ok := v.(bool); !ok {
+				return errors.New("布尔参数格式无效")
+			}
+		case "integer":
+			if _, isBool := v.(bool); isBool {
+				return errors.New("整数参数格式无效")
+			}
+			fVal, okNum := shareAsFiniteFloat(v)
+			if !okNum || math.Trunc(fVal) != fVal {
+				return errors.New("整数参数格式无效")
+			}
+			if minRaw, hasMin := fieldDef["min_value"]; hasMin && minRaw != nil {
+				if minVal, okMin := shareAsFiniteFloat(minRaw); okMin && fVal < minVal {
+					return errors.New("整数参数超出允许范围")
+				}
+			}
+			if maxRaw, hasMax := fieldDef["max_value"]; hasMax && maxRaw != nil {
+				if maxVal, okMax := shareAsFiniteFloat(maxRaw); okMax && fVal > maxVal {
+					return errors.New("整数参数超出允许范围")
+				}
+			}
+		case "number":
+			if _, isBool := v.(bool); isBool {
+				return errors.New("数值参数格式无效")
+			}
+			fVal, okNum := shareAsFiniteFloat(v)
+			if !okNum {
+				return errors.New("数值参数格式无效")
+			}
+			if minRaw, hasMin := fieldDef["min_value"]; hasMin && minRaw != nil {
+				if minVal, okMin := shareAsFiniteFloat(minRaw); okMin && fVal < minVal {
+					return errors.New("数值参数超出允许范围")
+				}
+			}
+			if maxRaw, hasMax := fieldDef["max_value"]; hasMax && maxRaw != nil {
+				if maxVal, okMax := shareAsFiniteFloat(maxRaw); okMax && fVal > maxVal {
+					return errors.New("数值参数超出允许范围")
+				}
+			}
+		case "select":
+			sVal, okStr := v.(string)
+			if !okStr || !utf8.ValidString(sVal) {
+				return errors.New("选项参数格式无效")
+			}
+			opts := shareAsSlice(fieldDef["options"])
+			matchedOpt := false
+			for _, rawOpt := range opts {
+				if shareAsString(rawOpt) == sVal {
+					matchedOpt = true
+					break
+				}
+			}
+			if !matchedOpt {
+				if k == "pipeline.voice_preset" {
+					if !workflowShareVoicePresetRe.MatchString(sVal) {
+						return errors.New("选项参数不在允许范围内")
+					}
+				} else if len(opts) > 0 {
+					return errors.New("选项参数不在允许范围内")
+				} else if utf8.RuneCountInString(sVal) > 160 {
+					return errors.New("选项参数长度超出限制")
+				}
+			}
+		case "text", "textarea":
+			sVal, okStr := v.(string)
+			if !okStr || !utf8.ValidString(sVal) {
+				return errors.New("文本参数格式无效")
+			}
+			if utf8.RuneCountInString(sVal) > maxGuestOverrideStringRunes {
+				return errors.New("文本参数长度超出限制")
+			}
+		default:
+			return errors.New("不支持的工作流参数类型")
+		}
+	}
+	return nil
 }
 
 func sanitizeGuestTaskMap(src map[string]any) map[string]any {

@@ -429,10 +429,24 @@ function onFileInputChange(event: Event) {
   emit("media-select", props.field, file);
 }
 
-function onMediaDragOver() {
-  if (!props.uploading && !props.disabled) {
-    isDragging.value = true;
+function hasFileDragPayload(event: DragEvent): boolean {
+  const dt = event.dataTransfer;
+  if (!dt) return false;
+  if (dt.types && dt.types.length > 0) {
+    return Array.from(dt.types).includes("Files");
   }
+  return Boolean(dt.files && dt.files.length > 0);
+}
+
+function onMediaDragOver(event: DragEvent) {
+  if (props.uploading || props.disabled || !hasFileDragPayload(event)) {
+    return;
+  }
+  event.preventDefault();
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = "copy";
+  }
+  isDragging.value = true;
 }
 
 function onMediaDragLeave(event: DragEvent) {
@@ -558,7 +572,7 @@ function onMediaDrop(event: DragEvent) {
           'is-busy': !!uploading,
           'is-disabled': !!disabled,
         }"
-        @dragover.prevent="onMediaDragOver"
+        @dragover="onMediaDragOver"
         @dragleave="onMediaDragLeave"
         @drop.prevent="onMediaDrop"
       >

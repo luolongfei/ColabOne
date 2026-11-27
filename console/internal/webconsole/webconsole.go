@@ -240,6 +240,7 @@ type ColabOneWebConsole struct {
 
 	cfg           ColabOneWebConsoleConfig
 	running       bool
+	stopping      bool
 	closed        bool
 	listenAddr    string
 	srv           *http.Server
@@ -263,6 +264,7 @@ type ColabOneWebConsole struct {
 	sharePreviewOwners     map[string]map[string]time.Time
 	shareKeyFailures       map[string][]time.Time
 	globalShareKeyFailures []time.Time
+	shareUploadSem         chan struct{}
 
 	handler http.Handler
 
@@ -360,7 +362,8 @@ func NewColabOneWebConsole(opts ColabOneWebConsoleOptions) *ColabOneWebConsole {
 		shareInputs:        make(map[string]colabOneShareInputOwner),
 		sharePreviewOwners: make(map[string]map[string]time.Time),
 		shareKeyFailures:   make(map[string][]time.Time),
-		listInterfaceIPs:  defaultListInterfaceIPs,
+		shareUploadSem:     make(chan struct{}, maxWorkflowShareConcurrentUploads),
+		listInterfaceIPs:   defaultListInterfaceIPs,
 	}
 	w.handler = http.HandlerFunc(w.serveHTTP)
 	w.loadConfig()
@@ -670,11 +673,15 @@ func (w *ColabOneWebConsole) updateOpLocked(req ColabOneWebConsoleUpdateRequest)
 			return w.State(), false, err
 		}
 		if wasRunning {
+			w.mu.Lock()
+			w.stopping = true
+			w.mu.Unlock()
 			shutdownHTTPServer(oldSrv, oldListeners, oldDone)
 		}
 		w.mu.Lock()
 		w.cfg = nextCfg
 		w.running = false
+		w.stopping = false
 		w.listenAddr = ""
 		w.srv = nil
 		w.listeners = nil
@@ -2064,7 +2071,7 @@ func (w *ColabOneWebConsole) handleLoginSubmit(rw http.ResponseWriter, r *http.R
 	}
 
 	w.mu.Lock()
-	if w.closed {
+	if w.closed || w.stopping {
 		w.mu.Unlock()
 		writeJSONError(rw, http.StatusServiceUnavailable, copySet.sessionError)
 		return
@@ -2172,7 +2179,7 @@ func (w *ColabOneWebConsole) handleRedeem(rw http.ResponseWriter, r *http.Reques
 	token, tokenErr := generateBase64Token(32)
 
 	w.mu.Lock()
-	if w.closed || !w.running {
+	if w.closed || w.stopping || !w.running {
 		w.mu.Unlock()
 		w.handleLoginPage(rw, r, http.StatusUnauthorized, "ticket_expired")
 		return

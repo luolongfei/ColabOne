@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -392,12 +393,11 @@ func (c *ColabOneController) readLocalTtsPreviewEntryLocked(
 	}
 	dir := c.ttsPreviewCacheDir()
 	wavPath := filepath.Join(dir, previewID+".wav")
-	if isSymlinkPath(dir) || isSymlinkPath(wavPath) {
+	if isSymlinkPath(dir) {
 		return nil, false
 	}
-	raw, err := os.ReadFile(wavPath)
-	if err != nil || len(raw) == 0 || len(raw) > colabOneMaxTtsPreviewBytes {
-		if err == nil {
+	evictEntry := func(removeFile bool) {
+		if removeFile {
 			removeRegularNonSymlinkFile(wavPath)
 		}
 		delete(idx.ByPreviewID, previewID)
@@ -405,26 +405,48 @@ func (c *ColabOneController) readLocalTtsPreviewEntryLocked(
 			delete(idx.ByRequestKey, entry.RequestKey)
 		}
 		c.saveLocalTtsPreviewIndexLocked(idx)
+	}
+	lfi, lstatErr := os.Lstat(wavPath)
+	if lstatErr != nil {
+		evictEntry(false)
+		return nil, false
+	}
+	if lfi.Mode()&os.ModeSymlink != 0 || !lfi.Mode().IsRegular() {
+		return nil, false
+	}
+	if lfi.Size() <= 0 || lfi.Size() > colabOneMaxTtsPreviewBytes {
+		evictEntry(true)
+		return nil, false
+	}
+	f, openErr := os.Open(wavPath)
+	if openErr != nil {
+		evictEntry(false)
+		return nil, false
+	}
+	ffi, fstatErr := f.Stat()
+	if fstatErr != nil || !ffi.Mode().IsRegular() || !os.SameFile(lfi, ffi) {
+		_ = f.Close()
+		return nil, false
+	}
+	if ffi.Size() <= 0 || ffi.Size() > colabOneMaxTtsPreviewBytes {
+		_ = f.Close()
+		evictEntry(true)
+		return nil, false
+	}
+	raw, readErr := io.ReadAll(io.LimitReader(f, colabOneMaxTtsPreviewBytes+1))
+	_ = f.Close()
+	if readErr != nil || len(raw) == 0 || len(raw) > colabOneMaxTtsPreviewBytes {
+		evictEntry(readErr == nil)
 		return nil, false
 	}
 	if entry.Size > 0 && len(raw) != entry.Size {
-		removeRegularNonSymlinkFile(wavPath)
-		delete(idx.ByPreviewID, previewID)
-		if entry.RequestKey != "" && idx.ByRequestKey[entry.RequestKey] == previewID {
-			delete(idx.ByRequestKey, entry.RequestKey)
-		}
-		c.saveLocalTtsPreviewIndexLocked(idx)
+		evictEntry(true)
 		return nil, false
 	}
 	sum := sha256.Sum256(raw)
 	actualSHA := hex.EncodeToString(sum[:])
 	if entry.SHA256 != "" && !strings.EqualFold(actualSHA, entry.SHA256) {
-		removeRegularNonSymlinkFile(wavPath)
-		delete(idx.ByPreviewID, previewID)
-		if entry.RequestKey != "" && idx.ByRequestKey[entry.RequestKey] == previewID {
-			delete(idx.ByRequestKey, entry.RequestKey)
-		}
-		c.saveLocalTtsPreviewIndexLocked(idx)
+		evictEntry(true)
 		return nil, false
 	}
 	entry.UpdatedAt = float64(time.Now().UnixMilli()) / 1000.0
@@ -463,14 +485,18 @@ func (c *ColabOneController) hasValidLocalPreviewFileLocked(
 	}
 	dir := c.ttsPreviewCacheDir()
 	wavPath := filepath.Join(dir, previewID+".wav")
-	if isSymlinkPath(dir) || isSymlinkPath(wavPath) {
+	if isSymlinkPath(dir) {
 		return false
 	}
-	fi, err := os.Stat(wavPath)
-	if err != nil || fi.IsDir() || fi.Size() <= 0 {
+	fi, err := os.Lstat(wavPath)
+	if err != nil || fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
 		return false
 	}
-	if entry.Size > 0 && int(fi.Size()) != entry.Size {
+	sz := fi.Size()
+	if sz <= 0 || sz > colabOneMaxTtsPreviewBytes {
+		return false
+	}
+	if entry.Size > 0 && sz != int64(entry.Size) {
 		return false
 	}
 	return true

@@ -2201,16 +2201,17 @@ func TestWorkflowShareTaskTrackingFallbackLiveStudioAndAutoRelease(t *testing.T)
 	}
 	autoReleaseOn = false
 	mu.Unlock()
-	// Client-supplied skip_auto_release stripped when auto_release is off.
+	// Even when auto_release is off and client sends skip_auto_release=false, server forces skip_auto_release=true
+	// so mid-run host auto_release arming can never bind to or be disarmed by a guest workflow task.
 	if rec := doShareCommand(t, wc.Handler(), host, cookieA, "comfyui.run", map[string]any{
 		"workflow_id":       "digital-human-longcat",
-		"skip_auto_release": true,
+		"skip_auto_release": false,
 	}, nil); rec.Code != http.StatusOK {
 		t.Fatalf("comfyui.run without auto_release expected 200, got %d", rec.Code)
 	}
 	mu.Lock()
-	if _, has := lastRunPayload["skip_auto_release"]; has {
-		t.Fatalf("client-supplied skip_auto_release must be stripped when auto_release is off")
+	if !shareAsBool(lastRunPayload["skip_auto_release"]) {
+		t.Fatalf("expected skip_auto_release=true always enforced for guest comfyui.run, got %+v", lastRunPayload)
 	}
 	mu.Unlock()
 
@@ -2410,7 +2411,7 @@ func TestWorkflowShareRuntimeOnlyMediaTTSIsolationErrorSanitizationAndI18n(t *te
 		lastDeletePayload    map[string]any
 		lastTTSPreviewPl     map[string]any
 		lastTTSAssetPl       map[string]any
-		lastCacheLookupPl    map[string]any
+		cacheLookupCalls     int
 		cacheReadCalls       int
 		bridgeErrToReturn    error
 	)
@@ -2466,9 +2467,9 @@ func TestWorkflowShareRuntimeOnlyMediaTTSIsolationErrorSanitizationAndI18n(t *te
 				return fmt.Sprintf(`{"cached":true,"preview_id":%q}`, ownedPrevID), nil
 			case "comfyui.tts.preview.asset":
 				lastTTSAssetPl = cloneShallowMap(payload)
-				return fmt.Sprintf(`{"preview_id":%q,"data":"AA==","size":1}`, payload["preview_id"]), nil
+				return fmt.Sprintf(`{"preview_id":%q,"data":"AA==","size":1,"mime":"audio/wav","local_cached":true,"host_secret_path":"/home/owner/cache.wav"}`, payload["preview_id"]), nil
 			case "comfyui.tts.preview.cache.lookup":
-				lastCacheLookupPl = cloneShallowMap(payload)
+				cacheLookupCalls++
 				return fmt.Sprintf(`{"engine_id":"voxcpm2","items":[{"voice_preset":"shen_zhiyi","preview_id":%q,"cached":true}]}`, presetPrevID), nil
 			case "comfyui.tts.preview.cache.read":
 				cacheReadCalls++
@@ -2561,71 +2562,51 @@ func TestWorkflowShareRuntimeOnlyMediaTTSIsolationErrorSanitizationAndI18n(t *te
 	bridgeErrToReturn = nil
 	mu.Unlock()
 
-	// 5. TTS preview isolation: skip_local_cache=true, preview_id ownership, preset-only cache.lookup/read, stopped runtime guard.
+	// 5. TTS preview isolation: skip_local_cache=true, preview_id ownership, asset field sanitization,
+	// and cache.lookup / cache.read blocked from touching host local disk cache.
 	if rec := doShareCommand(t, wc.Handler(), host, cookie, "comfyui.tts.preview", map[string]any{"engine_id": "voxcpm2"}, nil); rec.Code != http.StatusOK {
 		t.Fatalf("tts.preview expected 200, got %d", rec.Code)
 	}
 	if !shareAsBool(lastTTSPreviewPl["skip_local_cache"]) {
 		t.Fatalf("guest tts.preview must set skip_local_cache=true")
 	}
-	// Owned preview_id allowed on tts.preview.asset with skip_local_cache=true; foreign preview_id -> 403!
+	// Owned preview_id allowed on tts.preview.asset with skip_local_cache=true & response sanitized; foreign preview_id -> 403!
 	if rec := doShareCommand(t, wc.Handler(), host, cookie, "comfyui.tts.preview.asset", map[string]any{"preview_id": otherPrevID}, nil); rec.Code != http.StatusForbidden {
 		t.Fatalf("unowned preview_id on tts.preview.asset expected 403, got %d", rec.Code)
 	}
-	if rec := doShareCommand(t, wc.Handler(), host, cookie, "comfyui.tts.preview.asset", map[string]any{"preview_id": ownedPrevID}, nil); rec.Code != http.StatusOK || !shareAsBool(lastTTSAssetPl["skip_local_cache"]) {
-		t.Fatalf("owned preview_id on tts.preview.asset expected 200 with skip_local_cache=true, code=%d payload=%+v", rec.Code, lastTTSAssetPl)
+	assetRec := doShareCommand(t, wc.Handler(), host, cookie, "comfyui.tts.preview.asset", map[string]any{"preview_id": ownedPrevID}, nil)
+	if assetRec.Code != http.StatusOK || !shareAsBool(lastTTSAssetPl["skip_local_cache"]) {
+		t.Fatalf("owned preview_id on tts.preview.asset expected 200 with skip_local_cache=true, code=%d payload=%+v", assetRec.Code, lastTTSAssetPl)
 	}
-	// cache.lookup strips custom items & custom fields, and records returned preset preview_id!
+	if strings.Contains(assetRec.Body.String(), "host_secret_path") || strings.Contains(assetRec.Body.String(), "local_cached") {
+		t.Fatalf("tts.preview.asset leaked unsanitized fields: %s", assetRec.Body.String())
+	}
+	// cache.lookup & cache.read MUST NOT invoke host CallBridge (return clean found=false miss so UI falls through).
+	beforeLookups := cacheLookupCalls
 	lookupRec := doShareCommand(t, wc.Handler(), host, cookie, "comfyui.tts.preview.cache.lookup", map[string]any{
 		"engine_id": "voxcpm2",
 		"items": []map[string]any{
-			{"voice_preset": "custom", "preview_text": "secret"},
-			{"voice_preset": "shen_zhiyi", "preview_text": "custom text", "voice_prompt": "secret prompt", "emotion_prompt": "happy"},
+			{"voice_preset": "shen_zhiyi"},
 		},
 	}, nil)
-	if lookupRec.Code != http.StatusOK {
-		t.Fatalf("cache.lookup expected 200, got %d", lookupRec.Code)
+	if lookupRec.Code != http.StatusOK || cacheLookupCalls != beforeLookups || !strings.Contains(lookupRec.Body.String(), `"found":false`) {
+		t.Fatalf("guest cache.lookup must return found=false without hitting host bridge: code=%d calls=%d body=%s", lookupRec.Code, cacheLookupCalls-beforeLookups, lookupRec.Body.String())
 	}
-	sentItems := lastCacheLookupPl["items"].([]map[string]any)
-	if len(sentItems) != 1 || sentItems[0]["voice_preset"] != "shen_zhiyi" || len(sentItems[0]) != 1 {
-		t.Fatalf("cache.lookup must drop custom preset and strip custom fields, sent=%+v", sentItems)
-	}
-	// Recorded presetPrevID is now authorized on tts.preview.asset!
-	if rec := doShareCommand(t, wc.Handler(), host, cookie, "comfyui.tts.preview.asset", map[string]any{"preview_id": presetPrevID}, nil); rec.Code != http.StatusOK {
-		t.Fatalf("preset preview_id from cache.lookup should be authorized on asset, got %d", rec.Code)
-	}
-	// cache.read: unowned preview_id -> 403; custom preset/text -> clean cache miss without calling bridge; preset-only -> calls bridge!
-	if rec := doShareCommand(t, wc.Handler(), host, cookie, "comfyui.tts.preview.cache.read", map[string]any{"preview_id": otherPrevID}, nil); rec.Code != http.StatusForbidden {
-		t.Fatalf("unowned preview_id on cache.read expected 403, got %d", rec.Code)
+	// presetPrevID was never minted for this share -> still 403 on tts.preview.asset!
+	if rec := doShareCommand(t, wc.Handler(), host, cookie, "comfyui.tts.preview.asset", map[string]any{"preview_id": presetPrevID}, nil); rec.Code != http.StatusForbidden {
+		t.Fatalf("unminted presetPrevID on tts.preview.asset expected 403, got %d", rec.Code)
 	}
 	beforeReads := cacheReadCalls
-	missRec := doShareCommand(t, wc.Handler(), host, cookie, "comfyui.tts.preview.cache.read", map[string]any{
-		"engine_id":    "voxcpm2",
-		"voice_preset": "shen_zhiyi",
-		"preview_text": "custom guest text",
-	}, nil)
-	if missRec.Code != http.StatusOK || cacheReadCalls != beforeReads || !strings.Contains(missRec.Body.String(), `"cached":false`) {
-		t.Fatalf("custom cache.read must return cache miss without hitting host bridge: code=%d calls=%d body=%s", missRec.Code, cacheReadCalls-beforeReads, missRec.Body.String())
-	}
-	hitRec := doShareCommand(t, wc.Handler(), host, cookie, "comfyui.tts.preview.cache.read", map[string]any{
-		"engine_id":    "voxcpm2",
-		"voice_preset": "shen_zhiyi",
-	}, nil)
-	if hitRec.Code != http.StatusOK || cacheReadCalls != beforeReads+1 {
-		t.Fatalf("preset-only cache.read expected 200 via bridge, code=%d calls=%d", hitRec.Code, cacheReadCalls-beforeReads)
-	}
-	// Stopped runtime rejects cache.lookup and cache.read with 400!
-	mu.Lock()
-	runtimeState = "stopped"
-	mu.Unlock()
-	for _, act := range []string{"comfyui.tts.preview.cache.lookup", "comfyui.tts.preview.cache.read"} {
-		if rec := doShareCommand(t, wc.Handler(), host, cookie, act, map[string]any{"engine_id": "voxcpm2", "voice_preset": "shen_zhiyi"}, nil); rec.Code != http.StatusBadRequest {
-			t.Fatalf("%s when runtime stopped expected 400, got %d", act, rec.Code)
+	for _, readPayload := range []map[string]any{
+		{"preview_id": otherPrevID},
+		{"engine_id": "voxcpm2", "voice_preset": "shen_zhiyi"},
+		{"engine_id": "voxcpm2", "voice_preset": "shen_zhiyi", "preview_text": "custom guest text"},
+	} {
+		missRec := doShareCommand(t, wc.Handler(), host, cookie, "comfyui.tts.preview.cache.read", readPayload, nil)
+		if missRec.Code != http.StatusOK || cacheReadCalls != beforeReads || !strings.Contains(missRec.Body.String(), `"found":false`) || !strings.Contains(missRec.Body.String(), `"cached":false`) {
+			t.Fatalf("guest cache.read must return found=false/cached=false without hitting host bridge: code=%d calls=%d body=%s", missRec.Code, cacheReadCalls-beforeReads, missRec.Body.String())
 		}
 	}
-	mu.Lock()
-	runtimeState = "ready"
-	mu.Unlock()
 	// comfyui.output.delete passes runtime_only=true.
 	if rec := doShareCommand(t, wc.Handler(), host, cookie, "comfyui.output.delete", map[string]any{"id": outID}, nil); rec.Code != http.StatusOK || !shareAsBool(lastDeletePayload["runtime_only"]) {
 		t.Fatalf("comfyui.output.delete expected 200 with runtime_only=true, code=%d payload=%+v", rec.Code, lastDeletePayload)
@@ -2683,5 +2664,296 @@ func assertSharePageTerminology(t *testing.T, locale, kind, htmlDoc string) {
 		if strings.Contains(htmlDoc, "워크플로우") {
 			t.Fatalf("ko-KR %s must not use 워크플로우", kind)
 		}
+	}
+}
+
+func TestWorkflowShareOverridesAllowlistLoadedLLMBusyUploadConcurrencyAndSingleUseFailClosed(t *testing.T) {
+	clock := newFakeClock(time.Date(2026, 7, 5, 10, 0, 0, 0, time.UTC))
+	var (
+		mu              sync.Mutex
+		loadedModel     = ""
+		uploadStartedCh = make(chan struct{}, 4)
+		uploadReleaseCh = make(chan struct{})
+		blockUploads    = false
+	)
+
+	dir := t.TempDir()
+	wc := NewColabOneWebConsole(ColabOneWebConsoleOptions{
+		ConfigDir:  dir,
+		Vault:      newMemoryVault(),
+		FrontendFS: sampleFrontendFS,
+		Now:        clock.Now,
+		CallBridge: func(ctx context.Context, action string, payload map[string]any) (string, error) {
+			mu.Lock()
+			lm := loadedModel
+			shouldBlock := blockUploads
+			mu.Unlock()
+			switch action {
+			case "snapshot":
+				snap := map[string]any{
+					"runtime": map[string]any{
+						"id":           "rt-strict-1",
+						"state":        "ready",
+						"loaded_model": lm,
+						"capabilities": []string{"comfyui", "comfyui_share_guard"},
+					},
+					"workflows": []map[string]any{
+						{
+							"id":   "digital-human-longcat",
+							"name": "LongCat",
+							"fields": []map[string]any{
+								{"key": "1.image", "field_type": "image"},
+								{"key": "2.audio", "field_type": "audio"},
+								{"key": "pipeline.script_text", "field_type": "textarea"},
+								{"key": "pipeline.voice_preset", "field_type": "select", "options": []string{"shen_zhiyi", "custom"}},
+								{"key": "pipeline.quality_preset", "field_type": "select", "options": []string{"cinema_flagship", "balanced_hd"}},
+								{"key": "pipeline.num_inference_steps", "field_type": "integer", "min_value": 8, "max_value": 60},
+								{"key": "pipeline.audio_guidance_scale", "field_type": "number", "min_value": 1.0, "max_value": 7.0},
+								{"key": "pipeline.keep_bg", "field_type": "boolean"},
+							},
+						},
+					},
+					"tts_engines":   []map[string]any{{"id": "voxcpm2", "name": "VoxCPM2"}},
+					"comfy_outputs": []any{},
+				}
+				b, _ := json.Marshal(snap)
+				return string(b), nil
+			case "comfyui.input.upload":
+				if shouldBlock {
+					uploadStartedCh <- struct{}{}
+					<-uploadReleaseCh
+				}
+				return `{"id":"11111111111111111111111111111111","filename":"ok.png"}`, nil
+			case "comfyui.run":
+				return `{"id":"22222222222222222222222222222222","kind":"comfyui_run","state":"running"}`, nil
+			case "comfyui.start":
+				return `{"id":"33333333333333333333333333333333","kind":"comfyui_start","state":"running"}`, nil
+			case "comfyui.tts.preview":
+				return `{"cached":true,"preview_id":"44444444444444444444444444444444"}`, nil
+			default:
+				return `{"ok":true}`, nil
+			}
+		},
+	})
+	defer wc.Close()
+
+	host := "127.0.0.1:3232"
+	share, err := wc.CreateWorkflowShare(ColabOneWorkflowShareCreateRequest{
+		Title:       "Strict Guest",
+		WorkflowIDs: []string{BuiltinDigitalHumanGroupKey},
+		TTLMode:     WorkflowShareTTLForever,
+	})
+	if err != nil {
+		t.Fatalf("create share: %v", err)
+	}
+	cookie := activateShareCookie(t, wc.Handler(), host, extractShareKeyFromURL(t, share.URL))
+
+	// 1. Strict guest overrides allowlist checks.
+	invalidOverrides := []struct {
+		name      string
+		overrides any
+	}{
+		{"non_map", "not-a-map"},
+		{"undeclared_key", map[string]any{"99.secret_node": "evil"}},
+		{"image_field_in_overrides", map[string]any{"1.image": "/etc/passwd"}},
+		{"audio_field_in_overrides", map[string]any{"2.audio": "/content/host.wav"}},
+		{"bad_boolean", map[string]any{"pipeline.keep_bg": "true"}},
+		{"bad_integer_float", map[string]any{"pipeline.num_inference_steps": 12.5}},
+		{"bad_integer_bool", map[string]any{"pipeline.num_inference_steps": true}},
+		{"integer_below_min", map[string]any{"pipeline.num_inference_steps": 4}},
+		{"integer_above_max", map[string]any{"pipeline.num_inference_steps": 100}},
+		{"number_below_min", map[string]any{"pipeline.audio_guidance_scale": 0.5}},
+		{"number_above_max", map[string]any{"pipeline.audio_guidance_scale": 9.5}},
+		{"number_bool", map[string]any{"pipeline.audio_guidance_scale": false}},
+		{"select_not_in_options", map[string]any{"pipeline.quality_preset": "unauthorized_preset"}},
+		{"voice_preset_bad_regex", map[string]any{"pipeline.voice_preset": "../escape"}},
+		{"text_wrong_type", map[string]any{"pipeline.script_text": 12345}},
+	}
+	for _, tc := range invalidOverrides {
+		rec := doShareCommand(t, wc.Handler(), host, cookie, "comfyui.run", map[string]any{
+			"workflow_id": "digital-human-longcat",
+			"overrides":   tc.overrides,
+		}, nil)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("override case %s expected 400, got %d body=%s", tc.name, rec.Code, rec.Body.String())
+		}
+	}
+
+	// Valid overrides (including engine-specific regex voice_preset ID) succeed with 200.
+	okRec := doShareCommand(t, wc.Handler(), host, cookie, "comfyui.run", map[string]any{
+		"workflow_id": "digital-human-longcat",
+		"overrides": map[string]any{
+			"pipeline.script_text":          "你好，ColabOne！",
+			"pipeline.voice_preset":         "qwen_speaker_01",
+			"pipeline.quality_preset":       "balanced_hd",
+			"pipeline.num_inference_steps":  20,
+			"pipeline.audio_guidance_scale": 3.5,
+			"pipeline.keep_bg":              true,
+		},
+	}, nil)
+	if okRec.Code != http.StatusOK {
+		t.Fatalf("valid guest overrides expected 200, got %d body=%s", okRec.Code, okRec.Body.String())
+	}
+
+	// 2. Host loaded LLM marks busy_other=true and returns sanitized 409 on start/run/tts.preview.
+	mu.Lock()
+	loadedModel = "qwen3-8b-host-private"
+	mu.Unlock()
+	snapReq := httptest.NewRequest(http.MethodGet, "http://"+host+"/api/share/snapshot", nil)
+	snapReq.AddCookie(cookie)
+	snapRec := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(snapRec, snapReq)
+	if snapRec.Code != http.StatusOK {
+		t.Fatalf("snapshot expected 200, got %d", snapRec.Code)
+	}
+	if strings.Contains(snapRec.Body.String(), "qwen3-8b-host-private") {
+		t.Fatalf("loaded_model leaked into guest snapshot: %s", snapRec.Body.String())
+	}
+	var snapMap map[string]any
+	_ = json.Unmarshal(snapRec.Body.Bytes(), &snapMap)
+	if !shareAsBool(shareAsMap(snapMap["share"])["busy_other"]) {
+		t.Fatalf("expected loaded_model to set share.busy_other=true")
+	}
+	for _, act := range []string{"comfyui.start", "comfyui.run", "comfyui.tts.preview"} {
+		pl := map[string]any{}
+		if act == "comfyui.run" {
+			pl["workflow_id"] = "digital-human-longcat"
+		} else if act == "comfyui.tts.preview" {
+			pl["engine_id"] = "voxcpm2"
+		}
+		rec := doShareCommand(t, wc.Handler(), host, cookie, act, pl, nil)
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("%s while host LLM loaded expected 409, got %d body=%s", act, rec.Code, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "实时演播") || strings.Contains(rec.Body.String(), "qwen3") {
+			t.Fatalf("%s 409 message leaked host workload details: %s", act, rec.Body.String())
+		}
+	}
+	mu.Lock()
+	loadedModel = ""
+	mu.Unlock()
+
+	// 3. Guest upload concurrency limit (max 2 concurrent uploads; 3rd gets 429 immediately).
+	mu.Lock()
+	blockUploads = true
+	mu.Unlock()
+	var uploadWG sync.WaitGroup
+	uploadCodes := make([]int, 2)
+	for i := 0; i < 2; i++ {
+		uploadWG.Add(1)
+		go func(idx int) {
+			defer uploadWG.Done()
+			rec := doShareCommand(t, wc.Handler(), host, cookie, "comfyui.input.upload", map[string]any{"filename": "a.png", "data": "AA=="}, nil)
+			uploadCodes[idx] = rec.Code
+		}(i)
+	}
+	<-uploadStartedCh
+	<-uploadStartedCh
+	thirdRec := doShareCommand(t, wc.Handler(), host, cookie, "comfyui.input.upload", map[string]any{"filename": "c.png", "data": "AA=="}, nil)
+	if thirdRec.Code != http.StatusTooManyRequests || thirdRec.Header().Get("Retry-After") == "" {
+		t.Fatalf("3rd concurrent guest upload expected 429 with Retry-After, got %d hdr=%v", thirdRec.Code, thirdRec.Header())
+	}
+	close(uploadReleaseCh)
+	uploadWG.Wait()
+	if uploadCodes[0] != http.StatusOK || uploadCodes[1] != http.StatusOK {
+		t.Fatalf("first 2 concurrent uploads expected 200, got %v", uploadCodes)
+	}
+
+	// 4. Error sanitization scrubs host paths, tokens, tracebacks, and loopback URLs.
+	for _, rawErr := range []string{
+		"open /content/drive/secret/model.bin: permission denied",
+		`read C:\Users\alice\AppData\Local\ColabOne\vault.json failed`,
+		"upstream auth failed with hf_secretToken1234567890",
+		"Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9 failed",
+		"Traceback (most recent call last): internal error",
+		"dial tcp http://127.0.0.1:8188 refused",
+	} {
+		if got := sanitizeGuestBridgeError(rawErr); got != "操作暂时不可用，请联系分享者检查云端服务状态" {
+			t.Fatalf("sanitizeGuestBridgeError(%q) = %q, want sanitized fallback", rawErr, got)
+		}
+	}
+
+	// 5. SingleUse persistence fail-closed on BOTH entry (/share?k=) and switch (POST /share/switch).
+	onceEntry, err := wc.CreateWorkflowShare(ColabOneWorkflowShareCreateRequest{
+		Title:       "Once Entry FailClosed",
+		WorkflowIDs: []string{"digital-human-longcat"},
+		TTLMode:     WorkflowShareTTLOneTime,
+	})
+	if err != nil {
+		t.Fatalf("create onceEntry: %v", err)
+	}
+	onceSwitch, err := wc.CreateWorkflowShare(ColabOneWorkflowShareCreateRequest{
+		Title:       "Once Switch FailClosed",
+		WorkflowIDs: []string{"digital-human-longcat"},
+		TTLMode:     WorkflowShareTTLOneTime,
+	})
+	if err != nil {
+		t.Fatalf("create onceSwitch: %v", err)
+	}
+	onceEntryKey := extractShareKeyFromURL(t, onceEntry.URL)
+	onceSwitchKey := extractShareKeyFromURL(t, onceSwitch.URL)
+
+	// Render switch token while disk is still healthy.
+	swGetReq := httptest.NewRequest(http.MethodGet, "http://"+host+"/share?k="+url.QueryEscape(onceSwitchKey), nil)
+	swGetReq.AddCookie(cookie)
+	swGetRec := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(swGetRec, swGetReq)
+	if swGetRec.Code != http.StatusOK {
+		t.Fatalf("switch GET expected 200, got %d", swGetRec.Code)
+	}
+	swTok := extractHiddenInputValue(t, swGetRec.Body.String(), "token")
+
+	// Break workflow-shares.json persistence with a non-empty directory.
+	sharesFile := filepath.Join(dir, WorkflowSharesFilename)
+	_ = os.Remove(sharesFile)
+	if err := os.Mkdir(sharesFile, 0o755); err != nil {
+		t.Fatalf("mkdir obstacle: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sharesFile, "lock"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write obstacle: %v", err)
+	}
+
+	// SingleUse entry activation must fail closed with 503, no cookie, and rolled-back ConsumedAt.
+	entryReq := httptest.NewRequest(http.MethodGet, "http://"+host+"/share?k="+url.QueryEscape(onceEntryKey), nil)
+	entryRec := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(entryRec, entryReq)
+	if entryRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("SingleUse entry on persist failure expected 503, got %d", entryRec.Code)
+	}
+	if len(entryRec.Result().Cookies()) != 0 {
+		t.Fatalf("SingleUse entry fail-closed must not emit Set-Cookie")
+	}
+	for _, s := range wc.WorkflowSharesState().Shares {
+		if s.ID == onceEntry.ID && (s.ConsumedAt != 0 || s.ActiveSessions != 0 || s.Status != "active") {
+			t.Fatalf("SingleUse entry fail-closed did not roll back: %+v", s)
+		}
+	}
+
+	// SingleUse switch must fail closed with 503, no cookie, rolled-back ConsumedAt, and preserved prior session!
+	swPost := httptest.NewRequest(http.MethodPost, "http://"+host+"/share/switch", strings.NewReader(url.Values{"token": {swTok}}.Encode()))
+	swPost.Host = host
+	swPost.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	swPost.Header.Set("Origin", "http://"+host)
+	swPost.AddCookie(cookie)
+	swPostRec := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(swPostRec, swPost)
+	if swPostRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("SingleUse switch on persist failure expected 503, got %d", swPostRec.Code)
+	}
+	if len(swPostRec.Result().Cookies()) != 0 {
+		t.Fatalf("SingleUse switch fail-closed must not emit Set-Cookie")
+	}
+	for _, s := range wc.WorkflowSharesState().Shares {
+		if s.ID == onceSwitch.ID && (s.ConsumedAt != 0 || s.ActiveSessions != 0 || s.Status != "active") {
+			t.Fatalf("SingleUse switch fail-closed did not roll back: %+v", s)
+		}
+	}
+	// Prior guest cookie remains valid after failed switch!
+	priorCapReq := httptest.NewRequest(http.MethodGet, "http://"+host+"/api/share/capabilities", nil)
+	priorCapReq.AddCookie(cookie)
+	priorCapRec := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(priorCapRec, priorCapReq)
+	if priorCapRec.Code != http.StatusOK {
+		t.Fatalf("prior session cookie should stay valid after fail-closed switch, got %d", priorCapRec.Code)
 	}
 }

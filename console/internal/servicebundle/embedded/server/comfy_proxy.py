@@ -887,10 +887,10 @@ class ColabOneCanvasProxyServer:
             )
             if not is_internal_probe:
                 self._touch()
-            host = header_map.get("host", "").strip().lower()
+            parsed_host = _parse_host_header(header_map.get("host", ""))
             xfp = header_map.get("x-forwarded-proto", "").split(",")[0].strip().lower()
             is_https = (xfp == "https") or (
-                bool(host) and not host.startswith(("127.0.0.1", "localhost", "[::1]"))
+                parsed_host is not None and not _is_loopback_host(parsed_host[0])
             )
             cookie_header = (
                 f"{COLABONE_COMFY_COOKIE}={self.session_cookie}; Path=/; HttpOnly; SameSite=Lax"

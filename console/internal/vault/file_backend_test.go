@@ -582,3 +582,64 @@ func TestColabOneFileVaultV2TamperKeyValidationAndQuarantineError(t *testing.T) 
 	}
 	_ = keyPath
 }
+
+func TestColabOneFileVaultPostRenameSecureFailureInvalidatesCacheAndUnixFDChmod(t *testing.T) {
+	t.Run("post-rename secure failure invalidates loaded cache for Set and Delete", func(t *testing.T) {
+		dir := t.TempDir()
+		backend := NewColabOneFileSecretBackend(filepath.Join(dir, ColabOneVaultFilename), ColabOneVaultService)
+		if err := backend.Set("k1", []byte(`"v1"`)); err != nil {
+			t.Fatalf("initial Set failed: %v", err)
+		}
+
+		origSecure := colabOneSecureVaultFinalPathFn
+		t.Cleanup(func() { colabOneSecureVaultFinalPathFn = origSecure })
+
+		injectedErr := errors.New("simulated post-rename DACL failure")
+		colabOneSecureVaultFinalPathFn = func(string) error { return injectedErr }
+
+		// Set commits the new file via rename before final-path securing fails.
+		// The cache must be invalidated so Get reloads the committed disk state.
+		if err := backend.Set("k1", []byte(`"v2"`)); !errors.Is(err, injectedErr) {
+			t.Fatalf("Set error = %v, want %v", err, injectedErr)
+		}
+		got, err := backend.Get("k1")
+		if err != nil || string(got) != `"v2"` {
+			t.Fatalf("Get(k1) after post-rename Set failure = (%q, %v), want (\"v2\", nil)", string(got), err)
+		}
+
+		// Delete also commits removal via rename before final-path securing fails.
+		if err := backend.Delete("k1"); !errors.Is(err, injectedErr) {
+			t.Fatalf("Delete error = %v, want %v", err, injectedErr)
+		}
+		if gotAfterDel, err := backend.Get("k1"); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("Get(k1) after post-rename Delete failure = (%q, %v), want ErrNotFound", string(gotAfterDel), err)
+		}
+	})
+
+	t.Run("unix readExistingFileKEKLocked tightens permissions via open file descriptor", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Unix file mode check applies to non-Windows builds")
+		}
+		dir := t.TempDir()
+		v := NewFileVault(dir)
+		if err := v.Set("hf", "hf_fd_chmod_secret"); err != nil {
+			t.Fatalf("initial Set failed: %v", err)
+		}
+		kp := filepath.Join(dir, ColabOneVaultKeyFilename)
+		if err := os.Chmod(kp, 0o644); err != nil {
+			t.Fatalf("chmod 0644 failed: %v", err)
+		}
+
+		cold := NewFileVault(dir)
+		if got := cold.GetString("hf", ""); got != "hf_fd_chmod_secret" {
+			t.Fatalf("cold GetString(hf) = %q, want hf_fd_chmod_secret", got)
+		}
+		info, err := os.Stat(kp)
+		if err != nil {
+			t.Fatalf("stat vault.key: %v", err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Fatalf("vault.key mode after cold load = %04o, want 0600", perm)
+		}
+	})
+}

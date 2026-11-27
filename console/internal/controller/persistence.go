@@ -792,6 +792,22 @@ func (c *ColabOneController) builtinWorkflowIDSet() map[string]bool {
 	return ids
 }
 
+func (c *ColabOneController) builtinTemplatePipelineKind(workflowID string) string {
+	if workflowID == "" {
+		return ""
+	}
+	for _, wf := range c.builtinWorkflows() {
+		if asString(wf["id"]) != workflowID {
+			continue
+		}
+		if pipe := asMap(wf["pipeline"]); pipe != nil {
+			return asString(pipe["kind"])
+		}
+		return ""
+	}
+	return ""
+}
+
 func (c *ColabOneController) builtinTtsEngines() []map[string]any {
 	c.loadBuiltinComfyCatalog()
 	return deepCopyMapSlice(c.cachedBuiltinTtsEngines)

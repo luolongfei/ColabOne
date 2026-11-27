@@ -881,6 +881,7 @@ def test_comfy_run_route_uploads_inputs_saves_output_and_snapshot_hides_canvas_t
             "comfyui_longcat_native",
             "comfyui_workflow_auto_release",
             "comfyui_live_studio",
+            "comfyui_fashion_tryon",
             "comfyui_share_guard",
         ]
         assert snap["runtime"]["comfyui"]["running"] is True
@@ -1825,7 +1826,7 @@ def test_comfyui_native_pack_reset_save_output_7arg_log_fd_skip_auto_release_and
     from server.runtime import ColabOneTask
     from server.tts_engines import ColabOneRemoteTtsRunner
 
-    # 1. Stale _native_active_pack_id cleared on standard/custom workflow after native pipeline.
+    # 1. Stale _native_active_pack_id cleared on standard/custom workflow after fashion_tryon.
     fake_proc = Mock()
     fake_proc.poll.return_value = None
     runtime.comfy.proc = fake_proc
@@ -1833,8 +1834,8 @@ def test_comfyui_native_pack_reset_save_output_7arg_log_fd_skip_auto_release_and
     runtime.http = Mock()
     runtime.http.get.return_value = make_http_resp({"queue_running": [], "queue_pending": []})
 
-    runtime.comfy.mark_native_pack_ready("digital-human-longcat")
-    assert runtime.comfy.status()["active_pack"] == "digital-human-longcat"
+    runtime.comfy.mark_native_pack_ready("fashion-tryon-h3")
+    assert runtime.comfy.status()["active_pack"] == "fashion-tryon-h3"
 
     custom_wf = {
         "id": "custom-plain-wf",

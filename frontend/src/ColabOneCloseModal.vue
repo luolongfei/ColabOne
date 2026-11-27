@@ -190,6 +190,7 @@ function handleConfirm() {
   <AModal
     :open="props.open"
     :width="468"
+    :z-index="1150"
     :closable="!props.submitting"
     :mask-closable="!props.submitting"
     :keyboard="!props.submitting"

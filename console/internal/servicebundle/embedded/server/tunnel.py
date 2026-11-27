@@ -10,10 +10,73 @@ import subprocess
 import threading
 import time
 import uuid
-from urllib.parse import urlsplit
+from urllib.parse import urlparse, urlsplit, urlunparse
 import requests
+from requests.adapters import HTTPAdapter
 
 _CLOUDFLARED_INSTALL_LOCK = threading.Lock()
+_SENSITIVE_TUNNEL_ENV_KEYS = frozenset(
+    {
+        "COLABONE_REMOTE_CONFIG",
+        "HF_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "HUGGINGFACE_HUB_TOKEN",
+        "HF_API_TOKEN",
+        "OPENAI_API_KEY",
+        "TUNNEL_TOKEN",
+    }
+)
+
+
+def _sanitized_tunnel_env() -> dict[str, str]:
+    return {
+        k: v
+        for k, v in os.environ.items()
+        if k not in _SENSITIVE_TUNNEL_ENV_KEYS and not k.startswith("TUNNEL_")
+    }
+
+
+class _ColabOneTunnelPinnedIPAdapter(HTTPAdapter):
+    """Requests HTTPAdapter pinning TCP dials to a validated public IP while preserving SNI and Host."""
+
+    def __init__(
+        self,
+        *,
+        expected_host: str,
+        pinned_ip: str,
+        use_tls: bool = True,
+        **kwargs,
+    ) -> None:
+        self.expected_host = expected_host.strip().lower().rstrip(".")
+        self.pinned_ip = pinned_ip.strip()
+        self.use_tls = bool(use_tls)
+        super().__init__(**kwargs)
+
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+        if self.use_tls:
+            pool_kwargs = dict(pool_kwargs)
+            pool_kwargs["assert_hostname"] = self.expected_host
+            pool_kwargs["server_hostname"] = self.expected_host
+        return super().init_poolmanager(connections, maxsize, block=block, **pool_kwargs)
+
+    def send(self, request, *args, **kwargs):
+        parsed = urlparse(request.url)
+        req_host = (parsed.hostname or "").strip().lower().rstrip(".")
+        if req_host != self.expected_host:
+            raise ValueError("探测请求主机与已校验公网解析结果不一致")
+        scheme = (parsed.scheme or "").lower()
+        default_port = 443 if scheme == "https" else 80
+        port = parsed.port
+        host_header = (
+            f"{req_host}:{port}"
+            if port is not None and port != default_port
+            else req_host
+        )
+        ip_literal = f"[{self.pinned_ip}]" if ":" in self.pinned_ip else self.pinned_ip
+        pinned_netloc = f"{ip_literal}:{port}" if port is not None else ip_literal
+        request.url = urlunparse(parsed._replace(netloc=pinned_netloc))
+        request.headers["Host"] = host_header
+        return super().send(request, *args, **kwargs)
 
 
 def ensure_binary(root, catalog, cancel, note):
@@ -108,8 +171,16 @@ def public_addresses(origin):
     if not host:
         raise ValueError("域名必须解析到公网地址")
     addresses = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
-    if not addresses or any(not _is_public_ip(a[4][0]) for a in addresses):
+    if not addresses:
         raise ValueError("域名必须解析到公网地址")
+    resolved_ips: list[str] = []
+    for a in addresses:
+        ip_str = str(a[4][0])
+        if not _is_public_ip(ip_str):
+            raise ValueError("域名必须解析到公网地址")
+        if ip_str not in resolved_ips:
+            resolved_ips.append(ip_str)
+    return resolved_ips
 
 
 class ColabOneTunnel:
@@ -130,12 +201,31 @@ class ColabOneTunnel:
         deadline = time.monotonic() + max(0.5, float(timeout_seconds))
         if self.cancel.is_set() or time.monotonic() >= deadline:
             return False
-        public_addresses(origin)
+        pinned_ips = public_addresses(origin) or []
         if self.cancel.is_set() or time.monotonic() >= deadline:
             return False
+        parsed_origin = urlsplit(origin)
+        origin_host = (parsed_origin.hostname or "").strip().lower().rstrip(".")
         # Never follow redirects or send the API key before verifying the runtime identity.
         with requests.Session() as http:
             http.trust_env = False
+            if pinned_ips and origin_host and callable(getattr(http, "mount", None)):
+                http.mount(
+                    "https://",
+                    _ColabOneTunnelPinnedIPAdapter(
+                        expected_host=origin_host,
+                        pinned_ip=pinned_ips[0],
+                        use_tls=True,
+                    ),
+                )
+                http.mount(
+                    "http://",
+                    _ColabOneTunnelPinnedIPAdapter(
+                        expected_host=origin_host,
+                        pinned_ip=pinned_ips[0],
+                        use_tls=False,
+                    ),
+                )
 
             def read(path, headers=None):
                 remaining = deadline - time.monotonic()
@@ -232,11 +322,7 @@ class ColabOneTunnel:
                     text=True,
                     encoding="utf-8",
                     errors="replace",
-                    env={
-                        k: v
-                        for k, v in os.environ.items()
-                        if not k.startswith("TUNNEL_")
-                    },
+                    env=_sanitized_tunnel_env(),
                 )
                 process = self.process
             g.note("Cloudflare 连接器已启动，正在验证固定域名连通性与密钥鉴权")

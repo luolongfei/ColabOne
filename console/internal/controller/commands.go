@@ -18,6 +18,7 @@ import (
 const (
 	colabOneTtsPreviewUpgradeHint   = "当前远端服务版本暂不支持 TTS 音色试听，请先点击顶部「立即热更新」升级远端服务后再试"
 	colabOneLongCatNativeUpgradeHint = "当前远端实例服务版本较旧，暂不支持原生 LongCat-Video-Avatar 1.6 管线，请先点击「热更新服务」或重新启动 GPU 实例"
+	colabOneFashionTryonUpgradeHint = "当前远端服务版本暂不支持 AI 模特换装棚拍工作流，请先点击顶部「立即热更新」升级远端服务后再试"
 	colabOneTtsPreviewChunkBytes    = 512 * 1024
 	colabOneMaxTtsPreviewBytes      = 16 * 1024 * 1024
 	colabOneMaxTtsPreviewChunks     = 256
@@ -540,10 +541,24 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 			if id := asString(storedItem["id"]); id != "" && !builtinIDs[id] {
 				ver, _ := asFloat(storedItem["updated_at"])
 				c.mu.Lock()
+				prevWF, hadPrevWF := c.customWorkflows[id]
+				prevVer, hadPrevVer := c.remoteWorkflowVersions[id]
 				c.customWorkflows[id] = deepCopyMap(storedItem)
 				c.remoteWorkflowVersions[id] = ver
 				c.mu.Unlock()
 				if err := c.saveWorkflows(); err != nil {
+					c.mu.Lock()
+					if hadPrevWF {
+						c.customWorkflows[id] = prevWF
+					} else {
+						delete(c.customWorkflows, id)
+					}
+					if hadPrevVer {
+						c.remoteWorkflowVersions[id] = prevVer
+					} else {
+						delete(c.remoteWorkflowVersions, id)
+					}
+					c.mu.Unlock()
 					return nil, err
 				}
 			}
@@ -579,6 +594,8 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		}
 		c.mu.Lock()
 		itemID := asString(item["id"])
+		prevWF, hadPrevWF := c.customWorkflows[itemID]
+		prevVer, hadPrevVer := c.remoteWorkflowVersions[itemID]
 		c.customWorkflows[itemID] = deepCopyMap(item)
 		delete(c.remoteWorkflowVersions, itemID)
 		var baseWorkflows []map[string]any
@@ -588,6 +605,18 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		merged := c.mergeWorkflowsLocked(baseWorkflows)
 		c.mu.Unlock()
 		if err := c.saveWorkflows(); err != nil {
+			c.mu.Lock()
+			if hadPrevWF {
+				c.customWorkflows[itemID] = prevWF
+			} else {
+				delete(c.customWorkflows, itemID)
+			}
+			if hadPrevVer {
+				c.remoteWorkflowVersions[itemID] = prevVer
+			} else {
+				delete(c.remoteWorkflowVersions, itemID)
+			}
+			c.mu.Unlock()
 			return nil, err
 		}
 		c.Update(map[string]any{"workflows": merged})
@@ -610,6 +639,14 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		rtState := asString(asMap(c.data["runtime"])["state"])
 		c.mu.Unlock()
 		if err := c.saveWorkflows(); err != nil {
+			c.mu.Lock()
+			if hadLocal {
+				c.customWorkflows[wid] = removedLocal
+			}
+			if hadVer {
+				c.remoteWorkflowVersions[wid] = prevVer
+			}
+			c.mu.Unlock()
 			return nil, err
 		}
 		if rtState == "ready" {
@@ -773,6 +810,9 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		wfID := asString(req["workflow_id"])
 		if c.builtinTemplateVideoBackend(wfID) == "longcat_avatar_native" && c.readyRemoteLacksCapability("comfyui_longcat_native") {
 			return nil, errors.New(colabOneLongCatNativeUpgradeHint)
+		}
+		if c.builtinTemplatePipelineKind(wfID) == "fashion_tryon" && c.readyRemoteLacksCapability("comfyui_fashion_tryon") {
+			return nil, errors.New(colabOneFashionTryonUpgradeHint)
 		}
 		if err := c.ensureRemoteWorkflow(ctx, wfID); err != nil {
 			return nil, err
@@ -1325,7 +1365,7 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 					return nil, errors.New("当前算力服务暂未就绪，暂不可访问该作品文件")
 				}
 				c.log("正在删除远端 ComfyUI 作品文件", "ComfyUI", "info")
-				res, err := c.remote(ctx, "DELETE", "comfyui/outputs/"+identity, nil, "", 0)
+				res, err := c.remote(ctx, "DELETE", "comfyui/outputs/"+identity+"?runtime_only=1", nil, "", 0)
 				if err != nil {
 					return nil, err
 				}
@@ -1347,7 +1387,25 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 					}
 					return nil, err
 				}
-				c.removeDriveOutputRecord(identity)
+				keepExportedRecord := false
+				if rec := c.driveOutputRecordCopy(identity); rec != nil {
+					if exportFileID := sanitizeDriveFileID(rec.DriveFileID); exportFileID != "" {
+						trashed, trashErr := c.trashDriveFileIDs(ctx, exportFileID)
+						if trashErr != nil {
+							keepExportedRecord = true
+							c.log("已删除远端作品，但清理 Google 云盘导出副本失败（已保留云盘记录）："+SafeMessage(trashErr.Error()), "云盘", "warning")
+						} else if !trashed {
+							keepExportedRecord = true
+						}
+					} else if rec.DriveExported {
+						keepExportedRecord = true
+					}
+				}
+				if !keepExportedRecord {
+					c.removeDriveOutputRecord(identity)
+				} else {
+					c.clearDriveOutputWorkspaceLinks(identity)
+				}
 				if err := c.RefreshRemote(ctx, ""); err != nil {
 					return nil, err
 				}

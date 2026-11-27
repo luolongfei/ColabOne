@@ -328,6 +328,37 @@ function toggleImportModule(mod: ColabOneMigrationModuleSummary, checked: boolea
   importSelected.value = COLABONE_MIGRATION_MODULES.filter((m) => set.has(m));
 }
 
+function shouldIgnoreModuleRowClick(event: MouseEvent): boolean {
+  const target = event.target as HTMLElement | null;
+  return Boolean(
+    target?.closest(
+      ".ant-checkbox-wrapper, button, a, input, .co-privacy-mask",
+    ),
+  );
+}
+
+function onExportModuleRowClick(
+  modId: string,
+  event: MouseEvent,
+) {
+  if (props.exportSubmitting || shouldIgnoreModuleRowClick(event)) return;
+  toggleExportModule(modId, !isModuleSelected(exportSelected.value, modId));
+}
+
+function onImportModuleRowClick(
+  mod: ColabOneMigrationModuleSummary,
+  event: MouseEvent,
+) {
+  if (
+    props.importApplying ||
+    isImportModuleDisabled(mod) ||
+    shouldIgnoreModuleRowClick(event)
+  ) {
+    return;
+  }
+  toggleImportModule(mod, !isModuleSelected(importSelected.value, mod.id));
+}
+
 function handleSubmitExport() {
   exportPasswordTouched.value = true;
   exportConfirmTouched.value = true;
@@ -538,16 +569,18 @@ function libraryCompactText(mod: ColabOneMigrationModuleSummary): string {
       </div>
 
       <div v-else class="co-mig-module-list">
-        <label
+        <div
           v-for="mod in exportModulesList"
           :key="mod.id"
           class="co-mig-module-item"
           :class="{ 'is-selected': isModuleSelected(exportSelected, mod.id) }"
           :data-testid="`migration-export-mod-${mod.id}`"
+          @click="onExportModuleRowClick(mod.id, $event)"
         >
           <ACheckbox
             :checked="isModuleSelected(exportSelected, mod.id)"
             :disabled="exportSubmitting"
+            :aria-label="moduleTitle(mod.id)"
             @update:checked="(v) => toggleExportModule(mod.id, Boolean(v))"
           />
           <span class="co-mig-mod-icon" :class="moduleIconClass(mod.id)" aria-hidden="true">
@@ -626,7 +659,7 @@ function libraryCompactText(mod: ColabOneMigrationModuleSummary): string {
             </div>
             <p class="co-mig-mod-desc">{{ moduleDesc(mod.id) }}</p>
           </div>
-        </label>
+        </div>
       </div>
 
       <!-- Password fields (mandatory encryption) -->
@@ -670,12 +703,14 @@ function libraryCompactText(mod: ColabOneMigrationModuleSummary): string {
         </p>
       </div>
 
-      <AAlert
-        v-if="exportError"
-        type="error"
-        show-icon
-        :message="tb(exportError)"
-      />
+      <AAlert v-if="exportError" type="error" show-icon>
+        <template #message>
+          <ColabOnePrivacyText
+            :text="tb(exportError)"
+            :context="privacyContext"
+          />
+        </template>
+      </AAlert>
     </div>
 
     <!-- =============================================================== -->
@@ -729,9 +764,15 @@ function libraryCompactText(mod: ColabOneMigrationModuleSummary): string {
         v-if="importError"
         type="error"
         show-icon
-        :message="tb(importError)"
         data-testid="migration-import-error"
-      />
+      >
+        <template #message>
+          <ColabOnePrivacyText
+            :text="tb(importError)"
+            :context="privacyContext"
+          />
+        </template>
+      </AAlert>
     </div>
 
     <!-- =============================================================== -->
@@ -789,7 +830,7 @@ function libraryCompactText(mod: ColabOneMigrationModuleSummary): string {
       </div>
 
       <div class="co-mig-module-list">
-        <label
+        <div
           v-for="mod in importModulesList"
           :key="mod.id"
           class="co-mig-module-item"
@@ -798,10 +839,12 @@ function libraryCompactText(mod: ColabOneMigrationModuleSummary): string {
             'is-disabled': isImportModuleDisabled(mod),
           }"
           :data-testid="`migration-import-mod-${mod.id}`"
+          @click="onImportModuleRowClick(mod, $event)"
         >
           <ACheckbox
             :checked="isModuleSelected(importSelected, mod.id)"
             :disabled="importApplying || isImportModuleDisabled(mod)"
+            :aria-label="moduleTitle(mod.id)"
             @update:checked="(v) => toggleImportModule(mod, Boolean(v))"
           />
           <span class="co-mig-mod-icon" :class="moduleIconClass(mod.id)" aria-hidden="true">
@@ -914,7 +957,7 @@ function libraryCompactText(mod: ColabOneMigrationModuleSummary): string {
               <template v-else>{{ moduleDesc(mod.id) }}</template>
             </p>
           </div>
-        </label>
+        </div>
       </div>
 
       <AAlert
@@ -928,12 +971,14 @@ function libraryCompactText(mod: ColabOneMigrationModuleSummary): string {
         "
       />
 
-      <AAlert
-        v-if="importError"
-        type="error"
-        show-icon
-        :message="tb(importError)"
-      />
+      <AAlert v-if="importError" type="error" show-icon>
+        <template #message>
+          <ColabOnePrivacyText
+            :text="tb(importError)"
+            :context="privacyContext"
+          />
+        </template>
+      </AAlert>
     </div>
 
     <!-- =============================================================== -->

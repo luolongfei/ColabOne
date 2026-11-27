@@ -598,12 +598,35 @@ func TestComfyCatalogFileAndValidation(t *testing.T) {
 						t.Fatalf("catalog template %q pipeline should be object or null, got %#v", tpl.ID, rawPipe)
 					}
 					kind, _ := pipeObj["kind"].(string)
-					if kind != "comfy_standard" && kind != "digital_human" {
+					if kind != "comfy_standard" && kind != "digital_human" && kind != "fashion_tryon" {
 						t.Fatalf("catalog template %q has invalid pipeline.kind=%q", tpl.ID, kind)
 					}
 				}
 			}
 		}
+		if tpl.ID == "fashion-tryon-h3" {
+			if tpl.CommercialOK {
+				t.Fatalf("fashion-tryon-h3 must explicitly set commercial_ok=false")
+			}
+			if tpl.Pipeline == nil || tpl.Pipeline.Kind != "fashion_tryon" {
+				t.Fatalf("fashion-tryon-h3 pipeline = %#v, want kind=fashion_tryon", tpl.Pipeline)
+			}
+			basicCount := 0
+			advancedCount := 0
+			for _, f := range tpl.Fields {
+				if f.Group == "basic" {
+					basicCount++
+				} else if f.Group == "advanced" {
+					advancedCount++
+				}
+			}
+			if basicCount != 17 || advancedCount < 15 {
+				t.Fatalf("fashion-tryon-h3 field groups basic=%d advanced=%d, want 17 basic (6 model + roles + 6 garment + roles + 3 selects) and >=15 advanced", basicCount, advancedCount)
+			}
+		}
+	}
+	if _, ok := seenTplIDs["fashion-tryon-h3"]; !ok {
+		t.Fatalf("catalog/comfyui.json missing built-in fashion-tryon-h3 template")
 	}
 	if rawEngines, exists := catalogWire["tts_engines"]; exists {
 		enginesWire, ok := rawEngines.([]any)
@@ -1896,6 +1919,21 @@ func TestComfyPipelineSpecValidation(t *testing.T) {
 	lcWire := marshalJSONMap(t, &longcatSpec)
 	if lcWire["video_backend"] != "longcat_avatar" || lcWire["upscale_mode"] != "lanczos" || lcWire["output_fps"] != float64(30) {
 		t.Fatalf("unexpected longcat_avatar pipeline wire: %#v", lcWire)
+	}
+
+	var fashionSpec ColabOneComfyPipelineSpec
+	fashionRaw := mustMarshalJSON(t, map[string]any{
+		"kind":           "fashion_tryon",
+		"image_node_key": "1.image",
+		"target_width":   1728,
+		"target_height":  2304,
+	})
+	if err := unmarshalAndValidateSchema(fashionRaw, &fashionSpec); err != nil {
+		t.Fatalf("valid fashion_tryon pipeline failed: %v", err)
+	}
+	fashionWire := marshalJSONMap(t, &fashionSpec)
+	if fashionWire["kind"] != "fashion_tryon" || fashionWire["target_width"] != float64(1728) {
+		t.Fatalf("unexpected fashion_tryon pipeline wire: %#v", fashionWire)
 	}
 
 	// Boundary values accepted (including 3.0s lower bound and LongCat-Avatar 3.7s golden window).
@@ -3681,10 +3719,12 @@ func TestRound2ComfySchemaHardeningParity(t *testing.T) {
 			{Key: "1.steps", Label: "Steps", NodeID: "1", InputName: "steps", FieldType: "integer", Default: 20},
 			{Key: "1.steps", Label: "Steps", NodeID: "1", InputName: "steps", FieldType: "integer", Default: float64(20)},
 			{Key: "1.steps", Label: "Steps", NodeID: "1", InputName: "steps", FieldType: "integer", Default: json.Number("20")},
+			{Key: "1.steps", Label: "Steps", NodeID: "1", InputName: "steps", FieldType: "integer", Default: "20"},
 			{Key: "1.steps", Label: "Steps", NodeID: "1", InputName: "steps", FieldType: "integer", Default: nil},
 			{Key: "1.cfg", Label: "CFG", NodeID: "1", InputName: "cfg", FieldType: "number", Default: 7.5},
 			{Key: "1.cfg", Label: "CFG", NodeID: "1", InputName: "cfg", FieldType: "number", Default: 7},
 			{Key: "1.cfg", Label: "CFG", NodeID: "1", InputName: "cfg", FieldType: "number", Default: json.Number("7.5")},
+			{Key: "1.cfg", Label: "CFG", NodeID: "1", InputName: "cfg", FieldType: "number", Default: "7.5"},
 			{Key: "1.cfg", Label: "CFG", NodeID: "1", InputName: "cfg", FieldType: "number", Default: nil},
 			{Key: "1.flag", Label: "Flag", NodeID: "1", InputName: "flag", FieldType: "boolean", Default: true},
 			{Key: "1.flag", Label: "Flag", NodeID: "1", InputName: "flag", FieldType: "boolean", Default: false},
@@ -3701,11 +3741,11 @@ func TestRound2ComfySchemaHardeningParity(t *testing.T) {
 			field ColabOneWorkflowField
 		}{
 			{"intStringNonInt", ColabOneWorkflowField{Key: "1.steps", Label: "Steps", NodeID: "1", InputName: "steps", FieldType: "integer", Default: "abc"}},
-			{"intStringDigits", ColabOneWorkflowField{Key: "1.steps", Label: "Steps", NodeID: "1", InputName: "steps", FieldType: "integer", Default: "20"}},
+			{"intStringFractional", ColabOneWorkflowField{Key: "1.steps", Label: "Steps", NodeID: "1", InputName: "steps", FieldType: "integer", Default: "2.5"}},
 			{"intFloatFractional", ColabOneWorkflowField{Key: "1.steps", Label: "Steps", NodeID: "1", InputName: "steps", FieldType: "integer", Default: 2.5}},
 			{"intBool", ColabOneWorkflowField{Key: "1.steps", Label: "Steps", NodeID: "1", InputName: "steps", FieldType: "integer", Default: true}},
 			{"numberStringNonNum", ColabOneWorkflowField{Key: "1.cfg", Label: "CFG", NodeID: "1", InputName: "cfg", FieldType: "number", Default: "abc"}},
-			{"numberStringDigits", ColabOneWorkflowField{Key: "1.cfg", Label: "CFG", NodeID: "1", InputName: "cfg", FieldType: "number", Default: "7.5"}},
+			{"numberStringNaN", ColabOneWorkflowField{Key: "1.cfg", Label: "CFG", NodeID: "1", InputName: "cfg", FieldType: "number", Default: "NaN"}},
 			{"numberBool", ColabOneWorkflowField{Key: "1.cfg", Label: "CFG", NodeID: "1", InputName: "cfg", FieldType: "number", Default: false}},
 			{"boolString", ColabOneWorkflowField{Key: "1.flag", Label: "Flag", NodeID: "1", InputName: "flag", FieldType: "boolean", Default: "true"}},
 			{"boolInt", ColabOneWorkflowField{Key: "1.flag", Label: "Flag", NodeID: "1", InputName: "flag", FieldType: "boolean", Default: 1}},
@@ -3911,6 +3951,47 @@ func TestComfyModelExtensionsPathDotfilesIntNumberAndSkipAutoRelease(t *testing.
 	var runReq ColabOneWorkflowRunRequest
 	if err := json.Unmarshal([]byte(`{"workflow_id":"digital-human-longcat","skip_auto_release":true}`), &runReq); err != nil {
 		t.Fatalf("unmarshal workflow run with skip_auto_release=true: %v", err)
+	}
+	if err := runReq.Validate(); err != nil || !runReq.SkipAutoRelease {
+		t.Fatalf("expected valid skip_auto_release=true, got err=%v val=%v", err, runReq.SkipAutoRelease)
+	}
+
+	// 5. ColabOneWorkflowField.Validate accepts trimmed numeric string defaults matching common/comfyui.py.
+	for _, intDef := range []any{"42", " -7 ", "+0", 12, float64(8)} {
+		f := ColabOneWorkflowField{
+			Key: "1.steps", Label: "Steps", NodeID: "1", InputName: "steps", FieldType: "integer",
+			Default: intDef,
+		}
+		if err := f.Validate(); err != nil {
+			t.Fatalf("integer default %#v expected valid, got %v", intDef, err)
+		}
+	}
+	for _, badInt := range []any{true, "3.5", "abc", "", "1e3"} {
+		f := ColabOneWorkflowField{
+			Key: "1.steps", Label: "Steps", NodeID: "1", InputName: "steps", FieldType: "integer",
+			Default: badInt,
+		}
+		if err := f.Validate(); err == nil {
+			t.Fatalf("integer default %#v expected error, got nil", badInt)
+		}
+	}
+	for _, numDef := range []any{"3.5", " -0.25 ", "+1e-2", 2, float64(1.5)} {
+		f := ColabOneWorkflowField{
+			Key: "1.cfg", Label: "CFG", NodeID: "1", InputName: "cfg", FieldType: "number",
+			Default: numDef,
+		}
+		if err := f.Validate(); err != nil {
+			t.Fatalf("number default %#v expected valid, got %v", numDef, err)
+		}
+	}
+	for _, badNum := range []any{false, "NaN", "Inf", "-Infinity", "0x1p2", "not-a-num", "   "} {
+		f := ColabOneWorkflowField{
+			Key: "1.cfg", Label: "CFG", NodeID: "1", InputName: "cfg", FieldType: "number",
+			Default: badNum,
+		}
+		if err := f.Validate(); err == nil {
+			t.Fatalf("number default %#v expected error, got nil", badNum)
+		}
 	}
 	if !runReq.SkipAutoRelease {
 		t.Fatalf("expected SkipAutoRelease=true")

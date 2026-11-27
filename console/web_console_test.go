@@ -682,7 +682,10 @@ func TestColabOneDesktopShareRuntimeOnlyMediaAndControllerGuards(t *testing.T) {
 		t.Fatalf("runtime_only delete must preserve host exported Drive record, err=%v content=%s", err, string(diskAfterDel))
 	}
 
-	// (d) skip_auto_release capability forwarding.
+	// (d) fashion_tryon capability gating + skip_auto_release capability forwarding.
+	if _, err := ctrl.Command(ctx, "comfyui.run", map[string]any{"workflow_id": "fashion-tryon-h3"}); err == nil || !strings.Contains(err.Error(), "AI 模特换装棚拍") {
+		t.Fatalf("fashion-tryon-h3 without comfyui_fashion_tryon capability expected upgrade hint, got %v", err)
+	}
 	if _, err := ctrl.Command(ctx, "comfyui.run", map[string]any{
 		"workflow_id":       "digital-human-longcat",
 		"skip_auto_release": true,
@@ -693,7 +696,7 @@ func TestColabOneDesktopShareRuntimeOnlyMediaAndControllerGuards(t *testing.T) {
 	if _, forwarded := lastRunRPCBody["skip_auto_release"]; forwarded {
 		t.Fatalf("skip_auto_release must NOT be forwarded when remote lacks comfyui_share_guard")
 	}
-	caps = []string{"public_api", "comfyui", "comfyui_tts_preview", "comfyui_longcat_native", "comfyui_share_guard"}
+	caps = []string{"public_api", "comfyui", "comfyui_tts_preview", "comfyui_fashion_tryon", "comfyui_share_guard"}
 	mu.Unlock()
 	ctrl.Update(map[string]any{
 		"runtime": map[string]any{
@@ -704,10 +707,10 @@ func TestColabOneDesktopShareRuntimeOnlyMediaAndControllerGuards(t *testing.T) {
 		},
 	})
 	if _, err := ctrl.Command(ctx, "comfyui.run", map[string]any{
-		"workflow_id":       "digital-human-longcat",
+		"workflow_id":       "fashion-tryon-h3",
 		"skip_auto_release": true,
 	}); err != nil {
-		t.Fatalf("digital-human-longcat with comfyui_share_guard failed: %v", err)
+		t.Fatalf("fashion-tryon-h3 with capabilities failed: %v", err)
 	}
 	mu.Lock()
 	if lastRunRPCBody["skip_auto_release"] != true {

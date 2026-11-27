@@ -12,4 +12,8 @@ func winQueryDesktopViaShell() string {
 	return ""
 }
 
+func winPowerShellExecutable() string {
+	return "powershell.exe"
+}
+
 func applyWindowsProcAttr(_ *exec.Cmd) {}

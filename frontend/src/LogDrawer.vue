@@ -147,12 +147,13 @@ function stopResize() {
   window.removeEventListener("pointermove", onResizeMove);
   window.removeEventListener("pointerup", stopResize);
   window.removeEventListener("pointercancel", stopResize);
+  window.removeEventListener("blur", stopResize);
   document.body.style.removeProperty("cursor");
   document.body.style.removeProperty("user-select");
 }
 
 function startResize(e: PointerEvent) {
-  if (e.button !== 0 || props.standalone) return;
+  if (e.button !== 0 || props.standalone || props.mobileOverlay) return;
   e.preventDefault();
   dragStartX = e.clientX;
   dragStartWidth = props.width || DEFAULT_WIDTH;
@@ -162,7 +163,17 @@ function startResize(e: PointerEvent) {
   window.addEventListener("pointermove", onResizeMove);
   window.addEventListener("pointerup", stopResize);
   window.addEventListener("pointercancel", stopResize);
+  window.addEventListener("blur", stopResize);
 }
+
+watch(
+  [() => props.open, () => props.standalone, () => props.mobileOverlay],
+  ([isOpen, isStandalone, isMobileOverlay]) => {
+    if (!isOpen || isStandalone || isMobileOverlay) {
+      stopResize();
+    }
+  },
+);
 
 function resetWidth() {
   if (!props.standalone) {

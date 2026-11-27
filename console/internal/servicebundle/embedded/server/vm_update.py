@@ -118,15 +118,28 @@ def colabone_update():
     backup = Path("/content/colabone-previous")
     shutil.rmtree(backup, ignore_errors=True)
     pid = processes[0]
+    try:
+        cur_args = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+        cur_env = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+        if not (
+            b"-m" in cur_args
+            and b"server.app" in cur_args
+            and b"COLABONE_REMOTE_CONFIG=/content/colabone-boot.json" in cur_env
+        ):
+            raise RuntimeError("远端管理服务进程已变化，未执行更新")
+    except (OSError, ProcessLookupError):
+        raise RuntimeError("远端管理服务进程已退出或不可访问，未执行更新") from None
     os.kill(pid, signal.SIGTERM)
     for _ in range(450):
         if not Path(f"/proc/{pid}").exists():
             break
         # A parent may not reap immediately; zombies no longer hold the port.
         try:
-            if Path(f"/proc/{pid}/stat").read_text().split()[2] == "Z":
+            stat_text = Path(f"/proc/{pid}/stat").read_text()
+            after_comm = stat_text.rsplit(")", 1)[1].split()
+            if after_comm and after_comm[0] == "Z":
                 break
-        except OSError:
+        except (OSError, IndexError):
             break
         time.sleep(0.1)
     else:

@@ -604,8 +604,10 @@ type colabOneStalledBody struct {
 	timeout time.Duration
 	last    atomic.Int64
 	stalled atomic.Bool
-	done    atomic.Bool
-	timer   *time.Timer
+
+	mu    sync.Mutex
+	done  bool
+	timer *time.Timer
 }
 
 func newColabOneStalledBody(body io.ReadCloser, cancel context.CancelFunc, timeout time.Duration) *colabOneStalledBody {
@@ -619,24 +621,30 @@ func newColabOneStalledBody(body io.ReadCloser, cancel context.CancelFunc, timeo
 	}
 	b.last.Store(time.Now().UnixNano())
 	interval := max(timeout/4, 10*time.Millisecond)
-	// Publish b.timer before the callback can run to keep -race clean.
-	b.timer = time.AfterFunc(1<<63-1, b.check)
-	b.timer.Stop()
-	b.timer.Reset(interval)
+	b.mu.Lock()
+	b.timer = time.AfterFunc(interval, b.check)
+	b.mu.Unlock()
 	return b
 }
 
 func (b *colabOneStalledBody) check() {
-	if b.done.Load() {
+	b.mu.Lock()
+	if b.done {
+		b.mu.Unlock()
 		return
 	}
 	if time.Since(time.Unix(0, b.last.Load())) >= b.timeout {
 		b.stalled.Store(true)
+		b.done = true
+		b.mu.Unlock()
 		b.cancel()
 		return
 	}
 	interval := max(b.timeout/4, 10*time.Millisecond)
-	b.timer.Reset(interval)
+	if b.timer != nil {
+		b.timer.Reset(interval)
+	}
+	b.mu.Unlock()
 }
 
 func (b *colabOneStalledBody) Read(p []byte) (int, error) {
@@ -644,15 +652,19 @@ func (b *colabOneStalledBody) Read(p []byte) (int, error) {
 	if n > 0 {
 		b.last.Store(time.Now().UnixNano())
 	}
-	if err != nil && b.stalled.Load() {
+	if err != nil && !errors.Is(err, io.EOF) && b.stalled.Load() {
 		return n, errors.New("the download stalled: the connection sent nothing")
 	}
 	return n, err
 }
 
 func (b *colabOneStalledBody) Close() error {
-	b.done.Store(true)
-	b.timer.Stop()
+	b.mu.Lock()
+	b.done = true
+	if b.timer != nil {
+		b.timer.Stop()
+	}
+	b.mu.Unlock()
 	b.cancel()
 	return b.body.Close()
 }

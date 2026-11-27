@@ -27,10 +27,12 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -380,6 +382,7 @@ type oauthFlow struct {
 	codeChallenge string
 	state         string
 	doneCh        <-chan struct{}
+	resetGen      uint64
 }
 
 func isClosed(ch <-chan struct{}) bool {
@@ -571,13 +574,16 @@ func WithQuotaNegativeCacheTTL(d time.Duration) Option {
 type ColabOneAuth struct {
 	vault VaultStore
 
-	// Lock ordering: loopbackSem -> mu -> quotaMu -> leaf locks (localeMu, loginEvt.mu, vault).
-	loopbackSem chan struct{}
-	mu          sync.Mutex
-	quotaMu     sync.Mutex
-	localeMu    sync.RWMutex
+	// Lock ordering: loopbackSem / quotaProbeSem -> mu -> quotaMu -> leaf locks (localeMu, loginEvt.mu, vault).
+	loopbackSem       chan struct{}
+	quotaProbeSem     chan struct{}
+	quotaProbeSemOnce sync.Once
+	mu                sync.Mutex
+	quotaMu           sync.Mutex
+	localeMu          sync.RWMutex
 
 	flow           *oauthFlow
+	authResetGen   uint64
 	loginEvt       *colabOneEvent
 	loopbackActive atomic.Bool
 	locale         string
@@ -589,6 +595,7 @@ type ColabOneAuth struct {
 	renderOAuthPage       OAuthPageRenderer
 	sleepFn               func(time.Duration)
 	nowFn                 func() time.Time
+	listenFn              func(network, address string) (net.Listener, error)
 	authURI               string
 	tokenURI              string
 	tokenURIOverride      bool
@@ -602,9 +609,10 @@ type ColabOneAuth struct {
 // NewColabOneAuth constructs a ColabOneAuth backed by vault.
 func NewColabOneAuth(vault VaultStore, opts ...Option) *ColabOneAuth {
 	a := &ColabOneAuth{
-		vault:       vault,
-		loopbackSem: make(chan struct{}, 1),
-		loginEvt:    newColabOneEvent(),
+		vault:         vault,
+		loopbackSem:   make(chan struct{}, 1),
+		quotaProbeSem: make(chan struct{}, 1),
+		loginEvt:      newColabOneEvent(),
 		locale:      defaultLocale,
 		httpClient: &http.Client{
 			Timeout: 20 * time.Second,
@@ -1064,6 +1072,7 @@ func (a *ColabOneAuth) InvalidateDriveQuotaProject() {
 // after vault credentials have been replaced externally (such as by migration import).
 func (a *ColabOneAuth) ResetAccountState() {
 	a.mu.Lock()
+	a.authResetGen++
 	a.flow = nil
 	a.loginEvt.Clear()
 	a.quotaMu.Lock()
@@ -1071,6 +1080,36 @@ func (a *ColabOneAuth) ResetAccountState() {
 	a.quotaProbeCache = nil
 	a.quotaMu.Unlock()
 	a.mu.Unlock()
+}
+
+func (a *ColabOneAuth) isFlowReset(f *oauthFlow) bool {
+	if f == nil {
+		return false
+	}
+	a.mu.Lock()
+	stale := f.resetGen != a.authResetGen
+	a.mu.Unlock()
+	return stale
+}
+
+func (a *ColabOneAuth) acquireQuotaProbeSem(ctx context.Context) (func(), error) {
+	a.quotaProbeSemOnce.Do(func() {
+		if a.quotaProbeSem == nil {
+			a.quotaProbeSem = make(chan struct{}, 1)
+		}
+	})
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	select {
+	case a.quotaProbeSem <- struct{}{}:
+		return func() { <-a.quotaProbeSem }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // DriveQuotaStatus returns the offline readiness snapshot for headless Drive
@@ -1120,6 +1159,36 @@ func (a *ColabOneAuth) EnsureDriveQuotaProject(
 	onLog func(msg, source, level string),
 	forceRefresh bool,
 ) (string, string) {
+	if !a.RequiresDriveQuotaProject() {
+		return "", "not_required"
+	}
+
+	if !forceRefresh {
+		a.quotaMu.Lock()
+		if cached := a.getVaultString("cloud_project"); isValidProjectID(cached) {
+			a.quotaMu.Unlock()
+			return cached, "cached"
+		}
+		if a.quotaProbeCache != nil {
+			entry := *a.quotaProbeCache
+			if entry.projectID != "" && isValidProjectID(entry.projectID) {
+				a.quotaMu.Unlock()
+				return entry.projectID, entry.reason
+			}
+			if a.now().Sub(entry.timestamp) < a.quotaNegativeCacheTTL {
+				a.quotaMu.Unlock()
+				return "", entry.reason
+			}
+		}
+		a.quotaMu.Unlock()
+	}
+
+	releaseSem, semErr := a.acquireQuotaProbeSem(ctx)
+	if semErr != nil {
+		return "", "network_error"
+	}
+	defer releaseSem()
+
 	if !a.RequiresDriveQuotaProject() {
 		return "", "not_required"
 	}
@@ -1961,6 +2030,10 @@ func (a *ColabOneAuth) colabFinishWithFlow(ctx context.Context, code string, exp
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	if explicitFlow != nil && explicitFlow.resetGen != a.authResetGen {
+		return nil, ErrAuthCodeInvalid
+	}
+
 	if explicitFlow != nil && (a.loginEvt.IsSet() || isClosed(explicitFlow.doneCh)) {
 		return map[string]any{"ok": true}, nil
 	}
@@ -1971,6 +2044,9 @@ func (a *ColabOneAuth) colabFinishWithFlow(ctx context.Context, code string, exp
 	}
 	if targetFlow == nil {
 		return nil, ErrLoginNotStarted
+	}
+	if targetFlow.resetGen != a.authResetGen {
+		return nil, ErrAuthCodeInvalid
 	}
 	if a.hasActiveSessions() {
 		return nil, ErrActiveSessionsExist
@@ -2039,20 +2115,42 @@ func (a *ColabOneAuth) ColabLogin(ctx context.Context, readyCallback func(url st
 	}
 	a.mu.Unlock()
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return err
+	const maxLoopbackBindAttempts = 8
+
+	listenFn := a.listenFn
+	if listenFn == nil {
+		listenFn = net.Listen
 	}
-	tcpAddr, ok := ln.Addr().(*net.TCPAddr)
-	if !ok {
-		_ = ln.Close()
-		return errors.New("unexpected loopback listener address")
+	var (
+		ln          net.Listener
+		ln6         net.Listener
+		redirectURI string
+	)
+	for attempt := 0; attempt < maxLoopbackBindAttempts; attempt++ {
+		l4, err := listenFn("tcp", "127.0.0.1:0")
+		if err != nil {
+			return err
+		}
+		tcpAddr, ok := l4.Addr().(*net.TCPAddr)
+		if !ok {
+			_ = l4.Close()
+			return errors.New("unexpected loopback listener address")
+		}
+		l6, err6 := listenFn("tcp6", fmt.Sprintf("[::1]:%d", tcpAddr.Port))
+		if err6 == nil {
+			ln = l4
+			ln6 = l6
+			redirectURI = fmt.Sprintf("http://localhost:%d/", tcpAddr.Port)
+			break
+		}
+		if isLoopbackAddrInUse(err6) && attempt+1 < maxLoopbackBindAttempts {
+			_ = l4.Close()
+			continue
+		}
+		ln = l4
+		redirectURI = fmt.Sprintf("http://127.0.0.1:%d/", tcpAddr.Port)
+		break
 	}
-	var ln6 net.Listener
-	if l6, err6 := net.Listen("tcp6", fmt.Sprintf("[::1]:%d", tcpAddr.Port)); err6 == nil {
-		ln6 = l6
-	}
-	redirectURI := fmt.Sprintf("http://localhost:%d/", tcpAddr.Port)
 
 	a.loopbackActive.Store(true)
 	defer a.loopbackActive.Store(false)
@@ -2087,13 +2185,18 @@ func (a *ColabOneAuth) ColabLogin(ctx context.Context, readyCallback func(url st
 	defer cancelLogin()
 
 	var (
-		cbMu      sync.Mutex
-		cbHandled bool
-		cbSuccess bool
-		cbEmail   string
-		cbMessage string
-		cbErr     error
+		cbMu       sync.Mutex
+		cbHandled  bool
+		cbSuccess  bool
+		cbEmail    string
+		cbMessage  string
+		cbErr      error
+		cbDoneCh   = make(chan struct{})
+		cbDoneOnce sync.Once
 	)
+	signalCBDone := func() {
+		cbDoneOnce.Do(func() { close(cbDoneCh) })
+	}
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -2127,7 +2230,11 @@ func (a *ColabOneAuth) ColabLogin(ctx context.Context, readyCallback func(url st
 		cbMu.Lock()
 		if !cbHandled {
 			cbHandled = true
-			if a.loginEvt.IsSet() || isClosed(doneCh) {
+			if a.isFlowReset(localFlow) {
+				cbMessage = texts.Error
+				cbErr = ErrAuthCodeInvalid
+				signalCBDone()
+			} else if a.loginEvt.IsSet() || isClosed(doneCh) {
 				cbSuccess = true
 				if prof := a.getProfileMap(); prof != nil {
 					cbEmail = prof["email"]
@@ -2138,7 +2245,7 @@ func (a *ColabOneAuth) ColabLogin(ctx context.Context, readyCallback func(url st
 				cbErr = ErrAuthCancelled
 				a.loginEvt.Set()
 			} else if _, ferr := a.colabFinishWithFlow(loginCtx, params.Get("code"), localFlow); ferr != nil {
-				if a.loginEvt.IsSet() || isClosed(doneCh) {
+				if !a.isFlowReset(localFlow) && (a.loginEvt.IsSet() || isClosed(doneCh)) {
 					// Manual ColabFinish succeeded concurrently while this callback was exchanging the code.
 					cbSuccess = true
 					if prof := a.getProfileMap(); prof != nil {
@@ -2152,7 +2259,11 @@ func (a *ColabOneAuth) ColabLogin(ctx context.Context, readyCallback func(url st
 						recorded = errors.New(texts.Error)
 					}
 					cbErr = recorded
-					a.loginEvt.Set()
+					if a.isFlowReset(localFlow) {
+						signalCBDone()
+					} else {
+						a.loginEvt.Set()
+					}
 				}
 			} else {
 				cbSuccess = true
@@ -2233,6 +2344,8 @@ func (a *ColabOneAuth) ColabLogin(ctx context.Context, readyCallback func(url st
 	var waitErr error
 	select {
 	case <-doneCh:
+		completedViaDone = true
+	case <-cbDoneCh:
 		completedViaDone = true
 	case serr, ok := <-serveErrCh:
 		if ok && serr != nil {
@@ -2316,7 +2429,28 @@ func (a *ColabOneAuth) newOAuthFlow(redirectURI string) (*oauthFlow, error) {
 		codeVerifier:  verifier,
 		codeChallenge: challenge,
 		state:         state,
+		resetGen:      a.authResetGen,
 	}, nil
+}
+
+const winWSAEADDRINUSE = syscall.Errno(10048)
+
+func isLoopbackAddrInUse(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.EADDRINUSE) {
+		return true
+	}
+	if runtime.GOOS == "windows" {
+		var errno syscall.Errno
+		if errors.As(err, &errno) && errno == winWSAEADDRINUSE {
+			return true
+		}
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "address already in use") ||
+		strings.Contains(lower, "only one usage of each socket address")
 }
 
 func (a *ColabOneAuth) exchangeAuthorizationCode(

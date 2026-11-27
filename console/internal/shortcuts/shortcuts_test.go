@@ -504,9 +504,10 @@ func TestWindowsManageShortcutsPowerShellAndErrors(t *testing.T) {
 	if len(calls) != 2 {
 		t.Fatalf("expected 2 powershell calls, got %d", len(calls))
 	}
+	wantPS := winPowerShellExecutable()
 	for _, c := range calls {
-		if c.name != "powershell.exe" {
-			t.Errorf("cmd = %q, want powershell.exe", c.name)
+		if c.name != wantPS {
+			t.Errorf("cmd = %q, want %q", c.name, wantPS)
 		}
 		wantArgs := []string{"-NoProfile", "-NonInteractive", "-Command", winLnkPSScript}
 		if !reflect.DeepEqual(c.args, wantArgs) {
@@ -1199,4 +1200,44 @@ func TestLinuxDesktopEntrySpecialCharsAndControlCharRejection(t *testing.T) {
 			t.Fatalf("desktop file must not be written when executable path contains newline")
 		}
 	})
+}
+
+func TestWriteWindowsLnkUsesWinPowerShellExecutable(t *testing.T) {
+	tmp := t.TempDir()
+	lnkPath := filepath.Join(tmp, "ColabOne.lnk")
+	exePath := filepath.Join(tmp, "ColabOne.exe")
+	if err := os.WriteFile(exePath, []byte("MZ"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if runtime.GOOS == "windows" {
+		t.Setenv("SystemRoot", `C:\CustomWindowsRoot`)
+	}
+
+	var calledCmd string
+	stubRunCommand(t, func(_ context.Context, name string, _ []string, env []string) ([]byte, error) {
+		calledCmd = name
+		for _, kv := range env {
+			if k, v, ok := strings.Cut(kv, "="); ok && k == "_CO_LNK" {
+				return nil, os.WriteFile(v, []byte("LNK"), 0o644)
+			}
+		}
+		return nil, errors.New("missing _CO_LNK")
+	})
+
+	if err := writeWindowsLnk(lnkPath, exePath, "en-US"); err != nil {
+		t.Fatalf("writeWindowsLnk failed: %v", err)
+	}
+	want := winPowerShellExecutable()
+	if calledCmd != want {
+		t.Fatalf("writeWindowsLnk executed %q, want %q", calledCmd, want)
+	}
+	if runtime.GOOS == "windows" {
+		wantWin := filepath.Join(`C:\CustomWindowsRoot`, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+		if calledCmd != wantWin {
+			t.Fatalf("Windows writeWindowsLnk executed %q, want %q", calledCmd, wantWin)
+		}
+	} else if calledCmd != "powershell.exe" {
+		t.Fatalf("non-Windows winPowerShellExecutable = %q, want powershell.exe", calledCmd)
+	}
 }

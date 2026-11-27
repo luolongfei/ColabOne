@@ -2088,6 +2088,18 @@ func TestSafeMessageCoWebTokensNewSecretKeysJSONObjectsAndUserinfoDelims(t *test
 			forbidden: []string{"secret1", "secret2"},
 		},
 		{
+			name:      "truncated_unclosed_json_object_with_unquoted_object_and_array_secrets",
+			in:        `{"token":{"a":unquotedObjSecret,"items":[unquotedArr1, "quotedArr2`,
+			want:      `{"token":{"a":[已隐藏],"items":[[已隐藏], "[已隐藏]`,
+			forbidden: []string{"unquotedObjSecret", "unquotedArr1", "quotedArr2"},
+		},
+		{
+			name:      "closed_and_unclosed_json_object_unquoted_secrets_idempotent",
+			in:        `{"secret":{"a":bareSecretA,"b":[bareSecretB]}} {"token":{"x":bareSecretX`,
+			want:      `{"secret":{"a":[已隐藏],"b":[[已隐藏]]}} {"token":{"x":[已隐藏]`,
+			forbidden: []string{"bareSecretA", "bareSecretB", "bareSecretX"},
+		},
+		{
 			name:      "url_userinfo_with_unescaped_close_paren_and_bracket",
 			in:        `socks5://alice:p)ss@10.0.0.2:1080 socks5h://bob:p]ss@10.0.0.3:1080/x https://carol:p[a]b)c@[2001:db8::1]:8443/api?k=1`,
 			want:      `[链接已隐藏] [链接已隐藏] [链接已隐藏]`,

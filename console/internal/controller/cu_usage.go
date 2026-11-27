@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -343,6 +344,10 @@ func (s *ColabOneCUUsageStore) load() {
 	if s.path == "" {
 		return
 	}
+	info, statErr := os.Lstat(s.path)
+	if statErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return
+	}
 	raw, err := os.ReadFile(s.path)
 	if err != nil || len(bytes.TrimSpace(raw)) == 0 {
 		return
@@ -350,9 +355,19 @@ func (s *ColabOneCUUsageStore) load() {
 	var disk colabOneCUUsageDiskFile
 	if decodeJSONWithNumbers(raw, &disk) != nil || disk.Accounts == nil {
 		// Preserve corrupt file on disk instead of silently clobbering it on the next Flush().
+		// Keep legacy .corrupt path when vacant for compatibility, otherwise allocate a timestamped
+		// backup path and guard against symlinks and directories via os.Lstat.
 		corruptPath := s.path + ".corrupt"
-		if os.Rename(s.path, corruptPath) != nil {
-			_ = os.WriteFile(corruptPath, raw, 0o600)
+		if _, existsErr := os.Lstat(corruptPath); !errors.Is(existsErr, os.ErrNotExist) {
+			corruptPath = fmt.Sprintf("%s.corrupt-%d", s.path, time.Now().Unix())
+			if _, tsExistsErr := os.Lstat(corruptPath); tsExistsErr == nil {
+				corruptPath = fmt.Sprintf("%s.corrupt-%d", s.path, time.Now().UnixNano())
+			}
+		}
+		if cInfo, cErr := os.Lstat(corruptPath); cErr != nil || (cInfo.Mode()&os.ModeSymlink == 0 && !cInfo.IsDir()) {
+			if colabOneRenameReplace(s.path, corruptPath) != nil && len(raw) > 0 {
+				_ = os.WriteFile(corruptPath, raw, 0o600)
+			}
 		}
 		return
 	}

@@ -82,9 +82,13 @@ const snapshot = shallowRef<ColabOneSnapshot>(createColabOneSnapshot());
 const capabilities = ref<ColabOneWorkflowShareCapabilities | null>(null);
 const initialLoading = ref(true);
 const checkingSession = ref(false);
+const retryingConnection = ref(false);
 const sessionExpired = ref(false);
 const pollFailures = ref(0);
 const connectionLost = computed(() => pollFailures.value >= 2);
+const activeShareId = computed(() =>
+  (snapshot.value.share?.id || colabOneWorkflowShareId.value || "").trim(),
+);
 const clockNow = ref(Date.now());
 const snapshotAt = ref(Date.now());
 
@@ -517,7 +521,7 @@ async function syncSnapshot() {
     if (!unchanged) {
       const parsed: unknown = JSON.parse(raw);
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new Error("Invalid share snapshot payload");
+        throw new Error(t("workflowShare.errInvalidSnapshotPayload"));
       }
       next = normalizeGuestShareSnapshot(parsed as Record<string, unknown>);
     }
@@ -572,6 +576,9 @@ async function syncSnapshot() {
       markSessionExpired();
     } else if (!sessionExpired.value) {
       pollFailures.value += 1;
+      if (pollFailures.value >= 2) {
+        initialLoading.value = false;
+      }
     }
   }
 }
@@ -620,11 +627,29 @@ async function bootstrapShareSession(options?: { fromRecheck?: boolean }) {
       }
     } else {
       pollFailures.value += 1;
+      if (pollFailures.value >= 2) {
+        initialLoading.value = false;
+      }
       // Transient network failure on initial load: start snapshot polling so it recovers automatically.
       snapshotPoller.start();
     }
   } finally {
     checkingSession.value = false;
+  }
+}
+
+async function retryConnection() {
+  if (retryingConnection.value || checkingSession.value || stopped) return;
+  retryingConnection.value = true;
+  try {
+    if (!capabilities.value) {
+      await bootstrapShareSession();
+    }
+    if (!stopped && !sessionExpired.value) {
+      await syncSnapshot();
+    }
+  } finally {
+    retryingConnection.value = false;
   }
 }
 
@@ -864,6 +889,15 @@ onUnmounted(() => {
               <strong>{{ t("workflowShare.guestDisconnectedTitle") }}</strong>
               <p>{{ t("workflowShare.guestDisconnectedDesc") }}</p>
             </div>
+            <AButton
+              size="small"
+              class="co-share-banner-action"
+              :loading="retryingConnection || checkingSession"
+              data-testid="workflow-share-retry-btn"
+              @click="retryConnection"
+            >
+              {{ t("common.retry") }}
+            </AButton>
           </div>
           <div
             v-else-if="!initialLoading && !gpuReady"
@@ -880,7 +914,7 @@ onUnmounted(() => {
             </div>
           </div>
           <div
-            v-else-if="!initialLoading && isBusyOther"
+            v-else-if="!initialLoading && isBusyOther && !hasGuestRunningTask"
             class="co-share-banner is-busy"
             role="status"
             data-testid="workflow-share-busy-banner"
@@ -896,7 +930,7 @@ onUnmounted(() => {
 
           <!-- Shared ComfyPanel (Workflow Cards + Parameter Drawer + Outputs Drawer) -->
           <ComfyPanel
-            :key="colabOneWorkflowShareId || 'pending'"
+            :key="activeShareId || 'pending'"
             ref="comfyPanelRef"
             :state="snapshot"
             :loading="initialLoading"
@@ -1335,6 +1369,11 @@ onUnmounted(() => {
   font-size: 13px;
   line-height: 1.55;
   color: var(--co-secondary-text);
+}
+
+.co-share-banner-action {
+  flex-shrink: 0;
+  align-self: center;
 }
 
 /* Expired / Revoked Centered Card */

@@ -26,6 +26,9 @@ import ColabOneDriveExportModal, {
   isColabOneDriveConnectOperation,
   type ColabOneDriveExportResult,
 } from "./ColabOneDriveExportModal.vue";
+import ColabOneFashionPhotoGroup, {
+  type ColabOneFashionPhotoItem,
+} from "./ColabOneFashionPhotoGroup.vue";
 import ColabOnePrivacyInput from "./ColabOnePrivacyInput.vue";
 import ColabOnePrivacyText from "./ColabOnePrivacyText.vue";
 import ColabOneSecretInput from "./ColabOneSecretInput.vue";
@@ -72,12 +75,14 @@ import {
   PhSlidersHorizontal,
   PhSparkle,
   PhStop,
+  PhTShirt,
   PhTrash,
   PhTreeStructure,
   PhUploadSimple,
   PhVideoCamera,
   PhWarningCircle,
   PhWaveform,
+  PhWifiSlash,
 } from "@phosphor-icons/vue";
 import {
   colabOneCommand,
@@ -113,6 +118,8 @@ import {
 } from "./comfyDrafts";
 import {
   COLABONE_DIGITAL_HUMAN_GROUP_KEY,
+  COLABONE_FASHION_MANAGED_FIELD_KEYS,
+  COLABONE_FASHION_MAX_REFS_PER_GROUP,
   buildColabOneStudioWorkflowEntries,
   buildColabOneWorkflowOverrides,
   defaultFieldValues,
@@ -122,21 +129,29 @@ import {
   formatOutputCreatedAt,
   formatOutputCreatedAtISO,
   formatOutputSize,
+  getColabOneFashionRolesFieldKey,
+  getColabOneFashionSlotKeys,
+  guessColabOneFashionPhotoRole,
   hasNonCommercialNotice,
   isColabOneBuiltinDigitalHumanWorkflow,
+  isColabOneFashionCustomPosesEmpty,
   isColabOneVoicePresetSupportedByEngine,
   isColabOneVoiceRefRequired,
   isColabOneVoiceRefTextRequired,
   isWorkflowFieldVisible,
   missingRequiredWorkflowFields,
   outputBlobURL,
+  parseColabOneFashionPhotoMeta,
   parseWorkflowImportJSON,
   partitionWorkflowFields,
+  pickColabOneNextFashionSlotKeys,
   readColabOnePreferredDigitalHumanEngine,
+  reconcileColabOneFashionPhotoList,
   remapColabOnePresetPromptFieldsForLocale,
   resolveColabOneAudioSource,
   resolveColabOneDigitalHumanGpuContext,
   resolveColabOneFallbackVoicePreset,
+  resolveColabOneFashionPreflight,
   resolveColabOneInitialDigitalHumanWorkflowId,
   resolveColabOneLongCatNativeSamplingMode,
   resolveColabOneSelectedVoicePreset,
@@ -144,10 +159,12 @@ import {
   resolveColabOneVoicePresetPrefetchGroupIds,
   resolveColabOneVoicePreviewDefaultText,
   resolveSelectedTtsEngine,
+  serializeColabOneFashionPhotoMeta,
   transferColabOneDigitalHumanFields,
   verifyAndDecodeColabOneBase64AudioUrl,
   workflowModelsTotalBytes,
   writeColabOnePreferredDigitalHumanEngine,
+  type ColabOneFashionPhotoGroupKind,
   type ColabOneStudioWorkflowEntry,
 } from "./comfyui";
 import {
@@ -667,8 +684,27 @@ const uploadedInputIds = ref<Record<string, string>>({});
 const uploadedNames = ref<Record<string, string>>({});
 const localPreviews = ref<Record<string, string>>({});
 const uploadingFields = ref<Record<string, boolean>>({});
-const hasUploadingField = computed(() =>
-  Object.values(uploadingFields.value).some(Boolean),
+const uploadingNames = ref<Record<string, string>>({});
+const reservedFashionNames = ref<Record<string, string>>({});
+const reservedFashionTokens: Record<
+  ColabOneFashionPhotoGroupKind,
+  Map<string, symbol>
+> = {
+  model: new Map<string, symbol>(),
+  garment: new Map<string, symbol>(),
+};
+const fashionGroupUploadChains: Record<
+  ColabOneFashionPhotoGroupKind,
+  Promise<void>
+> = {
+  model: Promise.resolve(),
+  garment: Promise.resolve(),
+};
+let fashionBatchErrorSeq = 0;
+const hasUploadingField = computed(
+  () =>
+    Object.values(uploadingFields.value).some(Boolean) ||
+    Object.keys(reservedFashionNames.value).length > 0,
 );
 const uploadGen: Record<string, number> = {};
 const submittingRun = ref(false);
@@ -749,6 +785,9 @@ function resolveDraftMediaWorkflowId(
 
 const isDigitalHumanWorkflow = computed(
   () => selectedWorkflow.value?.pipeline?.kind === "digital_human",
+);
+const isFashionTryOnWorkflow = computed(
+  () => selectedWorkflow.value?.pipeline?.kind === "fashion_tryon",
 );
 const isTtsAudioSource = computed(
   () =>
@@ -838,6 +877,467 @@ const fieldPartitions = computed(() => {
   }
   return { primary: nextPrimary, advanced: nextAdvanced };
 });
+const standardPrimaryFields = computed(() => {
+  const list = fieldPartitions.value.primary;
+  if (!isFashionTryOnWorkflow.value) {
+    return list;
+  }
+  return list.filter((field) => !COLABONE_FASHION_MANAGED_FIELD_KEYS.has(field.key));
+});
+
+function clearAllReservedFashionSlots() {
+  reservedFashionTokens.model.clear();
+  reservedFashionTokens.garment.clear();
+  if (Object.keys(reservedFashionNames.value).length > 0) {
+    reservedFashionNames.value = {};
+  }
+}
+
+function releaseReservedFashionSlot(
+  group: ColabOneFashionPhotoGroupKind,
+  slotKey: string,
+  token: symbol,
+) {
+  if (reservedFashionTokens[group].get(slotKey) !== token) {
+    return;
+  }
+  reservedFashionTokens[group].delete(slotKey);
+  if (slotKey in reservedFashionNames.value) {
+    const next = { ...reservedFashionNames.value };
+    delete next[slotKey];
+    reservedFashionNames.value = next;
+  }
+}
+
+function isFashionSlotUploading(key: string): boolean {
+  return (
+    Boolean(uploadingFields.value[key]) ||
+    Boolean(reservedFashionNames.value[key])
+  );
+}
+
+function settledFashionSlotKeys(group: ColabOneFashionPhotoGroupKind): string[] {
+  const slots = getColabOneFashionSlotKeys(group);
+  return slots.filter(
+    (key) =>
+      !isFashionSlotUploading(key) &&
+      (Boolean(uploadedInputIds.value[key]) ||
+        Boolean(pendingUploads.value[key]) ||
+        Boolean(draftMediaMeta.value[key]) ||
+        Boolean(localPreviews.value[key])),
+  );
+}
+
+function activeFashionSlotKeys(group: ColabOneFashionPhotoGroupKind): string[] {
+  const slots = getColabOneFashionSlotKeys(group);
+  return slots.filter(
+    (key) =>
+      isFashionSlotUploading(key) ||
+      Boolean(uploadedInputIds.value[key]) ||
+      Boolean(pendingUploads.value[key]) ||
+      Boolean(draftMediaMeta.value[key]) ||
+      Boolean(localPreviews.value[key]),
+  );
+}
+
+function buildFashionPhotoItems(
+  group: ColabOneFashionPhotoGroupKind,
+): ColabOneFashionPhotoItem[] {
+  if (!isFashionTryOnWorkflow.value) {
+    return [];
+  }
+  const activeKeys = activeFashionSlotKeys(group);
+  const rolesFieldKey = getColabOneFashionRolesFieldKey(group);
+  const parsedMeta = parseColabOneFashionPhotoMeta(
+    fieldValues.value[rolesFieldKey],
+    group,
+  );
+  const ordered = reconcileColabOneFashionPhotoList(
+    group,
+    activeKeys,
+    fieldValues.value[rolesFieldKey],
+  );
+  return ordered.map(({ key, role }, idx) => {
+    const filename =
+      uploadedNames.value[key] ||
+      uploadingNames.value[key] ||
+      reservedFashionNames.value[key] ||
+      pendingUploads.value[key]?.filename ||
+      draftMediaMeta.value[key]?.filename ||
+      String(fieldValues.value[key] || "") ||
+      key;
+    const uploading = isFashionSlotUploading(key);
+    const effectiveRole =
+      uploading && !parsedMeta.roles[key]
+        ? guessColabOneFashionPhotoRole(group, filename, idx === 0).role
+        : role;
+    return {
+      key,
+      role: effectiveRole,
+      filename,
+      previewUrl: localPreviews.value[key],
+      uploading,
+      uploadedRemote: Boolean(uploadedInputIds.value[key]),
+      hasPending: Boolean(pendingUploads.value[key]),
+      hasDraft: Boolean(draftMediaMeta.value[key]),
+    };
+  });
+}
+
+const fashionModelPhotoItems = computed(() => buildFashionPhotoItems("model"));
+const fashionGarmentPhotoItems = computed(() =>
+  buildFashionPhotoItems("garment"),
+);
+
+const fashionModelDropzoneId = computed(() => {
+  const field = selectedWorkflow.value?.fields.find((f) => f.key === "1.image");
+  return field ? fieldInputId(field) : "co-fashion-model-dropzone";
+});
+
+const fashionGarmentDropzoneId = computed(() => {
+  const field = selectedWorkflow.value?.fields.find((f) => f.key === "2.image");
+  return field ? fieldInputId(field) : "co-fashion-garment-dropzone";
+});
+
+function persistFashionPhotoList(
+  group: ColabOneFashionPhotoGroupKind,
+  entries: Array<{ key: string; role: string }>,
+) {
+  const rolesFieldKey = getColabOneFashionRolesFieldKey(group);
+  const roles: Record<string, string> = {};
+  const order: string[] = [];
+  for (const item of entries) {
+    order.push(item.key);
+    roles[item.key] = item.role;
+  }
+  fieldValues.value[rolesFieldKey] = serializeColabOneFashionPhotoMeta({
+    order,
+    roles,
+  });
+  draftDirty = true;
+  scheduleDraftSave(true);
+}
+
+function pruneFashionPhotoRoles(
+  wf: WorkflowTemplate | undefined,
+  opts?: { persist?: boolean },
+) {
+  if (!wf || wf.pipeline?.kind !== "fashion_tryon") {
+    return;
+  }
+  let changed = false;
+  for (const group of ["model", "garment"] as const) {
+    const rolesFieldKey = getColabOneFashionRolesFieldKey(group);
+    const currentRaw = fieldValues.value[rolesFieldKey];
+    const reconciled = reconcileColabOneFashionPhotoList(
+      group,
+      settledFashionSlotKeys(group),
+      currentRaw,
+    );
+    const roles: Record<string, string> = {};
+    for (const item of reconciled) {
+      roles[item.key] = item.role;
+    }
+    const nextRaw = serializeColabOneFashionPhotoMeta({
+      order: reconciled.map((item) => item.key),
+      roles,
+    });
+    if (String(currentRaw ?? "") !== nextRaw) {
+      fieldValues.value[rolesFieldKey] = nextRaw;
+      changed = true;
+    }
+  }
+  if (changed && opts?.persist) {
+    draftDirty = true;
+    scheduleDraftSave(true);
+  }
+}
+
+async function handleFashionAddFiles(
+  group: ColabOneFashionPhotoGroupKind,
+  files: File[],
+) {
+  const wf = selectedWorkflow.value;
+  if (!wf || !isFashionTryOnWorkflow.value || submittingRun.value || !files.length) {
+    return;
+  }
+  // Validate format & size upfront before slicing to available capacity so invalid
+  // files never displace valid files or trigger misleading max-limit notices.
+  const validFiles: File[] = [];
+  const validationErrors: string[] = [];
+  const seenValidationErrors = new Set<string>();
+  const addValidationError = (msg: string) => {
+    if (msg && !seenValidationErrors.has(msg)) {
+      seenValidationErrors.add(msg);
+      validationErrors.push(msg);
+    }
+  };
+  for (const file of files) {
+    if (!IMAGE_EXT_RE.test(file.name)) {
+      addValidationError(t("comfy.errUnsupportedImageFormat"));
+      continue;
+    }
+    if (file.size <= 0) {
+      addValidationError(t("comfy.errEmptyFile"));
+      continue;
+    }
+    if (file.size > MAX_IMAGE_INPUT_BYTES) {
+      addValidationError(t("comfy.errImageTooLarge"));
+      continue;
+    }
+    validFiles.push(file);
+  }
+  if (validationErrors.length > 0) {
+    fashionBatchErrorSeq += 1;
+    reportError(validationErrors.join(" · "));
+  }
+  if (validFiles.length === 0) {
+    return;
+  }
+
+  const loadGen = draftLoadGen;
+  const batchStartErrorSeq = fashionBatchErrorSeq;
+  const occupied = Array.from(
+    new Set<string>([
+      ...activeFashionSlotKeys(group),
+      ...reservedFashionTokens[group].keys(),
+    ]),
+  );
+  const freeSlots = pickColabOneNextFashionSlotKeys(
+    group,
+    occupied,
+    validFiles.length,
+  );
+  if (freeSlots.length === 0) {
+    emit(
+      "notify",
+      t("comfy.fashionMaxFullToast", {
+        max: COLABONE_FASHION_MAX_REFS_PER_GROUP,
+      }),
+      "info",
+    );
+    return;
+  }
+  const acceptedFiles = validFiles.slice(0, freeSlots.length);
+  const overflowTruncated = validFiles.length > acceptedFiles.length;
+  const fieldByKey = new Map(wf.fields.map((f) => [f.key, f]));
+  const rolesFieldKey = getColabOneFashionRolesFieldKey(group);
+
+  // Reserve all picked slots synchronously with per-slot ownership tokens so rapid
+  // drops cannot collide and aborted batches can never clobber newer reservations.
+  const reservations: Array<{ slotKey: string; file: File; token: symbol }> = [];
+  const nextReservedNames = { ...reservedFashionNames.value };
+  for (let i = 0; i < acceptedFiles.length; i += 1) {
+    const slotKey = freeSlots[i];
+    const file = acceptedFiles[i];
+    const token = Symbol(slotKey);
+    reservedFashionTokens[group].set(slotKey, token);
+    nextReservedNames[slotKey] = file.name;
+    reservations.push({ slotKey, file, token });
+  }
+  reservedFashionNames.value = nextReservedNames;
+
+  // Serialize upload-and-commit work per group via a FIFO promise chain so an
+  // overlapping smaller drop can never finish ahead of Drop 1 and steal #1 Main.
+  const runBatch = async () => {
+    const batchErrors = [...validationErrors];
+    const seenBatchErrors = new Set<string>(validationErrors);
+    const addBatchError = (msg: string | undefined) => {
+      const cleaned = typeof msg === "string" ? msg.trim() : "";
+      if (cleaned && !seenBatchErrors.has(cleaned)) {
+        seenBatchErrors.add(cleaned);
+        batchErrors.push(cleaned);
+      }
+    };
+    let uploadedCount = 0;
+    let stagedCount = 0;
+    let firstUploadedName = "";
+    let firstStagedName = "";
+
+    try {
+      for (const { slotKey, file, token } of reservations) {
+        if (
+          disposed ||
+          loadGen !== draftLoadGen ||
+          selectedWorkflowId.value !== wf.id
+        ) {
+          return;
+        }
+        const slotField = fieldByKey.get(slotKey);
+        if (!slotField) {
+          releaseReservedFashionSlot(group, slotKey, token);
+          continue;
+        }
+        try {
+          const res = await handleMediaFile(slotField, file, {
+            silentNotice: true,
+          });
+          if (
+            disposed ||
+            loadGen !== draftLoadGen ||
+            selectedWorkflowId.value !== wf.id
+          ) {
+            return;
+          }
+          if (res.error) {
+            addBatchError(res.error);
+          }
+          if (res.uploaded) {
+            uploadedCount += 1;
+            if (!firstUploadedName) firstUploadedName = file.name;
+          } else if (res.staged) {
+            stagedCount += 1;
+            if (!firstStagedName) firstStagedName = file.name;
+          }
+          releaseReservedFashionSlot(group, slotKey, token);
+          const liveSettled = settledFashionSlotKeys(group);
+          if (!liveSettled.includes(slotKey)) {
+            continue;
+          }
+          // Re-read the live reconciled list AFTER await so mid-upload promote/role/remove
+          // operations on other photos in the group are never reverted.
+          const otherSettled = liveSettled.filter((k) => k !== slotKey);
+          const liveList = reconcileColabOneFashionPhotoList(
+            group,
+            otherSettled,
+            fieldValues.value[rolesFieldKey],
+          );
+          const isFirst = liveList.length === 0;
+          const { role } = guessColabOneFashionPhotoRole(
+            group,
+            file.name,
+            isFirst,
+          );
+          liveList.push({ key: slotKey, role });
+          persistFashionPhotoList(group, liveList);
+        } finally {
+          releaseReservedFashionSlot(group, slotKey, token);
+        }
+      }
+
+      if (
+        disposed ||
+        loadGen !== draftLoadGen ||
+        selectedWorkflowId.value !== wf.id
+      ) {
+        return;
+      }
+
+      const settledCount = uploadedCount + stagedCount;
+      if (
+        batchErrors.length === 0 &&
+        settledCount > 0 &&
+        fashionBatchErrorSeq === batchStartErrorSeq
+      ) {
+        emit("clearError");
+      }
+
+      if (uploadedCount > 0) {
+        const displayName =
+          settledCount > 1
+            ? `${firstUploadedName} (+${settledCount - 1})`
+            : firstUploadedName;
+        emit(
+          "notify",
+          t("comfy.noticeUploadedRemote", { name: displayName }),
+          "success",
+        );
+      } else if (stagedCount > 0) {
+        const displayName =
+          stagedCount > 1
+            ? `${firstStagedName} (+${stagedCount - 1})`
+            : firstStagedName;
+        emit(
+          "notify",
+          t("comfy.noticeStagedUpload", { name: displayName }),
+          "info",
+        );
+      }
+
+      if (overflowTruncated && settledCount > 0) {
+        emit(
+          "notify",
+          t("comfy.fashionMaxReachedToast", {
+            max: COLABONE_FASHION_MAX_REFS_PER_GROUP,
+            added: settledCount,
+          }),
+          "info",
+        );
+      }
+
+      if (batchErrors.length > 0) {
+        fashionBatchErrorSeq += 1;
+        reportError(batchErrors.join(" · "));
+      }
+    } finally {
+      for (const { slotKey, token } of reservations) {
+        releaseReservedFashionSlot(group, slotKey, token);
+      }
+    }
+  };
+
+  const chained = fashionGroupUploadChains[group].then(runBatch, runBatch);
+  fashionGroupUploadChains[group] = chained.then(
+    () => undefined,
+    () => undefined,
+  );
+  return chained;
+}
+
+function handleFashionRemovePhoto(
+  group: ColabOneFashionPhotoGroupKind,
+  slotKey: string,
+) {
+  const wf = selectedWorkflow.value;
+  if (!wf || submittingRun.value || isFashionSlotUploading(slotKey)) return;
+  const slotField = wf.fields.find((f) => f.key === slotKey);
+  if (slotField) {
+    clearMediaField(slotField);
+  }
+  const rolesFieldKey = getColabOneFashionRolesFieldKey(group);
+  const currentList = reconcileColabOneFashionPhotoList(
+    group,
+    settledFashionSlotKeys(group).filter((k) => k !== slotKey),
+    fieldValues.value[rolesFieldKey],
+  );
+  persistFashionPhotoList(group, currentList);
+}
+
+function handleFashionPromotePhoto(
+  group: ColabOneFashionPhotoGroupKind,
+  slotKey: string,
+) {
+  if (submittingRun.value || isFashionSlotUploading(slotKey)) return;
+  const rolesFieldKey = getColabOneFashionRolesFieldKey(group);
+  const currentList = reconcileColabOneFashionPhotoList(
+    group,
+    settledFashionSlotKeys(group),
+    fieldValues.value[rolesFieldKey],
+  );
+  const idx = currentList.findIndex((item) => item.key === slotKey);
+  if (idx <= 0) return;
+  const [moved] = currentList.splice(idx, 1);
+  currentList.unshift(moved);
+  persistFashionPhotoList(group, currentList);
+}
+
+function handleFashionChangeRole(
+  group: ColabOneFashionPhotoGroupKind,
+  slotKey: string,
+  role: string,
+) {
+  if (submittingRun.value || isFashionSlotUploading(slotKey)) return;
+  const rolesFieldKey = getColabOneFashionRolesFieldKey(group);
+  const currentList = reconcileColabOneFashionPhotoList(
+    group,
+    settledFashionSlotKeys(group),
+    fieldValues.value[rolesFieldKey],
+  );
+  const target = currentList.find((item) => item.key === slotKey);
+  if (!target || target.role === role) return;
+  target.role = role;
+  persistFashionPhotoList(group, currentList);
+}
 const voiceRefRequired = computed(() =>
   isColabOneVoiceRefRequired(selectedWorkflow.value, fieldValues.value),
 );
@@ -917,37 +1417,56 @@ function formatGiBFloor(gb: number): string {
 const workflowPreflightItems = computed<WorkflowPreflightItem[]>(() => {
   const wf = selectedWorkflow.value;
   if (!wf) return [];
+  const primaryGpuMib = props.state.runtime.gpu?.total_mib;
+  const fallbackGpuMib = props.state.runtime.resources?.gpu?.total_mib;
+  const gpuTotalMib = gpuReady.value
+    ? typeof primaryGpuMib === "number" &&
+      Number.isFinite(primaryGpuMib) &&
+      primaryGpuMib > 0
+      ? primaryGpuMib
+      : typeof fallbackGpuMib === "number" &&
+          Number.isFinite(fallbackGpuMib) &&
+          fallbackGpuMib > 0
+        ? fallbackGpuMib
+        : undefined
+    : undefined;
+  const estimatedGpuMib = gpuTotalMib ?? digitalHumanGpuContext.value.vramMib;
+  const fashionPreflight = isFashionTryOnWorkflow.value
+    ? resolveColabOneFashionPreflight(fieldValues.value, estimatedGpuMib)
+    : null;
   const ttsEngine = isTtsAudioSource.value
     ? selectedTtsEngine.value
     : undefined;
+  const effectiveWfMinVramMib = fashionPreflight
+    ? fashionPreflight.minVramMib
+    : wf.min_vram_mib || 0;
+  const effectiveWfMinDiskMib = fashionPreflight
+    ? fashionPreflight.minDiskMib
+    : wf.min_disk_mib || 0;
   const minVramMib = Math.max(
-    wf.min_vram_mib || 0,
+    effectiveWfMinVramMib,
     ttsEngine?.min_vram_mib || 0,
   );
   const minDiskMib = Math.max(
-    wf.min_disk_mib || 0,
+    effectiveWfMinDiskMib,
     ttsEngine?.min_disk_mib || 0,
   );
-  const modelBytes = workflowModelsTotalBytes(wf);
-  if (minVramMib <= 0 && minDiskMib <= 0 && !(wf.models?.length || 0)) {
+  const modelBytes = fashionPreflight
+    ? fashionPreflight.modelBytes
+    : workflowModelsTotalBytes(wf);
+  if (minVramMib <= 0 && minDiskMib <= 0 && modelBytes <= 0 && !(wf.models?.length || 0)) {
     return [];
   }
 
-  const isPackActive = gpuReady.value && comfy.value?.active_pack === wf.id;
+  // For fashion_tryon, active_pack === wf.id does not guarantee that the currently
+  // selected precision_mode (BF16 vs INT8) or garment_cleanup (RMBG 3.0) variant weights
+  // are cached locally, so always run dynamic fashion preflight disk/download checks.
+  const isPackActive =
+    gpuReady.value &&
+    comfy.value?.active_pack === wf.id &&
+    !isFashionTryOnWorkflow.value;
   const items: WorkflowPreflightItem[] = [];
   if (gpuReady.value) {
-    const primaryGpuMib = props.state.runtime.gpu?.total_mib;
-    const fallbackGpuMib = props.state.runtime.resources?.gpu?.total_mib;
-    const gpuTotalMib =
-      typeof primaryGpuMib === "number" &&
-      Number.isFinite(primaryGpuMib) &&
-      primaryGpuMib > 0
-        ? primaryGpuMib
-        : typeof fallbackGpuMib === "number" &&
-            Number.isFinite(fallbackGpuMib) &&
-            fallbackGpuMib > 0
-          ? fallbackGpuMib
-          : undefined;
     if (
       minVramMib > 0 &&
       gpuTotalMib !== undefined &&
@@ -956,7 +1475,7 @@ const workflowPreflightItems = computed<WorkflowPreflightItem[]>(() => {
       const requiredGb = Math.max(1, Math.ceil(minVramMib / 1024));
       const recommendedGpuText =
         ttsEngine &&
-        (ttsEngine.min_vram_mib || 0) > (wf.min_vram_mib || 0)
+        (ttsEngine.min_vram_mib || 0) > effectiveWfMinVramMib
           ? `${requiredGb} GB+ GPU`
           : wf.recommended_gpu
             ? tb(wf.recommended_gpu)
@@ -1015,10 +1534,10 @@ const workflowPreflightItems = computed<WorkflowPreflightItem[]>(() => {
       );
       const wfDiskBytes = isPackActive
         ? PREFLIGHT_DISK_HEADROOM_BYTES
-        : (wf.min_disk_mib || 0) > 0
+        : effectiveWfMinDiskMib > 0
           ? isDriveWeightsMounted
             ? PREFLIGHT_DISK_HEADROOM_BYTES
-            : (wf.min_disk_mib || 0) * 1024 ** 2
+            : effectiveWfMinDiskMib * 1024 ** 2
           : 0;
       const uncachedTtsDiskBytes =
         ttsEngine && !isTtsEngineCached && (ttsEngine.min_disk_mib || 0) > 0
@@ -1051,11 +1570,11 @@ const workflowPreflightItems = computed<WorkflowPreflightItem[]>(() => {
           size: formatComfyByteSize(modelBytes),
         }),
       });
-    } else if ((wf.min_disk_mib || 0) > 0) {
+    } else if (effectiveWfMinDiskMib > 0) {
       items.push({
         tone: "info",
         text: t("comfy.preflightNativeDiskFootprint", {
-          size: formatComfyByteSize((wf.min_disk_mib || 0) * 1024 ** 2),
+          size: formatComfyByteSize(effectiveWfMinDiskMib * 1024 ** 2),
         }),
       });
     }
@@ -1084,6 +1603,37 @@ function formatTtsSampleRateKhz(sampleRate: number): string {
 }
 
 const advancedPresetSummary = computed(() => {
+  if (isFashionTryOnWorkflow.value) {
+    const parts: string[] = [];
+    const cleanup = String(
+      fieldValues.value["pipeline.garment_cleanup"] ?? "rmbg3",
+    )
+      .trim()
+      .toLowerCase();
+    if (cleanup === "rmbg3") {
+      parts.push(t("comfy.fashionSummaryRmbg3"));
+    } else if (cleanup === "crop_only") {
+      parts.push(t("comfy.fashionSummaryCropOnly"));
+    } else if (cleanup === "off") {
+      parts.push(t("comfy.fashionSummaryCleanupOff"));
+    }
+    const precision = String(
+      fieldValues.value["pipeline.precision_mode"] ?? "auto",
+    )
+      .trim()
+      .toLowerCase();
+    if (precision === "bf16") {
+      parts.push(t("comfy.fashionSummaryPrecisionBf16"));
+    } else if (precision === "int8") {
+      parts.push(t("comfy.fashionSummaryPrecisionInt8"));
+    } else {
+      parts.push(t("comfy.fashionSummaryPrecisionAuto"));
+    }
+    if (fieldValues.value["pipeline.anchor_hero_shot"] !== false) {
+      parts.push(t("comfy.fashionSummaryHeroAnchor"));
+    }
+    return parts.length > 0 ? parts.join(" · ") : t("comfy.advancedDefaultHint");
+  }
   if (!isDigitalHumanWorkflow.value) {
     return t("comfy.advancedDefaultHint");
   }
@@ -1545,7 +2095,11 @@ function isWideAdvancedField(field: WorkflowField): boolean {
     field.key === "pipeline.quality_preset" ||
     field.key === "pipeline.framing_style" ||
     field.key === "pipeline.sampling_mode" ||
-    field.key === "pipeline.vocal_separation"
+    field.key === "pipeline.vocal_separation" ||
+    field.key === "pipeline.garment_cleanup" ||
+    field.key === "pipeline.styling_match" ||
+    field.key === "pipeline.color_fidelity" ||
+    field.key === "pipeline.precision_mode"
   );
 }
 
@@ -1583,9 +2137,15 @@ const voicePreviewText = ref("");
 const voicePreviewTextCustomEdited = ref(false);
 const voicePreviewLookingUp = ref(false);
 const voicePreviewFetchingAsset = ref(false);
+const VOICE_PREVIEW_TASK_MISSING_GRACE_MS = 15_000;
 const activeVoicePreviewTaskId = ref("");
 const activeVoicePreviewId = ref("");
 const activeVoicePreviewContextKey = ref("");
+const activeVoicePreviewPresetId = ref("");
+const activeVoicePreviewScopeKey = ref("");
+const activeVoicePreviewAllowPresetReady = ref(true);
+let activeVoicePreviewTaskObserved = false;
+let activeVoicePreviewTaskStartedAt = 0;
 const loadedVoicePreviewSignature = ref("");
 const activeVoicePreviewEngineName = ref("");
 const activeVoicePreviewVoiceLabel = ref("");
@@ -1867,6 +2427,11 @@ function resetVoicePreviewTaskTracking() {
   activeVoicePreviewTaskId.value = "";
   activeVoicePreviewId.value = "";
   activeVoicePreviewContextKey.value = "";
+  activeVoicePreviewPresetId.value = "";
+  activeVoicePreviewScopeKey.value = "";
+  activeVoicePreviewAllowPresetReady.value = true;
+  activeVoicePreviewTaskObserved = false;
+  activeVoicePreviewTaskStartedAt = 0;
   activeVoicePreviewRuntimeId.value = undefined;
   voicePreviewStatus.value = "";
 }
@@ -2461,6 +3026,9 @@ async function tryPlayLocalOrCachedVoicePreview(
     activeVoicePreviewSampleRate.value = engine.sample_rate;
     activeVoicePreviewId.value = knownPreviewId;
     activeVoicePreviewContextKey.value = contextKey;
+    activeVoicePreviewPresetId.value = presetId;
+    activeVoicePreviewScopeKey.value = scopeKey;
+    activeVoicePreviewAllowPresetReady.value = true;
     activeVoicePreviewRuntimeId.value = props.state.runtime.id;
     const fetched = await fetchVoicePreviewAsset(
       knownPreviewId,
@@ -2470,8 +3038,28 @@ async function tryPlayLocalOrCachedVoicePreview(
       true,
       presetId,
       scopeKey,
+      true,
     );
-    return fetched ? "played" : "handled_or_superseded";
+    if (fetched) {
+      return "played";
+    }
+    if (
+      !disposed &&
+      reqGen === voicePreviewReqGen &&
+      currentVoicePrefetchScopeKey.value === scopeKey &&
+      gpuReady.value
+    ) {
+      if (
+        Object.prototype.hasOwnProperty.call(readyVoicePresetMap.value, presetId)
+      ) {
+        const nextReadyMap = { ...readyVoicePresetMap.value };
+        delete nextReadyMap[presetId];
+        readyVoicePresetMap.value = nextReadyMap;
+      }
+      voicePreviewError.value = "";
+      return "miss";
+    }
+    return "handled_or_superseded";
   }
 
   if (
@@ -2492,6 +3080,11 @@ function markVoicePreviewReadyAndPlay() {
   activeVoicePreviewTaskId.value = "";
   activeVoicePreviewId.value = "";
   activeVoicePreviewContextKey.value = "";
+  activeVoicePreviewPresetId.value = "";
+  activeVoicePreviewScopeKey.value = "";
+  activeVoicePreviewAllowPresetReady.value = true;
+  activeVoicePreviewTaskObserved = false;
+  activeVoicePreviewTaskStartedAt = 0;
   voicePreviewStatus.value = "";
   if (
     paramDrawerOpen.value &&
@@ -2510,9 +3103,13 @@ async function fetchVoicePreviewAsset(
   wasCached: boolean,
   presetId?: string,
   scopeKey?: string,
+  allowPresetReady?: boolean,
 ): Promise<boolean> {
   const effectivePresetId = presetId || selectedVoicePresetId.value;
   const effectiveScopeKey = scopeKey || currentVoicePrefetchScopeKey.value;
+  const canMarkPresetReady =
+    (allowPresetReady ?? !hasUploadedVoicePreviewRefAudio.value) &&
+    !hasUploadedVoicePreviewRefAudio.value;
   const existing = voicePreviewCache.get(previewId);
   if (existing) {
     voicePreviewCache.delete(previewId);
@@ -2524,13 +3121,17 @@ async function fetchVoicePreviewAsset(
       cached: true,
     };
     loadedVoicePreviewSignature.value = contextKey;
-    markVoicePresetReadyInCurrentScope(
-      effectivePresetId,
-      previewId,
-      effectiveScopeKey,
-    );
+    if (canMarkPresetReady) {
+      markVoicePresetReadyInCurrentScope(
+        effectivePresetId,
+        previewId,
+        effectiveScopeKey,
+      );
+    }
     markVoicePreviewReadyAndPlay();
-    void kickoffSiblingVoicePrefetch(effectivePresetId);
+    if (canMarkPresetReady) {
+      void kickoffSiblingVoicePrefetch(effectivePresetId);
+    }
     return true;
   }
 
@@ -2566,13 +3167,17 @@ async function fetchVoicePreviewAsset(
       },
     );
     if (applied) {
-      markVoicePresetReadyInCurrentScope(
-        effectivePresetId,
-        previewId,
-        effectiveScopeKey,
-      );
+      if (canMarkPresetReady) {
+        markVoicePresetReadyInCurrentScope(
+          effectivePresetId,
+          previewId,
+          effectiveScopeKey,
+        );
+      }
       markVoicePreviewReadyAndPlay();
-      void kickoffSiblingVoicePrefetch(effectivePresetId);
+      if (canMarkPresetReady) {
+        void kickoffSiblingVoicePrefetch(effectivePresetId);
+      }
       return true;
     }
     return false;
@@ -2588,6 +3193,11 @@ async function fetchVoicePreviewAsset(
       activeVoicePreviewTaskId.value = "";
       activeVoicePreviewId.value = "";
       activeVoicePreviewContextKey.value = "";
+      activeVoicePreviewPresetId.value = "";
+      activeVoicePreviewScopeKey.value = "";
+      activeVoicePreviewAllowPresetReady.value = true;
+      activeVoicePreviewTaskObserved = false;
+      activeVoicePreviewTaskStartedAt = 0;
     }
   }
 }
@@ -2744,6 +3354,11 @@ function reconcileActiveVoicePreviewTask(
     if (runningExternal) {
       activeVoicePreviewTaskId.value = runningExternal.id;
       activeVoicePreviewRuntimeId.value = props.state.runtime.id;
+      activeVoicePreviewPresetId.value = "";
+      activeVoicePreviewScopeKey.value = "";
+      activeVoicePreviewAllowPresetReady.value = false;
+      activeVoicePreviewTaskObserved = true;
+      activeVoicePreviewTaskStartedAt = Date.now();
       voicePreviewStatus.value =
         runningExternal.message || t("comfy.voicePreviewBtnGenerating");
     }
@@ -2751,7 +3366,46 @@ function reconcileActiveVoicePreviewTask(
   }
   const taskId = activeVoicePreviewTaskId.value;
   const matched = taskList.find((item) => item.id === taskId);
-  if (!matched) return;
+  if (!matched) {
+    const graceExpired =
+      activeVoicePreviewTaskStartedAt > 0 &&
+      Date.now() - activeVoicePreviewTaskStartedAt >=
+        VOICE_PREVIEW_TASK_MISSING_GRACE_MS;
+    if (!activeVoicePreviewTaskObserved && !graceExpired) {
+      return;
+    }
+    const previewId = activeVoicePreviewId.value;
+    const reqGen = voicePreviewReqGen;
+    const targetRuntimeId = activeVoicePreviewRuntimeId.value;
+    const contextKey = activeVoicePreviewContextKey.value;
+    const capturedPresetId = activeVoicePreviewPresetId.value || undefined;
+    const capturedScopeKey = activeVoicePreviewScopeKey.value || undefined;
+    const capturedAllowPresetReady = activeVoicePreviewAllowPresetReady.value;
+    activeVoicePreviewTaskId.value = "";
+    activeVoicePreviewTaskObserved = false;
+    activeVoicePreviewTaskStartedAt = 0;
+    if (previewId && !voicePreviewFetchingAsset.value) {
+      void fetchVoicePreviewAsset(
+        previewId,
+        reqGen,
+        targetRuntimeId,
+        contextKey,
+        false,
+        capturedPresetId,
+        capturedScopeKey,
+        capturedAllowPresetReady,
+      );
+    } else if (!voicePreviewFetchingAsset.value) {
+      activeVoicePreviewId.value = "";
+      activeVoicePreviewContextKey.value = "";
+      activeVoicePreviewPresetId.value = "";
+      activeVoicePreviewScopeKey.value = "";
+      activeVoicePreviewAllowPresetReady.value = true;
+      voicePreviewStatus.value = "";
+    }
+    return;
+  }
+  activeVoicePreviewTaskObserved = true;
   if (matched.state === "running") {
     if (matched.message) {
       voicePreviewStatus.value = matched.message;
@@ -2762,8 +3416,13 @@ function reconcileActiveVoicePreviewTask(
   const reqGen = voicePreviewReqGen;
   const targetRuntimeId = activeVoicePreviewRuntimeId.value;
   const contextKey = activeVoicePreviewContextKey.value;
+  const capturedPresetId = activeVoicePreviewPresetId.value || undefined;
+  const capturedScopeKey = activeVoicePreviewScopeKey.value || undefined;
+  const capturedAllowPresetReady = activeVoicePreviewAllowPresetReady.value;
   if (matched.state === "completed") {
     activeVoicePreviewTaskId.value = "";
+    activeVoicePreviewTaskObserved = false;
+    activeVoicePreviewTaskStartedAt = 0;
     if (previewId && !voicePreviewFetchingAsset.value) {
       void fetchVoicePreviewAsset(
         previewId,
@@ -2771,10 +3430,16 @@ function reconcileActiveVoicePreviewTask(
         targetRuntimeId,
         contextKey,
         false,
+        capturedPresetId,
+        capturedScopeKey,
+        capturedAllowPresetReady,
       );
     } else if (!voicePreviewFetchingAsset.value) {
       activeVoicePreviewId.value = "";
       activeVoicePreviewContextKey.value = "";
+      activeVoicePreviewPresetId.value = "";
+      activeVoicePreviewScopeKey.value = "";
+      activeVoicePreviewAllowPresetReady.value = true;
       voicePreviewStatus.value = "";
     }
     return;
@@ -2783,6 +3448,11 @@ function reconcileActiveVoicePreviewTask(
     activeVoicePreviewTaskId.value = "";
     activeVoicePreviewId.value = "";
     activeVoicePreviewContextKey.value = "";
+    activeVoicePreviewPresetId.value = "";
+    activeVoicePreviewScopeKey.value = "";
+    activeVoicePreviewAllowPresetReady.value = true;
+    activeVoicePreviewTaskObserved = false;
+    activeVoicePreviewTaskStartedAt = 0;
     voicePreviewStatus.value = "";
     voicePreviewError.value = "";
     return;
@@ -2791,6 +3461,11 @@ function reconcileActiveVoicePreviewTask(
     activeVoicePreviewTaskId.value = "";
     activeVoicePreviewId.value = "";
     activeVoicePreviewContextKey.value = "";
+    activeVoicePreviewPresetId.value = "";
+    activeVoicePreviewScopeKey.value = "";
+    activeVoicePreviewAllowPresetReady.value = true;
+    activeVoicePreviewTaskObserved = false;
+    activeVoicePreviewTaskStartedAt = 0;
     voicePreviewStatus.value = "";
     voicePreviewError.value =
       matched.error || matched.message || t("status.failed");
@@ -3109,7 +3784,11 @@ async function triggerVoicePreview() {
         }
         return;
       }
+      const allowPresetReady = !refAudioInputId && !emotionRefInputId;
       activeVoicePreviewId.value = previewId;
+      activeVoicePreviewPresetId.value = voicePresetId;
+      activeVoicePreviewScopeKey.value = targetScopeKey;
+      activeVoicePreviewAllowPresetReady.value = allowPresetReady;
       await fetchVoicePreviewAsset(
         previewId,
         reqGen,
@@ -3118,17 +3797,22 @@ async function triggerVoicePreview() {
         true,
         voicePresetId,
         targetScopeKey,
+        allowPresetReady,
       );
       return;
     }
 
     const taskId = typeof res?.task?.id === "string" ? res.task.id.trim() : "";
     if (taskId && previewId) {
+      const allowPresetReady = !refAudioInputId && !emotionRefInputId;
       if (detachedVoicePreviewTaskIds.delete(taskId)) {
         detachedVoicePreviewVersion.value += 1;
       }
       activeVoicePreviewId.value = previewId;
       activeVoicePreviewContextKey.value = contextKey;
+      activeVoicePreviewPresetId.value = voicePresetId;
+      activeVoicePreviewScopeKey.value = targetScopeKey;
+      activeVoicePreviewAllowPresetReady.value = allowPresetReady;
       activeVoicePreviewSampleRate.value =
         res?.sample_rate ?? engine.sample_rate;
       voicePreviewStatus.value =
@@ -3143,21 +3827,34 @@ async function triggerVoicePreview() {
           false,
           voicePresetId,
           targetScopeKey,
+          allowPresetReady,
         );
       } else if (res?.task?.state === "cancelled") {
         activeVoicePreviewTaskId.value = "";
         activeVoicePreviewId.value = "";
         activeVoicePreviewContextKey.value = "";
+        activeVoicePreviewPresetId.value = "";
+        activeVoicePreviewScopeKey.value = "";
+        activeVoicePreviewAllowPresetReady.value = true;
+        activeVoicePreviewTaskObserved = false;
+        activeVoicePreviewTaskStartedAt = 0;
         voicePreviewStatus.value = "";
         voicePreviewError.value = "";
       } else if (res?.task?.state === "failed") {
         activeVoicePreviewTaskId.value = "";
         activeVoicePreviewId.value = "";
         activeVoicePreviewContextKey.value = "";
+        activeVoicePreviewPresetId.value = "";
+        activeVoicePreviewScopeKey.value = "";
+        activeVoicePreviewAllowPresetReady.value = true;
+        activeVoicePreviewTaskObserved = false;
+        activeVoicePreviewTaskStartedAt = 0;
         voicePreviewStatus.value = "";
         voicePreviewError.value =
           res.task.error || res.task.message || t("status.failed");
       } else {
+        activeVoicePreviewTaskObserved = false;
+        activeVoicePreviewTaskStartedAt = Date.now();
         activeVoicePreviewTaskId.value = taskId;
         reconcileActiveVoicePreviewTask(
           props.state.runtime.tasks,
@@ -3342,6 +4039,7 @@ watch(
       props.state.runtime.tasks,
       props.state.runtime.state,
       activeVoicePreviewTaskId.value,
+      activeVoicePreviewTaskId.value ? props.clockNow : 0,
     ] as const,
   ([tasks, rtState]) => {
     reconcileActiveVoicePreviewTask(tasks, rtState);
@@ -3726,6 +4424,7 @@ async function hydrateDraftMediaField(
       field && field.default !== undefined && field.default !== null
         ? String(field.default)
         : "";
+    pruneFashionPhotoRoles(wf, { persist: true });
   }
 }
 
@@ -3968,6 +4667,8 @@ function resetWorkflowEditorState(
     uploadGen[k] = (uploadGen[k] ?? 0) + 1;
   }
   uploadingFields.value = {};
+  uploadingNames.value = {};
+  clearAllReservedFashionSlots();
   activeDraftWorkflow = wf;
   draftWorkflowId = wf?.id || "";
   fieldValues.value = wf
@@ -4165,6 +4866,8 @@ function switchDigitalHumanEngine(targetWorkflowId: string) {
     mediaGens[key] = uploadGen[key] ?? 0;
   }
   uploadingFields.value = {};
+  uploadingNames.value = {};
+  clearAllReservedFashionSlots();
 
   pendingWorkflowId.value = "";
   activeDraftWorkflow = nextWf;
@@ -4576,6 +5279,7 @@ watch(
     }
     uploadedInputIds.value = {};
     if (wf) {
+      pruneFashionPhotoRoles(wf, { persist: false });
       const loadGen = draftLoadGen;
       for (const key of Object.keys(draftMediaMeta.value)) {
         if (!pendingUploads.value[key]) {
@@ -4623,6 +5327,8 @@ function resetFields() {
     uploadGen[k] = (uploadGen[k] ?? 0) + 1;
   }
   uploadingFields.value = {};
+  uploadingNames.value = {};
+  clearAllReservedFashionSlots();
   fieldValues.value = defaultFieldValues(wf.fields, colabOneLocaleCode.value);
   pendingUploads.value = {};
   uploadedInputIds.value = {};
@@ -4696,6 +5402,13 @@ const MAX_AUDIO_INPUT_BYTES = 64 * 1024 ** 2;
 const IMAGE_EXT_RE = /[^/\\]\.(png|jpe?g|webp)$/i;
 const AUDIO_EXT_RE = /\.(wav|mp3|flac|ogg|m4a)$/i;
 
+interface ColabOneMediaUploadResult {
+  ok: boolean;
+  uploaded?: boolean;
+  staged?: boolean;
+  error?: string;
+}
+
 function readFileAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -4709,33 +5422,46 @@ function readFileAsBase64(file: File): Promise<string> {
   });
 }
 
-async function handleMediaFile(field: WorkflowField, file: File) {
-  if (submittingRun.value || uploadingFields.value[field.key]) return;
+async function handleMediaFile(
+  field: WorkflowField,
+  file: File,
+  opts?: { silentNotice?: boolean },
+): Promise<ColabOneMediaUploadResult> {
+  if (submittingRun.value || uploadingFields.value[field.key]) {
+    return { ok: false };
+  }
   const kind: "image" | "audio" =
     field.field_type === "audio" ? "audio" : "image";
   const isImageOk = IMAGE_EXT_RE.test(file.name);
   const isAudioOk = AUDIO_EXT_RE.test(file.name);
   if ((kind === "image" && !isImageOk) || (kind === "audio" && !isAudioOk)) {
-    reportError(
-      t(
-        kind === "audio"
-          ? "comfy.errUnsupportedAudioFormat"
-          : "comfy.errUnsupportedImageFormat",
-      ),
+    const errMsg = t(
+      kind === "audio"
+        ? "comfy.errUnsupportedAudioFormat"
+        : "comfy.errUnsupportedImageFormat",
     );
-    return;
+    if (!opts?.silentNotice) {
+      reportError(errMsg);
+    }
+    return { ok: false, error: errMsg };
   }
   if (file.size <= 0) {
-    reportError(t("comfy.errEmptyFile"));
-    return;
+    const errMsg = t("comfy.errEmptyFile");
+    if (!opts?.silentNotice) {
+      reportError(errMsg);
+    }
+    return { ok: false, error: errMsg };
   }
   const maxBytes =
     kind === "audio" ? MAX_AUDIO_INPUT_BYTES : MAX_IMAGE_INPUT_BYTES;
   if (file.size > maxBytes) {
-    reportError(
-      t(kind === "audio" ? "comfy.errAudioTooLarge" : "comfy.errImageTooLarge"),
+    const errMsg = t(
+      kind === "audio" ? "comfy.errAudioTooLarge" : "comfy.errImageTooLarge",
     );
-    return;
+    if (!opts?.silentNotice) {
+      reportError(errMsg);
+    }
+    return { ok: false, error: errMsg };
   }
 
   const gen = (uploadGen[field.key] = (uploadGen[field.key] ?? 0) + 1);
@@ -4744,6 +5470,7 @@ async function handleMediaFile(field: WorkflowField, file: File) {
   const targetWorkflowId = selectedWorkflowId.value;
   const targetWf = selectedWorkflow.value;
   uploadingFields.value = { ...uploadingFields.value, [field.key]: true };
+  uploadingNames.value = { ...uploadingNames.value, [field.key]: file.name };
   if (
     field.key === "pipeline.voice_ref_audio" ||
     field.key === "pipeline.emotion_ref_audio"
@@ -4759,7 +5486,7 @@ async function handleMediaFile(field: WorkflowField, file: File) {
       uploadGen[field.key] !== gen ||
       selectedWorkflowId.value !== targetWorkflowId
     ) {
-      return;
+      return { ok: false };
     }
     if (kind === "image" && isImageOk) {
       nextPreviewUrl = URL.createObjectURL(file);
@@ -4798,10 +5525,15 @@ async function handleMediaFile(field: WorkflowField, file: File) {
       selectedWorkflowId.value !== targetWorkflowId
     ) {
       if (nextPreviewUrl) URL.revokeObjectURL(nextPreviewUrl);
-      return;
+      return { ok: false };
     }
 
     const effectiveFilename = savedDraftMeta?.filename || file.name;
+    const draftErrText = draftSaveErr
+      ? t("comfy.errSaveDraft", {
+          detail: formatDraftErrorDetail(draftSaveErr),
+        })
+      : undefined;
     if (savedDraftMeta) {
       draftMediaMeta.value = {
         ...draftMediaMeta.value,
@@ -4826,6 +5558,7 @@ async function handleMediaFile(field: WorkflowField, file: File) {
       flushDraftSave(targetWf);
     }
 
+    let shouldStageOffline = !gpuReady.value;
     if (gpuReady.value) {
       const uploadRuntimeId = props.state.runtime.id;
       const res = await colabOneCommand("comfyui.input.upload", {
@@ -4836,65 +5569,94 @@ async function handleMediaFile(field: WorkflowField, file: File) {
         disposed ||
         loadGen !== draftLoadGen ||
         uploadGen[field.key] !== gen ||
-        selectedWorkflowId.value !== targetWorkflowId ||
-        props.state.runtime.id !== uploadRuntimeId
+        selectedWorkflowId.value !== targetWorkflowId
       ) {
         if (nextPreviewUrl) URL.revokeObjectURL(nextPreviewUrl);
-        return;
+        return { ok: false };
       }
-      const assetId = typeof res?.id === "string" ? res.id : "";
-      if (!assetId) {
-        throw new Error(t("comfy.errUploadNoId"));
-      }
-      if (!savedDraftMeta && draftMediaMeta.value[field.key]) {
-        const nextMeta = { ...draftMediaMeta.value };
-        delete nextMeta[field.key];
-        draftMediaMeta.value = nextMeta;
-        delete draftMediaSourceIds.value[field.key];
-        if (targetWorkflowId) {
-          const delEpoch = bumpDraftMediaEpoch(targetWorkflowId, field.key);
-          const delTask = async () => {
-            if (getDraftMediaEpoch(targetWorkflowId, field.key) !== delEpoch) {
-              return;
+      if (props.state.runtime.id !== uploadRuntimeId) {
+        if (!savedDraftMeta) {
+          if (!gpuReady.value) {
+            // Runtime went offline mid-upload (e.g. Guest Share Mode with no local
+            // draft media): stage into pendingUploads with its local preview instead
+            // of discarding the photo silently.
+            shouldStageOffline = true;
+          } else {
+            if (nextPreviewUrl) URL.revokeObjectURL(nextPreviewUrl);
+            const interruptedErr = t("comfy.errUploadNamedFailed", {
+              name: effectiveFilename,
+            });
+            if (!opts?.silentNotice) {
+              reportError(interruptedErr);
             }
-            await deleteColabOneWorkflowDraftMedia(targetWorkflowId, field.key);
-          };
-          void (isBuiltinDh
-            ? enqueueDigitalHumanPersist(delTask)
-            : delTask()
-          ).catch(() => {});
+            return { ok: false, error: interruptedErr };
+          }
+        } else {
+          // Local draft media already staged pendingUploads & preview cleanly.
+          if (nextPreviewUrl) URL.revokeObjectURL(nextPreviewUrl);
+          shouldStageOffline = true;
         }
-      }
-      if (nextPreviewUrl) {
-        revokeLocalPreview(field.key);
-        localPreviews.value[field.key] = nextPreviewUrl;
-        nextPreviewUrl = "";
-      }
-      uploadedInputIds.value[field.key] = assetId;
-      const nextFieldVal = res?.filename || effectiveFilename;
-      const fieldChanged = fieldValues.value[field.key] !== nextFieldVal;
-      fieldValues.value[field.key] = nextFieldVal;
-      uploadedNames.value[field.key] = effectiveFilename;
-      delete pendingUploads.value[field.key];
-      if (fieldChanged || !savedDraftMeta) {
-        draftDirty = true;
-        flushDraftSave(targetWf);
-      }
-      if (draftSaveErr) {
-        emit(
-          "notify",
-          t("comfy.noticeUploadedRemote", { name: effectiveFilename }),
-          "success",
-        );
-        reportError(
-          t("comfy.errSaveDraft", {
-            detail: formatDraftErrorDetail(draftSaveErr),
-          }),
-        );
       } else {
-        setNoticeKey("comfy.noticeUploadedRemote", { name: effectiveFilename });
+        const assetId = typeof res?.id === "string" ? res.id : "";
+        if (!assetId) {
+          throw new Error(t("comfy.errUploadNoId"));
+        }
+        if (!savedDraftMeta && draftMediaMeta.value[field.key]) {
+          const nextMeta = { ...draftMediaMeta.value };
+          delete nextMeta[field.key];
+          draftMediaMeta.value = nextMeta;
+          delete draftMediaSourceIds.value[field.key];
+          if (targetWorkflowId) {
+            const delEpoch = bumpDraftMediaEpoch(targetWorkflowId, field.key);
+            const delTask = async () => {
+              if (getDraftMediaEpoch(targetWorkflowId, field.key) !== delEpoch) {
+                return;
+              }
+              await deleteColabOneWorkflowDraftMedia(
+                targetWorkflowId,
+                field.key,
+              );
+            };
+            void (isBuiltinDh
+              ? enqueueDigitalHumanPersist(delTask)
+              : delTask()
+            ).catch(() => {});
+          }
+        }
+        if (nextPreviewUrl) {
+          revokeLocalPreview(field.key);
+          localPreviews.value[field.key] = nextPreviewUrl;
+          nextPreviewUrl = "";
+        }
+        uploadedInputIds.value[field.key] = assetId;
+        const nextFieldVal = res?.filename || effectiveFilename;
+        const fieldChanged = fieldValues.value[field.key] !== nextFieldVal;
+        fieldValues.value[field.key] = nextFieldVal;
+        uploadedNames.value[field.key] = effectiveFilename;
+        delete pendingUploads.value[field.key];
+        if (fieldChanged || !savedDraftMeta) {
+          draftDirty = true;
+          flushDraftSave(targetWf);
+        }
+        if (!opts?.silentNotice) {
+          if (draftErrText) {
+            emit(
+              "notify",
+              t("comfy.noticeUploadedRemote", { name: effectiveFilename }),
+              "success",
+            );
+            reportError(draftErrText);
+          } else {
+            setNoticeKey("comfy.noticeUploadedRemote", {
+              name: effectiveFilename,
+            });
+          }
+        }
+        return { ok: true, uploaded: true, error: draftErrText };
       }
-    } else {
+    }
+
+    if (shouldStageOffline) {
       if (!savedDraftMeta) {
         if (draftMediaMeta.value[field.key]) {
           const nextMeta = { ...draftMediaMeta.value };
@@ -4934,31 +5696,38 @@ async function handleMediaFile(field: WorkflowField, file: File) {
         draftDirty = true;
         flushDraftSave(targetWf);
       }
-      if (draftSaveErr) {
-        emit(
-          "notify",
-          t("comfy.noticeStagedUpload", { name: effectiveFilename }),
-          "info",
-        );
-        reportError(
-          t("comfy.errSaveDraft", {
-            detail: formatDraftErrorDetail(draftSaveErr),
-          }),
-        );
-      } else {
-        setNoticeKey("comfy.noticeStagedUpload", { name: effectiveFilename });
+      if (!opts?.silentNotice) {
+        if (draftErrText) {
+          emit(
+            "notify",
+            t("comfy.noticeStagedUpload", { name: effectiveFilename }),
+            "info",
+          );
+          reportError(draftErrText);
+        } else {
+          setNoticeKey("comfy.noticeStagedUpload", { name: effectiveFilename });
+        }
       }
+      return { ok: true, staged: true, error: draftErrText };
     }
+    return { ok: false };
   } catch (e) {
     if (nextPreviewUrl) URL.revokeObjectURL(nextPreviewUrl);
+    const errMsg = formatDraftErrorDetail(e) || String(e);
     if (!disposed && uploadGen[field.key] === gen) {
-      reportError(e);
+      if (!opts?.silentNotice) {
+        reportError(e);
+      }
     }
+    return { ok: false, error: errMsg };
   } finally {
     if (uploadGen[field.key] === gen) {
       const next = { ...uploadingFields.value };
       delete next[field.key];
       uploadingFields.value = next;
+      const nextNames = { ...uploadingNames.value };
+      delete nextNames[field.key];
+      uploadingNames.value = nextNames;
     }
   }
 }
@@ -5326,6 +6095,34 @@ async function runWorkflow() {
     return;
   }
 
+  if (isColabOneFashionCustomPosesEmpty(wf, fieldValues.value)) {
+    reportError(
+      tb("自定义姿态模式下至少需要勾选 1 个姿势（或在高级设置中填写自定义姿势）"),
+    );
+    if (!advancedExpanded.value) {
+      advancedExpanded.value = true;
+    }
+    await nextTick();
+    if (!disposed) {
+      const poseField = wf.fields.find((f) => f.key === "pipeline.pose_1_enabled");
+      const targetEl = poseField
+        ? document.getElementById(fieldInputId(poseField))
+        : null;
+      if (targetEl) {
+        const prefersReducedMotion =
+          typeof window !== "undefined" &&
+          typeof window.matchMedia === "function" &&
+          window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        (targetEl.closest(".co-comfy-field") || targetEl).scrollIntoView?.({
+          behavior: prefersReducedMotion ? "auto" : "smooth",
+          block: "center",
+        });
+        targetEl.focus();
+      }
+    }
+    return;
+  }
+
   const targetRuntimeId = props.state.runtime.id;
   const targetWorkflowId = wf.id;
   flushDraftSave(wf);
@@ -5390,6 +6187,7 @@ async function runWorkflow() {
           field && field.default !== undefined && field.default !== null
             ? String(field.default)
             : "";
+        pruneFashionPhotoRoles(wf, { persist: true });
         throw new Error(
           draftReadErr
             ? formatDraftErrorDetail(draftReadErr)
@@ -7573,12 +8371,18 @@ defineExpose({
                 class="co-comfy-wf-emblem"
                 :class="{
                   'is-pipeline':
-                    entry.primary.pipeline?.kind === 'digital_human',
+                    entry.primary.pipeline?.kind === 'digital_human' ||
+                    entry.primary.pipeline?.kind === 'fashion_tryon',
                 }"
                 aria-hidden="true"
               >
                 <PhVideoCamera
                   v-if="entry.primary.pipeline?.kind === 'digital_human'"
+                  :size="20"
+                  weight="duotone"
+                />
+                <PhTShirt
+                  v-else-if="entry.primary.pipeline?.kind === 'fashion_tryon'"
                   :size="20"
                   weight="duotone"
                 />
@@ -7629,6 +8433,17 @@ defineExpose({
               </div>
               <div class="co-comfy-wf-io-row">
                 {{ t("comfy.ioOutputDigitalHuman") }}
+              </div>
+            </div>
+            <div
+              v-else-if="entry.primary.pipeline?.kind === 'fashion_tryon'"
+              class="co-comfy-wf-io-strip"
+            >
+              <div class="co-comfy-wf-io-row">
+                {{ t("comfy.ioInputFashionTryOn") }}
+              </div>
+              <div class="co-comfy-wf-io-row">
+                {{ t("comfy.ioOutputFashionTryOn") }}
               </div>
             </div>
 
@@ -7900,12 +8715,20 @@ defineExpose({
                       class="co-comfy-wf-emblem"
                       :class="{
                         'is-pipeline':
-                          entry.primary.pipeline?.kind === 'digital_human',
+                          entry.primary.pipeline?.kind === 'digital_human' ||
+                          entry.primary.pipeline?.kind === 'fashion_tryon',
                       }"
                       aria-hidden="true"
                     >
                       <PhVideoCamera
                         v-if="entry.primary.pipeline?.kind === 'digital_human'"
+                        :size="20"
+                        weight="duotone"
+                      />
+                      <PhTShirt
+                        v-else-if="
+                          entry.primary.pipeline?.kind === 'fashion_tryon'
+                        "
                         :size="20"
                         weight="duotone"
                       />
@@ -7956,6 +8779,17 @@ defineExpose({
                     </div>
                     <div class="co-comfy-wf-io-row">
                       {{ t("comfy.ioOutputDigitalHuman") }}
+                    </div>
+                  </div>
+                  <div
+                    v-else-if="entry.primary.pipeline?.kind === 'fashion_tryon'"
+                    class="co-comfy-wf-io-strip"
+                  >
+                    <div class="co-comfy-wf-io-row">
+                      {{ t("comfy.ioInputFashionTryOn") }}
+                    </div>
+                    <div class="co-comfy-wf-io-row">
+                      {{ t("comfy.ioOutputFashionTryOn") }}
                     </div>
                   </div>
 
@@ -8508,11 +9342,18 @@ defineExpose({
         <div v-if="selectedWorkflow" class="co-comfy-drawer-title">
           <span
             class="co-comfy-drawer-title-icon"
-            :class="{ 'is-pipeline': isDigitalHumanWorkflow }"
+            :class="{
+              'is-pipeline': isDigitalHumanWorkflow || isFashionTryOnWorkflow,
+            }"
             aria-hidden="true"
           >
             <PhVideoCamera
               v-if="isDigitalHumanWorkflow"
+              :size="16"
+              weight="duotone"
+            />
+            <PhTShirt
+              v-else-if="isFashionTryOnWorkflow"
               :size="16"
               weight="duotone"
             />
@@ -8571,6 +9412,22 @@ defineExpose({
           </div>
           <span class="co-comfy-beginner-guide-hint">
             {{ t("comfy.beginnerPresetHint") }}
+          </span>
+        </div>
+        <div
+          v-else-if="isFashionTryOnWorkflow"
+          class="co-comfy-beginner-guide"
+        >
+          <div class="co-comfy-beginner-guide-io">
+            <div class="co-comfy-beginner-guide-io-row">
+              {{ t("comfy.ioInputFashionTryOn") }}
+            </div>
+            <div class="co-comfy-beginner-guide-io-row">
+              {{ t("comfy.ioOutputFashionTryOn") }}
+            </div>
+          </div>
+          <span class="co-comfy-beginner-guide-hint">
+            {{ t("comfy.beginnerFashionPresetHint") }}
           </span>
         </div>
         <p
@@ -8751,8 +9608,38 @@ defineExpose({
           <template v-else>
             <!-- Primary Essential Inputs -->
             <div class="co-comfy-primary-fields">
+              <template v-if="isFashionTryOnWorkflow">
+                <ColabOneFashionPhotoGroup
+                  group="model"
+                  :items="fashionModelPhotoItems"
+                  :max-count="COLABONE_FASHION_MAX_REFS_PER_GROUP"
+                  :disabled="submittingRun"
+                  :active="paramDrawerOpen"
+                  :dropzone-id="fashionModelDropzoneId"
+                  @add-files="(files) => handleFashionAddFiles('model', files)"
+                  @remove="(key) => handleFashionRemovePhoto('model', key)"
+                  @promote="(key) => handleFashionPromotePhoto('model', key)"
+                  @change-role="
+                    (key, role) => handleFashionChangeRole('model', key, role)
+                  "
+                />
+                <ColabOneFashionPhotoGroup
+                  group="garment"
+                  :items="fashionGarmentPhotoItems"
+                  :max-count="COLABONE_FASHION_MAX_REFS_PER_GROUP"
+                  :disabled="submittingRun"
+                  :active="paramDrawerOpen"
+                  :dropzone-id="fashionGarmentDropzoneId"
+                  @add-files="(files) => handleFashionAddFiles('garment', files)"
+                  @remove="(key) => handleFashionRemovePhoto('garment', key)"
+                  @promote="(key) => handleFashionPromotePhoto('garment', key)"
+                  @change-role="
+                    (key, role) => handleFashionChangeRole('garment', key, role)
+                  "
+                />
+              </template>
               <ComfyWorkflowField
-                v-for="field in fieldPartitions.primary"
+                v-for="field in standardPrimaryFields"
                 :key="field.key"
                 :field="field"
                 :value="fieldValues[field.key]"

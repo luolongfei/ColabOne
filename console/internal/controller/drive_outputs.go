@@ -43,6 +43,18 @@ func sanitizeDriveFileID(raw string) string {
 	return ""
 }
 
+func sanitizeDriveTaskID(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) > 120 {
+		return string(runes[:120])
+	}
+	return s
+}
+
 func sanitizeDriveWebViewLink(raw string) string {
 	s := strings.TrimSpace(raw)
 	if s == "" || len(s) > 2048 {
@@ -204,6 +216,7 @@ type ColabOneDriveOutputRecord struct {
 	GPUName              string  `json:"gpu_name,omitempty"`
 	CUEstimated          bool    `json:"cu_estimated,omitempty"`
 	PromptID             string  `json:"prompt_id,omitempty"`
+	TaskID               string  `json:"task_id,omitempty"`
 	DriveSynced          bool    `json:"drive_synced"`
 	DriveExported        bool    `json:"drive_exported,omitempty"`
 	DrivePath            string  `json:"drive_path,omitempty"`
@@ -286,6 +299,9 @@ func (r *ColabOneDriveOutputRecord) toOutputMap(storage string, canDirectRead bo
 	}
 	if r.PromptID != "" {
 		out["prompt_id"] = r.PromptID
+	}
+	if r.TaskID != "" {
+		out["task_id"] = r.TaskID
 	}
 	if r.DrivePath != "" {
 		out["drive_path"] = r.DrivePath
@@ -379,7 +395,11 @@ func (c *ColabOneController) loadDriveOutputs() {
 			cp.Extension = ext
 			cp.Kind = km[0]
 			cp.Mime = km[1]
+			if cp.Size < 0 {
+				cp.Size = 0
+			}
 			cp.SHA256 = sanitizeDriveSHA256(cp.SHA256)
+			cp.TaskID = sanitizeDriveTaskID(cp.TaskID)
 			cp.DriveFileID = sanitizeDriveFileID(cp.DriveFileID)
 			cp.DriveWorkspaceFileID = sanitizeDriveFileID(cp.DriveWorkspaceFileID)
 			cp.DriveWorkspaceMetaID = sanitizeDriveFileID(cp.DriveWorkspaceMetaID)
@@ -539,6 +559,9 @@ func driveOutputRecordFromMap(raw map[string]any) *ColabOneDriveOutputRecord {
 	kind := km[0]
 	mime := km[1]
 	size, _ := asInt64(raw["size"])
+	if size < 0 {
+		size = 0
+	}
 	createdAt, _ := asFloat(raw["created_at"])
 	elapsed, _ := asFloat(raw["elapsed"])
 	cuConsumed, _ := asFloat(raw["cu_consumed"])
@@ -572,6 +595,7 @@ func driveOutputRecordFromMap(raw map[string]any) *ColabOneDriveOutputRecord {
 		GPUName:      gpuName,
 		CUEstimated:  cuEstimated,
 		PromptID:     strings.TrimSpace(asString(raw["prompt_id"])),
+		TaskID:       sanitizeDriveTaskID(asString(raw["task_id"])),
 		DriveSynced:  true,
 	}
 }
@@ -636,6 +660,7 @@ func mergeDriveOutputRecord(dst, src *ColabOneDriveOutputRecord) bool {
 		changed = true
 	}
 	setStr(&dst.PromptID, src.PromptID)
+	setStr(&dst.TaskID, sanitizeDriveTaskID(src.TaskID))
 	if src.DriveSynced && !dst.DriveSynced {
 		dst.DriveSynced = true
 		changed = true
@@ -1547,6 +1572,7 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 							GPUName:      prev.GPUName,
 							CUEstimated:  prev.CUEstimated,
 							PromptID:     prev.PromptID,
+							TaskID:       sanitizeDriveTaskID(prev.TaskID),
 							DriveSynced:  true,
 						}
 					} else if hasMeta {
@@ -1769,6 +1795,9 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 					if rec.SHA256 == "" && prev.SHA256 != "" {
 						rec.SHA256 = sanitizeDriveSHA256(prev.SHA256)
 					}
+					if prev.TaskID != "" {
+						rec.TaskID = sanitizeDriveTaskID(prev.TaskID)
+					}
 				}
 				if rec.CUConsumed <= 0 && rec.Elapsed > 0 && rec.CreatedAt > 0 {
 					if cu, rate, gn, est, ok := c.resolveOutputCU(bctx, rec.CreatedAt, rec.Elapsed, false); ok {
@@ -1929,9 +1958,13 @@ func (c *ColabOneController) readDriveOutputAssetChunk(ctx context.Context, iden
 	}
 
 	var chunk []byte
+	resolvedAuthoritativeSize := int64(0)
 	if resp.StatusCode == http.StatusPartialContent {
-		if total := parseContentRangeTotal(resp.Header.Get("Content-Range")); total > 0 && size <= 0 {
-			size = total
+		if total := parseContentRangeTotal(resp.Header.Get("Content-Range")); total > 0 {
+			resolvedAuthoritativeSize = total
+			if size <= 0 {
+				size = total
+			}
 		}
 		chunk, err = io.ReadAll(io.LimitReader(resp.Body, colabOneDriveAssetChunkBytes))
 		if err != nil {
@@ -1939,8 +1972,11 @@ func (c *ColabOneController) readDriveOutputAssetChunk(ctx context.Context, iden
 		}
 	} else {
 		// Server ignored Range and returned 200 OK: skip offset bytes before reading chunk.
-		if resp.ContentLength > 0 && size <= 0 {
-			size = resp.ContentLength
+		if resp.ContentLength > 0 {
+			resolvedAuthoritativeSize = resp.ContentLength
+			if size <= 0 {
+				size = resp.ContentLength
+			}
 		}
 		if offset > 0 {
 			if _, skipErr := io.CopyN(io.Discard, resp.Body, int64(offset)); skipErr != nil {
@@ -1957,6 +1993,22 @@ func (c *ColabOneController) readDriveOutputAssetChunk(ctx context.Context, iden
 	}
 	if size <= 0 {
 		size = int64(offset) + int64(len(chunk))
+	}
+	if resolvedAuthoritativeSize > 0 && rec.Size <= 0 {
+		persistedSize := false
+		c.mu.Lock()
+		if curAcct := c.currentDriveAccountKeyLocked(); curAcct != "" && c.driveOutputs != nil {
+			if bucket := c.driveOutputs[curAcct]; bucket != nil {
+				if liveEntry := bucket[cleanID]; liveEntry != nil && liveEntry.Size <= 0 {
+					liveEntry.Size = resolvedAuthoritativeSize
+					persistedSize = true
+				}
+			}
+		}
+		c.mu.Unlock()
+		if persistedSize {
+			_ = c.saveDriveOutputs()
+		}
 	}
 	canonicalMIME := rec.Mime
 	if km, ok := allowedDriveOutputKindMIME[strings.ToLower(strings.TrimPrefix(strings.TrimSpace(rec.Extension), "."))]; ok {
@@ -1977,62 +2029,105 @@ func (c *ColabOneController) readDriveOutputAssetChunk(ctx context.Context, iden
 	return out, nil
 }
 
+func (c *ColabOneController) driveOutputRecordCopy(identity string) *ColabOneDriveOutputRecord {
+	cleanID := strings.ToLower(strings.TrimSpace(identity))
+	if !reHex32ID.MatchString(cleanID) {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	acctKey := c.currentDriveAccountKeyLocked()
+	if acctKey == "" || c.driveOutputs == nil {
+		return nil
+	}
+	if bucket := c.driveOutputs[acctKey]; bucket != nil {
+		return bucket[cleanID].clone()
+	}
+	return nil
+}
+
+func (c *ColabOneController) clearDriveOutputWorkspaceLinks(identity string) {
+	cleanID := strings.ToLower(strings.TrimSpace(identity))
+	if !reHex32ID.MatchString(cleanID) {
+		return
+	}
+	changed := false
+	c.mu.Lock()
+	acctKey := c.currentDriveAccountKeyLocked()
+	if acctKey != "" && c.driveOutputs != nil {
+		if bucket := c.driveOutputs[acctKey]; bucket != nil {
+			if rec := bucket[cleanID]; rec != nil {
+				if rec.DriveWorkspaceFileID != "" || rec.DriveWorkspaceMetaID != "" {
+					rec.DriveWorkspaceFileID = ""
+					rec.DriveWorkspaceMetaID = ""
+					changed = true
+				}
+			}
+		}
+	}
+	c.mu.Unlock()
+	if changed {
+		_ = c.saveDriveOutputs()
+	}
+}
+
+func (c *ColabOneController) trashDriveFileIDs(ctx context.Context, rawIDs ...string) (bool, error) {
+	ids := make([]string, 0, len(rawIDs))
+	seen := make(map[string]bool, len(rawIDs))
+	for _, fid := range rawIDs {
+		fid = sanitizeDriveFileID(fid)
+		if fid != "" && !seen[fid] {
+			seen[fid] = true
+			ids = append(ids, fid)
+		}
+	}
+	if len(ids) == 0 {
+		return true, nil
+	}
+	canDirectRead, quotaProject := c.driveDirectReadReady()
+	if !canDirectRead {
+		return false, nil
+	}
+	token, err := c.driveAccessToken(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, fid := range ids {
+		u := c.driveAPIBase() + "/files/" + url.PathEscape(fid)
+		status, _, reqErr := c.doDriveAPIRequest(
+			ctx,
+			http.MethodPatch,
+			u,
+			token,
+			quotaProject,
+			strings.NewReader(`{"trashed":true}`),
+			map[string]string{"Content-Type": "application/json"},
+			64*1024,
+		)
+		if reqErr != nil {
+			return false, reqErr
+		}
+		if status != http.StatusOK && status != http.StatusNoContent && status != http.StatusNotFound {
+			return false, &ColabOneHTTPError{
+				StatusCode: status,
+				Message:    fmt.Sprintf("删除 Google 云盘作品失败（HTTP %d）", status),
+			}
+		}
+	}
+	return true, nil
+}
+
 func (c *ColabOneController) deleteDriveOutputOffline(ctx context.Context, identity string) (map[string]any, error) {
 	cleanID := strings.ToLower(strings.TrimSpace(identity))
 	if !reHex32ID.MatchString(cleanID) {
 		return nil, errors.New("产物编号不合法")
 	}
-	c.mu.Lock()
-	acctKey := c.currentDriveAccountKeyLocked()
-	var rec *ColabOneDriveOutputRecord
-	if acctKey != "" && c.driveOutputs != nil {
-		if bucket := c.driveOutputs[acctKey]; bucket != nil {
-			rec = bucket[cleanID].clone()
-		}
-	}
-	c.mu.Unlock()
+	rec := c.driveOutputRecordCopy(cleanID)
 	if rec == nil {
 		return nil, ErrNotFound
 	}
-	canDirectRead, quotaProject := c.driveDirectReadReady()
-	if canDirectRead {
-		ids := make([]string, 0, 3)
-		seen := make(map[string]bool)
-		for _, fid := range []string{rec.DriveFileID, rec.DriveWorkspaceFileID, rec.DriveWorkspaceMetaID} {
-			fid = sanitizeDriveFileID(fid)
-			if fid != "" && !seen[fid] {
-				seen[fid] = true
-				ids = append(ids, fid)
-			}
-		}
-		if len(ids) > 0 {
-			token, err := c.driveAccessToken(ctx)
-			if err != nil {
-				return nil, err
-			}
-			for _, fid := range ids {
-				u := c.driveAPIBase() + "/files/" + url.PathEscape(fid)
-				status, _, reqErr := c.doDriveAPIRequest(
-					ctx,
-					http.MethodPatch,
-					u,
-					token,
-					quotaProject,
-					strings.NewReader(`{"trashed":true}`),
-					map[string]string{"Content-Type": "application/json"},
-					64*1024,
-				)
-				if reqErr != nil {
-					return nil, reqErr
-				}
-				if status != http.StatusOK && status != http.StatusNoContent && status != http.StatusNotFound {
-					return nil, &ColabOneHTTPError{
-						StatusCode: status,
-						Message:    fmt.Sprintf("删除 Google 云盘作品失败（HTTP %d）", status),
-					}
-				}
-			}
-		}
+	if _, err := c.trashDriveFileIDs(ctx, rec.DriveFileID, rec.DriveWorkspaceFileID, rec.DriveWorkspaceMetaID); err != nil {
+		return nil, err
 	}
 	c.removeDriveOutputRecord(cleanID)
 	return map[string]any{"ok": true}, nil

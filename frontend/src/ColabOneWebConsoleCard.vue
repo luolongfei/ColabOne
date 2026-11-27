@@ -203,11 +203,13 @@ const lanUrls = computed<string[]>(() =>
 const bindModeOptions = computed(() => [
   {
     value: "loopback" as const,
-    label: t("webConsole.bindLoopback"),
+    title: t("webConsole.bindLoopback"),
+    payload: { label: t("webConsole.bindLoopback") },
   },
   {
     value: "lan" as const,
-    label: t("webConsole.bindLan"),
+    title: t("webConsole.bindLan"),
+    payload: { label: t("webConsole.bindLan") },
   },
 ]);
 
@@ -421,9 +423,12 @@ defineExpose({
       v-if="!props.loading && props.state.last_error"
       type="error"
       show-icon
-      :message="tb(props.state.last_error)"
       class="co-webconsole-alert"
-    />
+    >
+      <template #message>
+        <ColabOnePrivacyText :text="tb(props.state.last_error)" />
+      </template>
+    </AAlert>
 
     <div
       v-if="!props.loading && expanded"

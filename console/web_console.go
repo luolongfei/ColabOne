@@ -108,27 +108,11 @@ func (d *ColabOneDesktop) closeWebConsole() {
 }
 
 func (d *ColabOneDesktop) notifyWebConsoleState(state webconsole.ColabOneWebConsoleState) {
-	if d.appQuitting.Load() || !mygo.App.IsReady() {
+	if d.appQuitting.Load() || !d.isAppReady() {
 		return
 	}
 	_ = ColabOneWebConsoleEvent.Broadcast(state)
-	d.trayMu.Lock()
-	hasTray := d.tray != nil
-	d.trayMu.Unlock()
-	if !hasTray || d.appQuitting.Load() {
-		return
-	}
-	mygo.RunOnMain(func() {
-		if d.appQuitting.Load() {
-			return
-		}
-		d.trayMu.Lock()
-		curTray := d.tray
-		d.trayMu.Unlock()
-		if curTray != nil {
-			curTray.SetMenu(d.buildTrayMenu())
-		}
-	})
+	d.refreshTrayMenu()
 }
 
 func (d *ColabOneDesktop) trayWebConsoleItems() []*mygo.MenuItem {

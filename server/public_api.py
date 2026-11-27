@@ -39,6 +39,7 @@ from server.openai_compat import (
     clip_text_to_token_budget,
     encode_compaction_content,
     estimate_messages_tokens,
+    estimate_serialized_bytes,
     estimate_tokens,
     extract_anchor_user_item,
     extract_anchor_user_item_with_index,
@@ -57,6 +58,7 @@ from server.openai_compat import (
 from server.tunnel import ColabOneTunnel
 
 MAX_STORED_RESPONSES = 64
+MAX_SINGLE_STORED_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_REQUEST_HISTORY = 50
 MAX_COMPACTION_CACHE = 64
 MAX_COMPACTION_CACHE_BYTES = 2 * 1024 * 1024
@@ -796,6 +798,18 @@ class ColabOnePublicGateway:
                 ctx = getattr(model, "context_length", None) if model else None
             return int(ctx) if isinstance(ctx, int) and ctx >= 512 else 8192
 
+    def _scrub_error_text(self, text: Any, default: str) -> str:
+        from server.runtime import _scrub_secret_text
+
+        raw = str(text or "").strip()
+        if not raw:
+            return default
+        with self.lock:
+            gw_key = self.key
+        extra = (gw_key,) if gw_key else ()
+        scrubbed = _scrub_secret_text(raw, *extra).strip()
+        return scrubbed or default
+
     def _store_response(
         self, response_obj: dict[str, Any], input_items: list[dict[str, Any]]
     ) -> None:
@@ -803,12 +817,12 @@ class ColabOnePublicGateway:
         if not rid:
             return
         combined_items = list(input_items) + list(response_obj.get("output") or [])
-        approx_bytes = len(
-            json.dumps(
-                {"response": response_obj, "items": combined_items},
-                ensure_ascii=False,
-            ).encode("utf-8")
+        payload_obj = {"response": response_obj, "items": combined_items}
+        approx_bytes = estimate_serialized_bytes(
+            payload_obj, MAX_SINGLE_STORED_RESPONSE_BYTES
         )
+        if approx_bytes > MAX_SINGLE_STORED_RESPONSE_BYTES:
+            return
         max_total_bytes = 32 * 1024 * 1024
         with self.lock:
             self.responses[rid] = {
@@ -2479,15 +2493,16 @@ class ColabOnePublicGateway:
                     )
                     raise
                 except Exception as exc:
+                    safe_err = self._scrub_error_text(str(exc), "推理失败")
                     self._finalize_request(
                         slot,
                         state="failed",
-                        error=str(exc) or "推理失败",
+                        error=safe_err,
                         fallback_prompt_tokens=int(
                             math.ceil(cur_est_prompt * self._get_token_scale(cal_key))
                         ),
                     )
-                    raise
+                    raise RuntimeError(safe_err) from None
                 finally:
                     _set_task_cancel_hook(task, None)
 
@@ -3124,10 +3139,11 @@ class ColabOnePublicGateway:
                     )
                     raise
                 except Exception as exc:
+                    safe_err = self._scrub_error_text(str(exc), "推理失败")
                     if stream:
                         if translator is None:
                             translator = ColabOneResponsesStreamTranslator(spec)
-                        slot["fail_event"] = translator.fail(str(exc) or "推理失败")
+                        slot["fail_event"] = translator.fail("推理失败")
                     cal_fallback = (
                         int(math.ceil(est_in * self._get_token_scale(cal_key)))
                         if isinstance(est_in, int)
@@ -3136,10 +3152,10 @@ class ColabOnePublicGateway:
                     self._finalize_request(
                         slot,
                         state="failed",
-                        error=str(exc) or "推理失败",
+                        error=safe_err,
                         fallback_prompt_tokens=cal_fallback,
                     )
-                    raise
+                    raise RuntimeError(safe_err) from None
                 finally:
                     _set_task_cancel_hook(task, None)
 
@@ -3221,10 +3237,11 @@ class ColabOnePublicGateway:
                     )
                     raise
                 except Exception as exc:
+                    safe_err = self._scrub_error_text(str(exc), "上下文压缩失败")
                     self._finalize_request(
-                        slot, state="failed", error=str(exc) or "上下文压缩失败"
+                        slot, state="failed", error=safe_err
                     )
-                    raise
+                    raise RuntimeError(safe_err) from None
                 finally:
                     _set_task_cancel_hook(task, None)
 
@@ -3240,36 +3257,153 @@ class ColabOnePublicGateway:
 
 
 class ColabOneBodyLimit:
-    def __init__(self, app):
+    def __init__(self, app, *, gateway=None, max_bytes: int = MAX_BODY_BYTES):
         self.app = app
+        self.gateway = gateway
+        self.max_bytes = max(1, int(max_bytes))
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
-        body = bytearray()
-        while True:
-            message = await receive()
-            if message["type"] == "http.disconnect":
-                return
-            body.extend(message.get("body", b""))
-            if len(body) > MAX_BODY_BYTES:
+
+        method = str(scope.get("method") or "GET").upper()
+        path = str(scope.get("path") or "")
+        auth_values: list[str] = []
+        cl_values: list[str] = []
+        for raw_name, raw_val in scope.get("headers") or ():
+            name = raw_name.lower()
+            if name == b"authorization":
+                auth_values.append(raw_val.decode("latin-1"))
+            elif name == b"content-length":
+                cl_values.append(raw_val.decode("latin-1").strip())
+
+        if self.gateway is not None and path != "/health" and method != "OPTIONS":
+            with self.gateway.lock:
+                enabled = bool(self.gateway.enabled)
+                api_key = str(self.gateway.key or "")
+            if not enabled or not api_key:
                 return await JSONResponse(
                     {
                         "error": {
-                            "message": f"请求体最大 {MAX_BODY_BYTES // (1024 * 1024)} MB"
+                            "message": "API 服务未开启",
+                            "type": "api_error",
+                            "code": 503,
+                        }
+                    },
+                    status_code=503,
+                )(scope, receive, send)
+            auth_header = auth_values[0] if len(auth_values) == 1 else ""
+            if not hmac.compare_digest(
+                auth_header.encode("utf-8"), ("Bearer " + api_key).encode("utf-8")
+            ):
+                return await JSONResponse(
+                    {
+                        "error": {
+                            "message": "无效的 API Key",
+                            "type": "api_error",
+                            "code": 401,
+                        }
+                    },
+                    status_code=401,
+                )(scope, receive, send)
+
+        if cl_values:
+            parsed_lengths: set[int] = set()
+            for raw_cl in cl_values:
+                try:
+                    val = int(raw_cl)
+                except ValueError:
+                    val = -1
+                if val < 0:
+                    return await JSONResponse(
+                        {
+                            "error": {
+                                "message": "无效的 Content-Length 请求头",
+                                "type": "invalid_request_error",
+                            }
+                        },
+                        status_code=400,
+                    )(scope, receive, send)
+                parsed_lengths.add(val)
+            if len(parsed_lengths) != 1:
+                return await JSONResponse(
+                    {
+                        "error": {
+                            "message": "冲突的 Content-Length 请求头",
+                            "type": "invalid_request_error",
+                        }
+                    },
+                    status_code=400,
+                )(scope, receive, send)
+            declared_len = next(iter(parsed_lengths))
+            if method in ("GET", "DELETE", "HEAD") and declared_len > 0:
+                return await JSONResponse(
+                    {
+                        "error": {
+                            "message": "该请求方法不允许携带请求体",
+                            "type": "invalid_request_error",
+                        }
+                    },
+                    status_code=400,
+                )(scope, receive, send)
+            if declared_len > self.max_bytes:
+                return await JSONResponse(
+                    {
+                        "error": {
+                            "message": f"请求体最大 {self.max_bytes // (1024 * 1024)} MB"
                         }
                     },
                     status_code=413,
                 )(scope, receive, send)
+
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            chunk = message.get("body", b"")
+            if chunk:
+                if method in ("GET", "DELETE", "HEAD"):
+                    return await JSONResponse(
+                        {
+                            "error": {
+                                "message": "该请求方法不允许携带请求体",
+                                "type": "invalid_request_error",
+                            }
+                        },
+                        status_code=400,
+                    )(scope, receive, send)
+                total += len(chunk)
+                if total > self.max_bytes:
+                    return await JSONResponse(
+                        {
+                            "error": {
+                                "message": f"请求体最大 {self.max_bytes // (1024 * 1024)} MB"
+                            }
+                        },
+                        status_code=413,
+                    )(scope, receive, send)
+                chunks.append(chunk)
             if not message.get("more_body"):
                 break
+
+        if not chunks:
+            payload = b""
+        elif len(chunks) == 1:
+            payload = chunks[0]
+        else:
+            payload = b"".join(chunks)
+        chunks.clear()
         sent = False
 
         async def replay():
-            nonlocal sent
+            nonlocal sent, payload
             if not sent:
                 sent = True
-                return {"type": "http.request", "body": bytes(body), "more_body": False}
+                data = payload
+                payload = b""
+                return {"type": "http.request", "body": data, "more_body": False}
             return await receive()
 
         return await self.app(scope, replay, send)
@@ -3284,7 +3418,7 @@ def create_colabone_public_app(g):
         redoc_url=None,
         openapi_url=None,
     )
-    app.add_middleware(ColabOneBodyLimit)
+    app.add_middleware(ColabOneBodyLimit, gateway=g)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],

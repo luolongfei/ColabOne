@@ -277,19 +277,16 @@ func (d *ColabOneDesktop) handleTrayUpdateClick() {
 }
 
 func (d *ColabOneDesktop) refreshTrayMenu() {
-	if d.appQuitting.Load() {
+	if d.appQuitting.Load() || !d.isAppReady() {
 		return
 	}
 	d.trayMu.Lock()
-	tray := d.tray
+	hasTray := d.tray != nil
 	d.trayMu.Unlock()
-	if tray == nil || !mygo.App.IsReady() {
+	if !hasTray || d.appQuitting.Load() {
 		return
 	}
-	mygo.RunOnMain(func() {
-		if d.appQuitting.Load() {
-			return
-		}
+	d.scheduleDetachedMainTask(&d.trayRefreshMu, &d.trayRefreshRunning, &d.trayRefreshPending, func() {
 		d.trayMu.Lock()
 		curTray := d.tray
 		d.trayMu.Unlock()

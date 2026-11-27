@@ -5,10 +5,15 @@ import {
   isColabOneWorkflowShareActive,
 } from "./colabOneWorkflowShare";
 import {
+  COLABONE_FASHION_GARMENT_ROLES_KEY,
+  COLABONE_FASHION_MODEL_ROLES_KEY,
   COLABONE_VOICE_PRESET_ID_RE,
   clampColabOneNumericFieldValue,
   defaultFieldValues,
+  getColabOneFashionSlotKeys,
   isColabOnePresetVisualPrompt,
+  reconcileColabOneFashionPhotoList,
+  serializeColabOneFashionPhotoMeta,
 } from "./comfyui";
 import { t, type ColabOneLocale } from "./i18n";
 import { COLABONE_STORAGE_KEYS } from "./storage";
@@ -587,6 +592,41 @@ export function mergeColabOneWorkflowDraftFields(
 
     if (field.field_type === "text" || field.field_type === "textarea") {
       if (typeof raw !== "string") {
+        continue;
+      }
+      if (
+        field.key === COLABONE_FASHION_MODEL_ROLES_KEY ||
+        field.key === COLABONE_FASHION_GARMENT_ROLES_KEY
+      ) {
+        // Prune persisted photo-role metadata against actual persisted draft media
+        // so text-only/localStorage drafts never leave ghost roles on an empty gallery.
+        const group =
+          field.key === COLABONE_FASHION_MODEL_ROLES_KEY ? "model" : "garment";
+        const activeMediaKeys = getColabOneFashionSlotKeys(group).filter(
+          (slotKey) =>
+            Boolean(
+              validMedia &&
+                hasOwn(validMedia, slotKey) &&
+                validMedia[slotKey]?.filename,
+            ),
+        );
+        if (activeMediaKeys.length === 0) {
+          merged[field.key] = "";
+        } else {
+          const reconciled = reconcileColabOneFashionPhotoList(
+            group,
+            activeMediaKeys,
+            raw,
+          );
+          const roles: Record<string, string> = {};
+          for (const item of reconciled) {
+            roles[item.key] = item.role;
+          }
+          merged[field.key] = serializeColabOneFashionPhotoMeta({
+            order: reconciled.map((item) => item.key),
+            roles,
+          });
+        }
         continue;
       }
       if (

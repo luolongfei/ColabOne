@@ -1823,6 +1823,16 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
     );
     expect(new Set(defaultVisualPrompts).size).toBe(ALL_LOCALES.length);
     for (const tpl of comfyCatalog.templates) {
+      if (tpl.pipeline?.kind === "fashion_tryon") {
+        expect(tpl.id).toBe("fashion-tryon-h3");
+        expect(tpl.commercial_ok).toBe(false);
+        expect(tpl.license_notice).toContain("非商业用途");
+        const modelField = tpl.fields.find((f) => f.key === "1.image");
+        const garmentField = tpl.fields.find((f) => f.key === "2.image");
+        expect(modelField?.required).toBe(true);
+        expect(garmentField?.required).toBe(true);
+        continue;
+      }
       if (
         tpl.id === "digital-human-longcat" ||
         tpl.pipeline?.video_backend === "longcat_avatar_native"
@@ -3246,6 +3256,101 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
     }
   });
 
+  it("translates all fashion-tryon-h3 runtime progress, node titles, warnings, and errors across all 6 locales with zero leaks", () => {
+    const FORBIDDEN_ZH_TW_RE =
+      /工作流(?!程)|显存|顯存|尾帧|尾幀|渲染|视频|視頻|音频|音頻|默认|保存|缓存|緩存/;
+    const STRICT_CANTONESE_RE = /[搵唔喺嘅啲咗冇佢咁]/;
+
+    const fashionBackendSamples = [
+      "自定义姿态模式下至少需要勾选 1 个姿势（或在高级设置中填写自定义姿势）",
+      "AI 模特换装棚拍 · 已自动选择：满血 BF16 旗舰精度（80G/96G） + Bria RMBG 3.0 软透明抠衣",
+      "AI 模特换装棚拍 · 已自动选择：INT8 轻量量化精度（24G+）",
+      "正在使用 Bria RMBG 3.0 对服装正面主图执行软透明抠衣清洗（保留薄纱与羽毛细节）",
+      "正在使用 Bria RMBG 3.0 对「服装正面主图」执行软透明抠衣清洗（保留薄纱与羽毛细节）",
+      "正在使用 Bria RMBG 3.0 对服装背面参考图 2执行软透明抠衣清洗（保留薄纱与羽毛细节）",
+      "正在使用 Bria RMBG 3.0 对「服装背面参考图 2」执行软透明抠衣清洗（保留薄纱与羽毛细节）",
+      "正在使用 Bria RMBG 3.0 对服装参考图 3执行软透明抠衣清洗（保留薄纱与羽毛细节）",
+      "正在使用 Bria RMBG 3.0 对「服装参考图 3」执行软透明抠衣清洗（保留薄纱与羽毛细节）",
+      "当前远端服务版本暂不支持 AI 模特换装棚拍工作流，请先点击顶部「立即热更新」升级远端服务后再试",
+      "排队中（第 2 位）· 已用 14 秒",
+      "远端 GPU 执行中 · 已用 28 秒",
+      "Bria RMBG 3.0 未返回遮罩，已回退使用裁边后的服装正面主图",
+      "服装细节特写「neck_gems.png」已自动跳过抠图，完整保留微距纹理",
+      "智能抠衣清洗（服装正面主图） · 提交工作流：AI 模特换装棚拍（仅非商用）",
+      "智能抠衣清洗（服装正面主图） · 工作流已入队：AI 模特换装棚拍（仅非商用）（任务 abc123）",
+      "智能抠衣清洗（服装正面主图） · 加载 Bria RMBG 3.0 抠图模型",
+      "智能抠衣清洗（服装正面主图） · RMBG 3.0 采样生成软遮罩 · 采样 2/4",
+      "智能抠衣清洗（服装背面参考图 2） · 获取输出 1/1 · colabone_rmbg3_matte_00001_.png",
+      "第 1/6 张 · 正面标准站姿（主图） · 提交工作流：AI 模特换装棚拍（仅非商用）",
+      "第 1/6 张 · 正面标准站姿（主图） · 获取输出 1/1 · colabone_fashion_pose_1_00001_.png",
+      "第 1/6 张 · 正面标准站姿（主图） · 加载 MiniMax-H3-Image 扩散主模型",
+      "第 1/6 张 · 正面标准站姿（主图） · AI 模特换装棚拍（仅非商用） · MiniMax-H3 极速采样 · 采样 3/6",
+      "第 1/6 张 · 正面标准站姿（主图） · AI 模特换装棚拍（仅非商用） · 远端 GPU 执行中 · 已用 12 秒",
+      "智能抠衣清洗（服装正面主图） · AI 模特换装棚拍（仅非商用） · 排队中（第 1 位）· 已用 5 秒",
+      "ComfyUI 工作流：进行中 · 52% · 第 1/6 张 · 正面标准站姿（主图） · AI 模特换装棚拍（仅非商用） · MiniMax-H3 极速采样 · 采样 3/6",
+      "ComfyUI 工作流：失败 · 第 6 张「完整背面展示」未返回生成图像",
+      "第 1/6 张 · 正面标准站姿（主图） · 参考图 2",
+      "第 1/6 张 · 正面标准站姿（主图） · MiniMax-H3 极速采样 · 采样 3/6",
+      "第 2/3 张 · 自定义姿势 2 · 远端 GPU 执行中",
+      "AI 模特换装棚拍（仅非商用） · 加载 Qwen3-VL-32B 视觉编码器",
+      "AI 模特换装棚拍（仅非商用） · 参考图 1",
+      "第 6 张「完整背面展示」未返回生成图像",
+      "第 2 张「自定义姿势 2」未返回生成图像",
+      "AI 模特换装棚拍完成：已保存 6 张高清多姿态成片（耗时 1 分 42 秒）",
+      "ComfyUI 工作流：进行中 · 52% · 第 1/6 张 · 正面标准站姿（主图） · MiniMax-H3 极速采样 · 采样 3/6",
+      "ComfyUI 工作流：已完成 · 耗时 1 分 42 秒 · AI 模特换装棚拍完成：已保存 6 张高清多姿态成片（耗时 1 分 42 秒）",
+    ];
+
+    for (const loc of ALL_LOCALES) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      for (const sample of fashionBackendSamples) {
+        const out = translateColabOneBackendText(sample, loc);
+        expect(tb(sample), `tb() parity for ${loc}: ${sample}`).toBe(out);
+        expect(out.trim().length, `empty translation for ${loc}: ${sample}`).toBeGreaterThan(0);
+        if (loc === "zh-CN") {
+          expect(out).toBe(sample);
+          continue;
+        }
+        if (loc !== "ja-JP") {
+          expect(out, `katakana middot leak in ${loc}: ${out}`).not.toContain("\u30fb");
+        }
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            CJK_OR_FULLWIDTH_RE.test(out),
+            `CJK/fullwidth leak in ${loc} for "${sample}" -> "${out}"`,
+          ).toBe(false);
+          expect(out, `${loc} must translate "${sample}"`).not.toBe(sample);
+        }
+        if (loc === "ja-JP") {
+          expect(out, `ja-JP must translate "${sample}"`).not.toBe(sample);
+        }
+        if (loc === "zh-TW") {
+          expect(out, `forbidden zh-TW term in "${out}"`).not.toMatch(FORBIDDEN_ZH_TW_RE);
+        }
+        if (loc === "zh-HK") {
+          expect(out, `spoken Cantonese leak in zh-HK: "${out}"`).not.toMatch(STRICT_CANTONESE_RE);
+        }
+      }
+    }
+
+    expect(
+      translateColabOneBackendText(
+        "第 1/6 张 · 正面标准站姿（主图） · MiniMax-H3 极速采样 · 采样 3/6",
+        "en-US",
+      ),
+    ).toBe(
+      "Shot 1/6 · Front Standing Pose (Hero) · MiniMax-H3 Fast Sampling · Step 3/6",
+    );
+    expect(
+      translateColabOneBackendText(
+        "AI 模特换装棚拍完成：已保存 6 张高清多姿态成片（耗时 1 分 42 秒）",
+        "en-US",
+      ),
+    ).toBe(
+      "AI Fashion Studio Try-On complete: saved 6 high-res multi-pose outputs (took 1m 42s)",
+    );
+  });
+
   it("translates all workflow-share backend errors, activity logs, and workflowShare locale keys across all 6 locales with zero CJK leaks or regional violations", () => {
     const FORBIDDEN_ZH_TW_RE =
       /工作流(?!程)|显存|顯存|尾帧|尾幀|渲染|视频|視頻|音频|音頻|默认|保存|缓存|緩存|跳過/;
@@ -3264,7 +3369,9 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
         k === "comfy.sharePreviewTooLarge" ||
         k === "comfy.shareMediaPreviewError" ||
         k === "comfy.preflightVramInsufficientShare" ||
-        k === "comfy.voicePreviewHintOfflineShare",
+        k === "comfy.voicePreviewHintOfflineShare" ||
+        k === "comfy.fashionGarmentTipDetail" ||
+        k === "comfy.fashionRoleDetailHint",
     );
     expect(shareLocaleKeys.length).toBeGreaterThanOrEqual(45);
 
@@ -3338,7 +3445,6 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
       "参考音频素材编号格式无效",
       "无权使用该参考音频素材",
       "当前分享链接未授权访问该试听音频",
-      "试听音频编号无效",
       "宿主机尚未连接云盘，暂不可保存到宿主云盘",
       "宿主机当前算力版本暂不支持保存到宿主云盘",
       "当前暂无法保存到宿主云盘，请联系分享者检查云盘状态",
@@ -3430,6 +3536,168 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
         expect(invalidArtifactOut).toBe("Invalid output artifact ID");
       } else {
         expect(invalidArtifactOut).not.toBe("Invalid output artifact ID");
+      }
+    }
+
+    // Verify zh-TW crop_only uses 略過 instead of 跳過
+    expect(
+      translateColabOneBackendText(
+        "仅自动裁切白边与文字框（更快，跳过 RMBG 3.0）",
+        "zh-TW",
+      ),
+    ).toContain("略過");
+  });
+
+  it("translates all fashion_tryon, ComfyUI schema validation, and share/webconsole notices across all 6 locales", () => {
+    const FORBIDDEN_ZH_TW_RE =
+      /工作流(?!程)|显存|顯存|尾帧|尾幀|渲染|视频|視頻|音频|音頻|默认|保存|缓存|緩存|跳過/;
+    const STRICT_CANTONESE_RE = /[搵唔喺嘅啲咗冇佢咁]/;
+    const newBackendSamples = [
+      // Workflow share & web console extras
+      "试听音频编号无效",
+      "分享模式输出文件下载检测到非运行时来源，已中止传输",
+      "前端静态资源尚未就绪，请稍后再试。",
+      "已撤销工作流分享链接 share-123 并注销关联访客会话",
+      "已删除工作流分享记录 share-123",
+      // server/fashion_tryon.py dual-count completion, 12 image validations, 9 RMBG/VRAM/restart notices
+      "AI 模特换装棚拍完成：已保存 6 张高清多姿态成片与 2 张抠衣质检图（耗时 2 分 15 秒）",
+      "模特参考图「model.png」不能是符号链接",
+      "服装参考图「dress.png」不能是符号链接",
+      "棚拍场景参考图「studio.png」不能是符号链接",
+      "模特参考图「model.png」文件不存在或已失效，请重新上传",
+      "服装参考图「dress.png」仅支持 PNG、JPEG 或 WebP 图片格式（当前为 .bmp）",
+      "模特参考图「model.png」仅支持 PNG、JPEG 或 WebP 图片格式（当前为 未知）",
+      "模特参考图「model.png」图片文件为空，请重新上传",
+      "服装参考图「dress.png」文件不可读取，请重新上传",
+      "棚拍场景参考图「studio.png」仅支持有效的 PNG、JPEG 或 WebP 图片文件",
+      "模特参考图「model.png」图片尺寸无效，请重新上传",
+      "服装参考图「dress.png」图片分辨率超过上限（最多 1600 万像素）",
+      "棚拍场景参考图「studio.png」图片已损坏或无法解码，请重新上传有效的 PNG、JPEG 或 WebP 图片",
+      "输入图片「photo.png」仅支持有效的 PNG、JPEG 或 WebP 图片文件",
+      "输入图片「photo.png」尺寸无效",
+      "输入图片「photo.png」分辨率超过上限（最多 1600 万像素）",
+      "输入图片「photo.png」已损坏或无法解码，请重新上传有效的 PNG、JPEG 或 WebP 图片",
+      "RMBG 3.0 遮罩图像损坏或无法解码",
+      "自定义节点包或依赖环境已变更，正在重启远端 ComfyUI 引擎",
+      "正在释放 ComfyUI 现有显存以准备 AI 模特换装棚拍",
+      "释放 ComfyUI 显存请求返回异常状态（HTTP 500）",
+      "释放 ComfyUI 显存失败：connection refused",
+      "Bria RMBG 3.0 未返回遮罩，已回退使用原图继续生成「服装正面主图」",
+      "Bria RMBG 3.0 返回的遮罩图像异常（bad png），已回退使用原图继续生成「服装正面主图」",
+      "正在释放 ComfyUI 现有显存以加载 Bria RMBG 3.0 软透明抠衣模型",
+      "服装软透明抠图中断，正在释放 RMBG 3.0 显存",
+      // Go/Python ComfyUI schema validation errors
+      "source_commit 必须为 40 位十六进制 SHA",
+      "设置 source_repo 时必须提供 40 位十六进制 source_commit",
+      "visible_when 条件数量不能超过 16 个",
+      "visible_when 条件 mode 的字符串值长度不能超过 160",
+      "整数字段 steps 的默认值必须为整数",
+      "整数字段 steps 的默认值不能为布尔值",
+      "数值字段 cfg 的默认值必须为数字",
+      "数值字段 cfg 的默认值不能为布尔值",
+      "数值字段 cfg 的默认值必须为有限数字",
+      "布尔字段 enabled 的默认值必须为布尔值",
+      "字段 steps 的 visible_when 引用了不存在的字段: mode",
+      "字段 steps 的 visible_when 引用了未声明的字段: 'mode'",
+      "字段 steps 不接受布尔值覆盖",
+      // Hardening fixes: workflow share override validation, upload throttle, busy guard, and server/drive/public_api/live errors
+      "云端算力当前正忙，暂不可执行该操作，请稍后再试",
+      "当前上传任务较多，请稍后再试",
+      "工作流参数格式无效",
+      "无法校验工作流参数，请稍后再试",
+      "包含未声明的工作流参数",
+      "媒体素材参数必须通过已上传素材传入",
+      "布尔参数格式无效",
+      "整数参数格式无效",
+      "整数参数超出允许范围",
+      "数值参数格式无效",
+      "数值参数超出允许范围",
+      "选项参数格式无效",
+      "选项参数长度超出限制",
+      "选项参数不在允许范围内",
+      "文本参数格式无效",
+      "文本参数长度超出限制",
+      "不支持的工作流参数类型",
+      "FFmpeg 编码进程已意外退出",
+      "RTMP 推流编码失败: FFmpeg 编码进程已意外退出",
+      "input 大小超出上限",
+      "input 展开后的大小超出上限",
+      "input 项数量超出上限（最多 2048 项）",
+      "冲突的 Content-Length 请求头",
+      "无效的 Content-Length 请求头",
+      "该请求方法不允许携带请求体",
+      "推理引擎下载超时，请稍后重试",
+      "推理引擎安装包大小异常",
+      "探测请求主机与已校验公网解析结果不一致",
+      "域名必须解析到公网地址",
+      "远端管理服务进程已变化，未执行更新",
+      "远端管理服务进程已退出或不可访问，未执行更新",
+      "工作流编号不合法",
+      "工作流文件路径越界",
+      "作品编号不合法",
+      "作品文件扩展名不合法",
+      "作品文件路径越界",
+      "rclone 目录不能是符号链接",
+      "rclone 二进制文件不能是符号链接",
+      "云盘工作流目录不能是符号链接",
+      "云盘工作流文件不能是符号链接",
+      "云盘作品目录不能是符号链接",
+      "云盘作品文件不能是符号链接",
+      "云盘回收目录不能是符号链接",
+      "云盘回收目标不能是符号链接",
+      "日志文件不能是符号链接：stage4.log",
+      "日志路径不是常规文件：stage4.log",
+    ];
+
+    for (const loc of ALL_LOCALES) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      for (const sample of newBackendSamples) {
+        const out = translateColabOneBackendText(sample, loc);
+        expect(tb(sample), `tb() parity for ${loc}: ${sample}`).toBe(out);
+        expect(
+          out.trim().length,
+          `empty translation for ${loc}: ${sample}`,
+        ).toBeGreaterThan(0);
+        if (loc === "zh-CN") {
+          expect(out).toBe(sample);
+          continue;
+        }
+        if (loc !== "ja-JP") {
+          expect(out, `katakana middot leak in ${loc}: ${out}`).not.toContain(
+            "\u30fb",
+          );
+        }
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            CJK_OR_FULLWIDTH_RE.test(out),
+            `CJK/fullwidth leak in ${loc} for "${sample}" -> "${out}"`,
+          ).toBe(false);
+          expect(out, `${loc} must translate "${sample}"`).not.toBe(sample);
+        }
+        if (loc === "ja-JP") {
+          expect(out, `ja-JP must translate "${sample}"`).not.toBe(sample);
+        }
+        if (loc === "zh-TW") {
+          expect(out, `forbidden zh-TW term in "${out}"`).not.toMatch(
+            FORBIDDEN_ZH_TW_RE,
+          );
+        }
+        if (loc === "zh-HK") {
+          expect(out, `spoken Cantonese leak in zh-HK: "${out}"`).not.toMatch(
+            STRICT_CANTONESE_RE,
+          );
+        }
+      }
+      // Also verify English-source "Invalid share snapshot payload" localizes in non-en-US locales
+      const invalidSnapOut = translateColabOneBackendText(
+        "Invalid share snapshot payload",
+        loc,
+      );
+      expect(invalidSnapOut.trim().length).toBeGreaterThan(0);
+      if (loc === "en-US") {
+        expect(invalidSnapOut).toBe("Invalid share snapshot payload");
+      } else {
+        expect(invalidSnapOut).not.toBe("Invalid share snapshot payload");
       }
     }
   });

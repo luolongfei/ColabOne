@@ -151,6 +151,198 @@ func TestClassifyUpdateError(t *testing.T) {
 	}
 }
 
+func TestSanitizeUpdateErrorDetailProxyUserInfoAndColonQueries(t *testing.T) {
+	cases := []struct {
+		name        string
+		raw         string
+		forbidden   []string
+		mustContain []string
+	}{
+		{
+			name:        "socks5_proxy_password_with_at_signs",
+			raw:         "proxyconnect tcp: dial socks5://alice:p@ss:w@rd@proxy.example.com:1080: connection refused",
+			forbidden:   []string{"alice", "p@ss", "w@rd"},
+			mustContain: []string{"socks5://<redacted>@proxy.example.com:1080", "connection refused"},
+		},
+		{
+			name:        "socks5h_and_socks4a_uppercase_userinfo",
+			raw:         "SOCKS5H://bob:sec@ret1@10.0.0.1:1080 fallback SOCKS4A://carol:sec@ret2@10.0.0.2:1080",
+			forbidden:   []string{"bob", "sec@ret1", "carol", "sec@ret2"},
+			mustContain: []string{"SOCKS5H://<redacted>@10.0.0.1:1080", "SOCKS4A://<redacted>@10.0.0.2:1080"},
+		},
+		{
+			name:        "https_userinfo_with_at_and_presigned_query_with_colons",
+			raw:         `GET https://secretacct:p@ss@objects.githubusercontent.com/asset.tar.gz?X-Amz-Date=2026-11-26T12:34:56Z&X-Amz-Signature=TOPSECRET999: 403 Forbidden`,
+			forbidden:   []string{"secretacct", "p@ss", "2026-11-26T12:34:56Z", "X-Amz-Signature", "TOPSECRET999"},
+			mustContain: []string{"<redacted>@objects.githubusercontent.com/asset.tar.gz: 403 Forbidden"},
+		},
+		{
+			name:        "quoted_url_query_with_colons_stops_at_quote",
+			raw:         `Get "https://github.com/org/repo/releases/download/v1.0.0/app.tar.gz?ts=2026-11-26T00:01:02Z&sig=MYSECRET": EOF`,
+			forbidden:   []string{"00:01:02Z", "MYSECRET"},
+			mustContain: []string{`"github.com/org/repo/releases/download/v1.0.0/app.tar.gz": EOF`},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sanitizeUpdateErrorDetail(tc.raw)
+			for _, bad := range tc.forbidden {
+				if stringContains(got, bad) {
+					t.Errorf("sanitizeUpdateErrorDetail(%q) leaked %q in %q", tc.raw, bad, got)
+				}
+			}
+			for _, want := range tc.mustContain {
+				if !stringContains(got, want) {
+					t.Errorf("sanitizeUpdateErrorDetail(%q) = %q, missing %q", tc.raw, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestCoalescedCheckFlightIsolationAndRollbackVersionsCloning(t *testing.T) {
+	t.Run("coalesced_waiter_receives_exact_flight_result_even_when_next_flight_starts", func(t *testing.T) {
+		firstStarted := make(chan struct{})
+		releaseFirst := make(chan struct{})
+		secondStarted := make(chan struct{})
+		releaseSecond := make(chan struct{})
+		var calls atomic.Int32
+		errFirst := errors.New("dial tcp: flight-1 failure")
+
+		backend := &fakeBackend{
+			current: "0.1.6",
+			canSelf: true,
+			checkSelfFn: func(ctx context.Context) (ColabOneUpdateInstallable, error) {
+				n := calls.Add(1)
+				if n == 1 {
+					close(firstStarted)
+					<-releaseFirst
+					return nil, errFirst
+				}
+				close(secondStarted)
+				<-releaseSecond
+				return &fakeInstallable{version: "0.1.8", notes: "flight-2"}, nil
+			},
+		}
+
+		u := NewColabOneUpdater(ColabOneUpdaterConfig{
+			Backend:   backend,
+			ConfigDir: t.TempDir(),
+		})
+		defer u.Close()
+
+		primaryDone := make(chan error, 1)
+		go func() {
+			_, err := u.Check(context.Background(), true)
+			primaryDone <- err
+		}()
+		<-firstStarted
+
+		type checkRes struct {
+			st  ColabOneUpdateState
+			err error
+		}
+		waiterDone := make(chan checkRes, 1)
+		go func() {
+			st, err := u.Check(context.Background(), true)
+			waiterDone <- checkRes{st: st, err: err}
+		}()
+
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			u.mu.Lock()
+			w := u.checkWaiters
+			u.mu.Unlock()
+			if w == 1 {
+				break
+			}
+			if time.Now().After(deadline) {
+				close(releaseFirst)
+				t.Fatal("timed out waiting for coalesced waiter")
+			}
+			time.Sleep(time.Millisecond)
+		}
+
+		close(releaseFirst)
+		if err := <-primaryDone; !errors.Is(err, errFirst) {
+			t.Fatalf("primary err = %v, want %v", err, errFirst)
+		}
+
+		// Immediately start flight 2 (which succeeds) while waiter 1 may still be waking.
+		secondDone := make(chan checkRes, 1)
+		go func() {
+			st, err := u.Check(context.Background(), true)
+			secondDone <- checkRes{st: st, err: err}
+		}()
+		<-secondStarted
+		close(releaseSecond)
+
+		w1 := <-waiterDone
+		if !errors.Is(w1.err, errFirst) || w1.st.Status != StatusError {
+			t.Fatalf("coalesced waiter 1 got (status=%q, err=%v), want (error, %v)", w1.st.Status, w1.err, errFirst)
+		}
+		w2 := <-secondDone
+		if w2.err != nil || w2.st.Status != StatusAvailable || w2.st.AvailableVersion != "0.1.8" {
+			t.Fatalf("flight 2 got (%+v, %v), want available 0.1.8", w2.st, w2.err)
+		}
+	})
+
+	t.Run("all_state_returning_methods_clone_RollbackVersions", func(t *testing.T) {
+		backend := &fakeBackend{current: "0.1.10", canSelf: true}
+		u := NewColabOneUpdater(ColabOneUpdaterConfig{
+			Backend:   backend,
+			ConfigDir: t.TempDir(),
+		})
+		defer u.Close()
+
+		u.mu.Lock()
+		u.state.RollbackVersions = []ColabOneRollbackVersion{
+			{Version: "0.1.9", Tag: "v0.1.9", CanRollback: true},
+		}
+		u.mu.Unlock()
+
+		checkMutate := func(label string, st ColabOneUpdateState) {
+			t.Helper()
+			if len(st.RollbackVersions) != 1 || st.RollbackVersions[0].Version != "0.1.9" {
+				t.Fatalf("%s: unexpected RollbackVersions %+v", label, st.RollbackVersions)
+			}
+			st.RollbackVersions[0].Version = "mutated-" + label
+			cur := u.State()
+			if len(cur.RollbackVersions) != 1 || cur.RollbackVersions[0].Version != "0.1.9" {
+				t.Fatalf("%s aliased internal RollbackVersions: %+v", label, cur.RollbackVersions)
+			}
+		}
+
+		checkMutate("State", u.State())
+		checkMutate("CancelInstall", u.CancelInstall())
+
+		stSkip, err := u.SkipVersion("0.1.11")
+		if err != nil {
+			t.Fatalf("SkipVersion: %v", err)
+		}
+		checkMutate("SkipVersion", stSkip)
+
+		stPref, _, err := u.SetPreferences(false, false)
+		if err != nil {
+			t.Fatalf("SetPreferences: %v", err)
+		}
+		checkMutate("SetPreferences", stPref)
+
+		stImport, _, err := u.ApplyImportedPreferences(true, false, "0.1.11")
+		if err != nil {
+			t.Fatalf("ApplyImportedPreferences: %v", err)
+		}
+		checkMutate("ApplyImportedPreferences", stImport)
+
+		stCheck, err := u.Check(context.Background(), true)
+		if err != nil {
+			t.Fatalf("Check: %v", err)
+		}
+		checkMutate("Check", stCheck)
+	})
+}
+
 func stringContains(s, sub string) bool {
 	return len(sub) > 0 && len(s) >= len(sub) && indexString(s, sub) >= 0
 }

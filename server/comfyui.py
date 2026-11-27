@@ -391,7 +391,15 @@ class ColabOneComfyWorkflowStore:
             path = self.inputs_dir / stored_name
             if path.is_symlink():
                 raise ValueError("输入文件不能是符号链接")
-            path.write_bytes(data)
+            tmp_input = self.inputs_dir / f".{identity}.{stored_ext}.{uuid.uuid4().hex[:8]}.tmp"
+            try:
+                with tmp_input.open("wb") as stream:
+                    stream.write(data)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(tmp_input, path)
+            finally:
+                tmp_input.unlink(missing_ok=True)
             self.inputs_index[identity] = {
                 "id": identity,
                 "filename": stored_name,
@@ -493,7 +501,11 @@ class ColabOneComfyWorkflowStore:
                 os.replace(tmp_asset, asset_path)
             finally:
                 tmp_asset.unlink(missing_ok=True)
-            atomic_json(meta_path, record)
+            try:
+                atomic_json(meta_path, record)
+            except BaseException:
+                asset_path.unlink(missing_ok=True)
+                raise
             self.outputs[identity] = record
         if self.on_output_change:
             self.on_output_change(identity)
@@ -606,7 +618,11 @@ class ColabOneComfyWorkflowStore:
                 if asset_path.is_symlink() or meta_path.is_symlink():
                     raise ValueError("作品文件不能是符号链接")
                 os.replace(tmp_asset, asset_path)
-                atomic_json(meta_path, record)
+                try:
+                    atomic_json(meta_path, record)
+                except BaseException:
+                    asset_path.unlink(missing_ok=True)
+                    raise
                 self.outputs[identity] = record
         finally:
             tmp_asset.unlink(missing_ok=True)
@@ -645,20 +661,27 @@ class ColabOneComfyWorkflowStore:
             "filename": item["filename"],
         }
 
-    def delete_output(self, identity: str) -> None:
+    def delete_output(self, identity: str, *, runtime_only: bool = False) -> None:
         with self.lock:
             item = self.outputs[identity]
             ext = item["extension"]
-            trash = self.outputs_dir / ".trash"
-            _ensure_dir(trash, "回收目录")
-            for suffix in (ext, "json"):
-                path = self.outputs_dir / f"{identity}.{suffix}"
-                if path.is_symlink():
-                    raise ValueError("作品文件不能是符号链接")
-                if path.exists():
-                    path.replace(trash / path.name)
+            meta_path = self.outputs_dir / f"{identity}.json"
+            asset_path = self.outputs_dir / f"{identity}.{ext}"
+            if meta_path.is_symlink() or asset_path.is_symlink():
+                raise ValueError("作品文件不能是符号链接")
+            if runtime_only:
+                if meta_path.exists():
+                    meta_path.unlink()
+                if asset_path.exists():
+                    asset_path.unlink()
+            else:
+                trash = self.outputs_dir / ".trash"
+                _ensure_dir(trash, "回收目录")
+                for path in (meta_path, asset_path):
+                    if path.exists():
+                        path.replace(trash / path.name)
             del self.outputs[identity]
-        if self.on_output_delete:
+        if not runtime_only and self.on_output_delete:
             self.on_output_delete(identity, ext)
 
 
@@ -705,6 +728,21 @@ def write_extra_model_paths(
     return yaml_path
 
 
+def _runtime_http(runtime):
+    if runtime is None:
+        return None
+    getter = getattr(runtime, "_http_session", None)
+    if callable(getter):
+        return getter()
+    return getattr(runtime, "http", None)
+
+
+def _set_task_message(task, message: str) -> None:
+    task_lock = getattr(task, "lock", None)
+    with task_lock if task_lock is not None else nullcontext():
+        task.message = message
+
+
 def _pg_has_members(pgid: int) -> bool:
     """Return True if any process still exists in POSIX process group `pgid`."""
     try:
@@ -712,7 +750,9 @@ def _pg_has_members(pgid: int) -> bool:
         return True
     except ProcessLookupError:
         return False
-    except (PermissionError, OSError):
+    except PermissionError:
+        return True
+    except OSError:
         return False
 
 
@@ -1025,6 +1065,7 @@ from server.digital_human import (
     parse_target_resolution,
     resolve_longcat_native_preset,
 )
+from server.fashion_tryon import ColabOneFashionTryOnRunner
 from server.tts_engines import ColabOneRemoteTtsRunner
 
 
@@ -1074,6 +1115,7 @@ class ColabOneComfyManager:
         self.tts = ColabOneRemoteTtsRunner(runtime, engines_by_id)
         self.avatar_engines: Any = None
         self.digital_human = ColabOneDigitalHumanRunner(self, self.tts)
+        self.fashion_tryon = ColabOneFashionTryOnRunner(self)
 
     def is_installed(self) -> bool:
         marker = self.install_dir / ".complete"
@@ -1118,7 +1160,7 @@ class ColabOneComfyManager:
                 self._queue_checked_at = time.monotonic()
             return (0, 0)
         try:
-            resp = self.runtime.http.get(self.base_url + "/queue", timeout=1.5)
+            resp = _runtime_http(self.runtime).get(self.base_url + "/queue", timeout=1.5)
             if not _response_ok(resp):
                 return (0, 0)
             data = resp.json() or {}
@@ -1234,8 +1276,9 @@ class ColabOneComfyManager:
             shutil.rmtree(self.install_dir, ignore_errors=True)
         self.install_dir.mkdir(parents=True, exist_ok=True)
         log = self.runtime.root / "comfyui-install.log"
-        task.message = "首次安装远端 ComfyUI " + self.catalog.tag
-        task.note(task.message)
+        install_msg = "首次安装远端 ComfyUI " + self.catalog.tag
+        _set_task_message(task, install_msg)
+        task.note(install_msg)
         if git_dir.is_dir():
             # Clean stale git lockfiles left by a previously interrupted install.
             for lock_file in git_dir.rglob("*.lock"):
@@ -1329,7 +1372,7 @@ class ColabOneComfyManager:
             has_torch = importlib.util.find_spec("torch") is not None
             filtered_req = self.install_dir / ".colabone-requirements.txt"
             if _filter_requirements(req_file, filtered_req, skip_torch=has_torch):
-                task.message = "安装 ComfyUI Python 依赖"
+                _set_task_message(task, "安装 ComfyUI Python 依赖")
                 task.note(
                     "正在安装 ComfyUI 依赖包"
                     + ("（保留现有 CUDA PyTorch）" if has_torch else "")
@@ -1370,7 +1413,7 @@ class ColabOneComfyManager:
     def start_server(self, task) -> None:
         if self.is_running():
             try:
-                resp = self.runtime.http.get(
+                resp = _runtime_http(self.runtime).get(
                     self.base_url + "/system_stats", timeout=2
                 )
                 if _response_ok(resp):
@@ -1380,8 +1423,11 @@ class ColabOneComfyManager:
             except (requests.RequestException, OSError):
                 pass
             self.stop_server()
-        elif self.proc is not None:
-            self.stop_server()
+        else:
+            with self.lock:
+                has_proc = self.proc is not None
+            if has_proc:
+                self.stop_server()
 
         task.check()
         if getattr(self.runtime, "quiescing", False) or (
@@ -1432,7 +1478,7 @@ class ColabOneComfyManager:
                 args.append("--disable-mmap")
 
             log = self.runtime.root / "comfyui.log"
-            task.message = "正在启动远端 ComfyUI 引擎"
+            _set_task_message(task, "正在启动远端 ComfyUI 引擎")
             task.note(f"已生成模型路径配置，正在启动远端 ComfyUI（端口 {self.port}）")
             launch_pack_sig = str(getattr(self.packs, "active_pack_signature", "") or "")
             launch_sage_gen = comfy_packs._current_sageattn_install_generation()
@@ -1492,7 +1538,7 @@ class ColabOneComfyManager:
                         "ComfyUI 启动失败：" + (tail or f"退出码 {proc.returncode}")
                     )
                 try:
-                    resp = self.runtime.http.get(
+                    resp = _runtime_http(self.runtime).get(
                         self.base_url + "/system_stats", timeout=2
                     )
                     if _response_ok(resp):
@@ -1604,7 +1650,7 @@ class ColabOneComfyManager:
             self.tts.cancel_prefetch_and_release_warm_worker("comfy_free_memory")
         if not self.is_running():
             return {"ok": True, "running": False}
-        resp = self.runtime.http.post(
+        resp = _runtime_http(self.runtime).post(
             self.base_url + "/free",
             json={"unload_models": bool(unload_models), "free_memory": True},
             timeout=10,
@@ -1637,8 +1683,9 @@ class ColabOneComfyManager:
     def _cancel_prompt(self, prompt_id: str) -> None:
         if not prompt_id:
             return
+        http = _runtime_http(self.runtime)
         try:
-            self.runtime.http.post(
+            http.post(
                 self.base_url + "/queue",
                 json={"delete": [prompt_id]},
                 timeout=3,
@@ -1646,13 +1693,13 @@ class ColabOneComfyManager:
         except Exception:
             pass
         try:
-            resp = self.runtime.http.post(
+            resp = http.post(
                 self.base_url + "/interrupt",
                 json={"prompt_id": prompt_id},
                 timeout=3,
             )
             if not _response_ok(resp):
-                self.runtime.http.post(self.base_url + "/interrupt", timeout=3)
+                http.post(self.base_url + "/interrupt", timeout=3)
         except Exception:
             pass
 
@@ -1761,6 +1808,15 @@ class ColabOneComfyManager:
                 self.mark_native_pack_ready(wf_id)
             task.check()
             return
+        if pipeline_kind == "fashion_tryon":
+            self.fashion_tryon.ensure_ready(
+                task,
+                wf,
+                hf_token=hf_token,
+                overrides=overrides,
+                progress_range=progress_range,
+            )
+            return
         with self.lock:
             self._native_active_pack_id = ""
         has_pack_requirements = bool(
@@ -1818,7 +1874,7 @@ class ColabOneComfyManager:
         if dest.is_symlink():
             raise ValueError("输出缓存文件不能是符号链接")
         dest.parent.mkdir(parents=True, exist_ok=True)
-        view_resp = self.runtime.http.get(
+        view_resp = _runtime_http(self.runtime).get(
             self.base_url + "/view",
             params={
                 "filename": filename,
@@ -1876,7 +1932,7 @@ class ColabOneComfyManager:
         ext = fpath.suffix.lstrip(".").lower()
         uploaded_name = ""
         try:
-            resp = self.runtime.http.post(
+            resp = _runtime_http(self.runtime).post(
                 self.base_url + "/upload/image",
                 files={"image": (fname, raw_bytes)},
                 data={"overwrite": "true"},
@@ -2094,7 +2150,7 @@ class ColabOneComfyManager:
                 task.message = submit_msg
             task.note(submit_msg)
             task.check()
-            submit_resp = self.runtime.http.post(
+            submit_resp = _runtime_http(self.runtime).post(
                 self.base_url + "/prompt",
                 json={"prompt": prompt_payload, "client_id": client_id},
                 timeout=30,
@@ -2147,7 +2203,7 @@ class ColabOneComfyManager:
                         raise RuntimeError("ComfyUI 进程在执行期间意外退出")
 
                     try:
-                        hist_resp = self.runtime.http.get(
+                        hist_resp = _runtime_http(self.runtime).get(
                             f"{self.base_url}/history/{prompt_id}", timeout=15
                         )
                         hist_resp.raise_for_status()
@@ -2355,7 +2411,7 @@ class ColabOneComfyManager:
                     queue_checked = False
                     in_queue = False
                     try:
-                        q_resp = self.runtime.http.get(
+                        q_resp = _runtime_http(self.runtime).get(
                             self.base_url + "/queue", timeout=5
                         )
                         if _response_ok(q_resp):
@@ -2394,7 +2450,7 @@ class ColabOneComfyManager:
                     ):
                         # One immediate /history check in case richer error details just landed.
                         try:
-                            final_hist = self.runtime.http.get(
+                            final_hist = _runtime_http(self.runtime).get(
                                 f"{self.base_url}/history/{prompt_id}",
                                 timeout=10,
                             )
@@ -2418,7 +2474,7 @@ class ColabOneComfyManager:
                             if missing_polls >= 10:
                                 # Final check against /history in case the prompt just finished.
                                 try:
-                                    final_hist = self.runtime.http.get(
+                                    final_hist = _runtime_http(self.runtime).get(
                                         f"{self.base_url}/history/{prompt_id}",
                                         timeout=10,
                                     )
@@ -2551,6 +2607,8 @@ class ColabOneComfyManager:
 
             if (wf.get("pipeline") or {}).get("kind") == "digital_human":
                 return self.digital_human.run(task, wf, req, resolved_inputs)
+            if (wf.get("pipeline") or {}).get("kind") == "fashion_tryon":
+                return self.fashion_tryon.run(task, wf, req, resolved_inputs)
 
             self.ensure_template_ready(task, wf, hf_token=hf_token)
             task.check()

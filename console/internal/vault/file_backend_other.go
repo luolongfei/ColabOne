@@ -18,29 +18,30 @@ func (b *ColabOneFileSecretBackend) keyPath() string {
 	return filepath.Join(filepath.Dir(b.path), ColabOneVaultKeyFilename)
 }
 
-func (b *ColabOneFileSecretBackend) checkRegularKeyPathLocked() error {
+func (b *ColabOneFileSecretBackend) checkRegularKeyPathLocked() (os.FileInfo, error) {
 	kp := b.keyPath()
 	info, err := os.Lstat(kp)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil
+			return nil, nil
 		}
-		return err
+		return nil, err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("colabone vault: refusing symlink vault key path %q", kp)
+		return nil, fmt.Errorf("colabone vault: refusing symlink vault key path %q", kp)
 	}
 	if info.IsDir() {
-		return fmt.Errorf("colabone vault: vault key path %q is a directory", kp)
+		return nil, fmt.Errorf("colabone vault: vault key path %q is a directory", kp)
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("colabone vault: vault key path %q is not a regular file", kp)
+		return nil, fmt.Errorf("colabone vault: vault key path %q is not a regular file", kp)
 	}
-	return nil
+	return info, nil
 }
 
 func (b *ColabOneFileSecretBackend) readExistingFileKEKLocked() ([]byte, bool, error) {
-	if err := b.checkRegularKeyPathLocked(); err != nil {
+	linfo, err := b.checkRegularKeyPathLocked()
+	if err != nil {
 		return nil, false, err
 	}
 	kp := b.keyPath()
@@ -53,6 +54,26 @@ func (b *ColabOneFileSecretBackend) readExistingFileKEKLocked() ([]byte, bool, e
 	}
 	defer f.Close()
 
+	finfo, err := f.Stat()
+	if err != nil {
+		return nil, false, err
+	}
+	if !finfo.Mode().IsRegular() {
+		return nil, false, fmt.Errorf("colabone vault: vault key path %q is not a regular file", kp)
+	}
+	if linfo == nil {
+		linfo, err = b.checkRegularKeyPathLocked()
+		if err != nil {
+			return nil, false, err
+		}
+		if linfo == nil {
+			return nil, false, fmt.Errorf("colabone vault: vault key path %q changed while opening", kp)
+		}
+	}
+	if !os.SameFile(linfo, finfo) {
+		return nil, false, fmt.Errorf("colabone vault: vault key path %q changed while opening", kp)
+	}
+
 	raw, err := io.ReadAll(io.LimitReader(f, colabOneVaultKEKLen+1))
 	if err != nil {
 		return nil, false, err
@@ -61,7 +82,7 @@ func (b *ColabOneFileSecretBackend) readExistingFileKEKLocked() ([]byte, bool, e
 		clear(raw)
 		return nil, true, fmt.Errorf("%w: invalid vault key length %d", ErrCorruptVault, len(raw))
 	}
-	_ = os.Chmod(kp, 0o600)
+	_ = f.Chmod(0o600)
 	return raw, true, nil
 }
 

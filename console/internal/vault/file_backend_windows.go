@@ -10,6 +10,7 @@ import (
 	"os"
 	"runtime"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -20,7 +21,11 @@ const (
 	winDACLSecurityInformation          = 0x00000004
 	winProtectedDACLSecurityInformation = 0x80000000
 	winErrorInvalidFunction             = syscall.Errno(1)
+	winErrorAccessDenied                = syscall.Errno(5)
+	winErrorSharingViolation            = syscall.Errno(32)
+	winErrorLockViolation               = syscall.Errno(33)
 	winErrorNotSupported                = syscall.Errno(50)
+	winDACLApplyMaxAttempts             = 6
 )
 
 var (
@@ -95,14 +100,12 @@ func colabOneDPAPIProtect(plain, entropy []byte, descr string) ([]byte, error) {
 		cbData: uint32(len(plain)),
 		pbData: &plain[0],
 	}
-	var entropyPtr uintptr
-	var entropyBlob winDataBlob
+	var entropyBlob *winDataBlob
 	if len(entropy) > 0 {
-		entropyBlob = winDataBlob{
+		entropyBlob = &winDataBlob{
 			cbData: uint32(len(entropy)),
 			pbData: &entropy[0],
 		}
-		entropyPtr = uintptr(unsafe.Pointer(&entropyBlob))
 	}
 	var descrPtr *uint16
 	if descr != "" {
@@ -114,7 +117,7 @@ func colabOneDPAPIProtect(plain, entropy []byte, descr string) ([]byte, error) {
 	r, _, callErr := procVaultCryptProtectData.Call(
 		uintptr(unsafe.Pointer(&inBlob)),
 		uintptr(unsafe.Pointer(descrPtr)),
-		entropyPtr,
+		uintptr(unsafe.Pointer(entropyBlob)),
 		0,
 		0,
 		winCryptProtectUIForbidden,
@@ -124,7 +127,7 @@ func colabOneDPAPIProtect(plain, entropy []byte, descr string) ([]byte, error) {
 	runtime.KeepAlive(entropy)
 	runtime.KeepAlive(descrPtr)
 	runtime.KeepAlive(&inBlob)
-	runtime.KeepAlive(&entropyBlob)
+	runtime.KeepAlive(entropyBlob)
 	if r == 0 {
 		return nil, fmt.Errorf("colabone vault: CryptProtectData failed: %w", callErr)
 	}
@@ -147,20 +150,18 @@ func colabOneDPAPIUnprotect(wrapped, entropy []byte) ([]byte, error) {
 		cbData: uint32(len(wrapped)),
 		pbData: &wrapped[0],
 	}
-	var entropyPtr uintptr
-	var entropyBlob winDataBlob
+	var entropyBlob *winDataBlob
 	if len(entropy) > 0 {
-		entropyBlob = winDataBlob{
+		entropyBlob = &winDataBlob{
 			cbData: uint32(len(entropy)),
 			pbData: &entropy[0],
 		}
-		entropyPtr = uintptr(unsafe.Pointer(&entropyBlob))
 	}
 	var outBlob winDataBlob
 	r, _, callErr := procVaultCryptUnprotectData.Call(
 		uintptr(unsafe.Pointer(&inBlob)),
 		0,
-		entropyPtr,
+		uintptr(unsafe.Pointer(entropyBlob)),
 		0,
 		0,
 		winCryptProtectUIForbidden,
@@ -169,7 +170,7 @@ func colabOneDPAPIUnprotect(wrapped, entropy []byte) ([]byte, error) {
 	runtime.KeepAlive(wrapped)
 	runtime.KeepAlive(entropy)
 	runtime.KeepAlive(&inBlob)
-	runtime.KeepAlive(&entropyBlob)
+	runtime.KeepAlive(entropyBlob)
 	if r == 0 {
 		return nil, fmt.Errorf("CryptUnprotectData failed: %w", callErr)
 	}
@@ -258,22 +259,41 @@ func colabOneApplyCurrentUserDACL(path string) error {
 		return err
 	}
 	secInfo := uintptr(winDACLSecurityInformation | winProtectedDACLSecurityInformation)
-	status, _, _ := procVaultSetNamedSecurityInfoW.Call(
-		uintptr(unsafe.Pointer(pathPtr)),
-		winSEFileObject,
-		secInfo,
-		0,
-		0,
-		dacl,
-		0,
-	)
-	runtime.KeepAlive(pathPtr)
-	if status != 0 {
+	var status uintptr
+	for attempt := 0; attempt < winDACLApplyMaxAttempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt*15) * time.Millisecond)
+		}
+		status, _, _ = procVaultSetNamedSecurityInfoW.Call(
+			uintptr(unsafe.Pointer(pathPtr)),
+			winSEFileObject,
+			secInfo,
+			0,
+			0,
+			dacl,
+			0,
+		)
+		if status == 0 {
+			break
+		}
 		errno := syscall.Errno(status)
 		if errors.Is(errno, winErrorInvalidFunction) || errors.Is(errno, winErrorNotSupported) {
-			return nil
+			status = 0
+			break
 		}
-		return fmt.Errorf("colabone vault: SetNamedSecurityInfoW failed: %w", errno)
+		if !colabOneIsTransientWinDACLErr(errno) {
+			break
+		}
+	}
+	runtime.KeepAlive(pathPtr)
+	if status != 0 {
+		return fmt.Errorf("colabone vault: SetNamedSecurityInfoW failed: %w", syscall.Errno(status))
 	}
 	return nil
+}
+
+func colabOneIsTransientWinDACLErr(errno syscall.Errno) bool {
+	return errors.Is(errno, winErrorAccessDenied) ||
+		errors.Is(errno, winErrorSharingViolation) ||
+		errors.Is(errno, winErrorLockViolation)
 }

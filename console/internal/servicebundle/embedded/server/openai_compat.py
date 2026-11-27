@@ -12,6 +12,7 @@ from typing import Any
 
 MAX_BODY_BYTES = 16 * 1024 * 1024
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+MAX_INPUT_ITEMS = 2048
 MAX_COMPACTION_DECOMPRESSED_BYTES = 256 * 1024
 COLABONE_COMPACTION_PREFIX = "co_cmp_v1."
 
@@ -653,10 +654,55 @@ def _normalize_response_tool_choice(raw_choice: Any, chat_tools: list[dict[str, 
     return "auto"
 
 
+def estimate_serialized_bytes(obj: Any, limit: int) -> int:
+    """Iteratively estimate UTF-8 JSON byte size of *obj*, short-circuiting above *limit*.
+
+    Avoids allocating multi-gigabyte JSON strings on adversarial/aliased object graphs.
+    """
+    if limit < 0:
+        return 1
+    total = 0
+    stack: list[Any] = [obj]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, str):
+            total += len(cur.encode("utf-8")) + 2
+        elif cur is None:
+            total += 4
+        elif isinstance(cur, bool):
+            total += 5
+        elif isinstance(cur, (int, float)):
+            total += len(str(cur))
+        elif isinstance(cur, dict):
+            n = len(cur)
+            total += 2 + (n - 1 if n > 1 else 0)
+            if total > limit:
+                return total
+            for k, v in cur.items():
+                key_str = k if isinstance(k, str) else str(k)
+                total += len(key_str.encode("utf-8")) + 3
+                if total > limit:
+                    return total
+                stack.append(v)
+        elif isinstance(cur, (list, tuple)):
+            n = len(cur)
+            total += 2 + (n - 1 if n > 1 else 0)
+            if total > limit:
+                return total
+            stack.extend(cur)
+        else:
+            total += len(str(cur).encode("utf-8")) + 2
+        if total > limit:
+            return total
+    return total
+
+
 def _normalize_input_items(raw_input: Any, response_store: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     if raw_input is None:
         return []
     if isinstance(raw_input, str):
+        if len(raw_input.encode("utf-8")) > MAX_BODY_BYTES:
+            raise ValueError("input 大小超出上限")
         return [
             {
                 "type": "message",
@@ -666,10 +712,37 @@ def _normalize_input_items(raw_input: Any, response_store: dict[str, dict[str, A
         ]
     if not isinstance(raw_input, list):
         raise ValueError("input 必须为字符串或消息项数组")
+    if len(raw_input) > MAX_INPUT_ITEMS:
+        raise ValueError(f"input 项数量超出上限（最多 {MAX_INPUT_ITEMS} 项）")
+
     items: list[dict[str, Any]] = []
+    total_bytes = 0
+    ref_index: dict[str, dict[str, Any]] | None = None
+    ref_size_cache: dict[int, int] = {}
+
+    def _append_bounded(item: dict[str, Any], *, cached_ref: bool = False) -> None:
+        nonlocal total_bytes
+        if len(items) >= MAX_INPUT_ITEMS:
+            raise ValueError(f"input 项数量超出上限（最多 {MAX_INPUT_ITEMS} 项）")
+        remaining = MAX_BODY_BYTES - total_bytes
+        if remaining < 0:
+            raise ValueError("input 展开后的大小超出上限")
+        if cached_ref:
+            key = id(item)
+            sz = ref_size_cache.get(key)
+            if sz is None:
+                sz = estimate_serialized_bytes(item, MAX_BODY_BYTES)
+                ref_size_cache[key] = sz
+        else:
+            sz = estimate_serialized_bytes(item, remaining)
+        total_bytes += sz
+        if total_bytes > MAX_BODY_BYTES:
+            raise ValueError("input 展开后的大小超出上限")
+        items.append(item)
+
     for entry in raw_input:
         if isinstance(entry, str):
-            items.append(
+            _append_bounded(
                 {
                     "type": "message",
                     "role": "user",
@@ -683,17 +756,19 @@ def _normalize_input_items(raw_input: Any, response_store: dict[str, dict[str, A
                     raise ValueError("item_reference 缺少有效的 id")
                 ref_id = ref_id.strip()
                 if response_store:
-                    found = False
-                    for saved in response_store.values():
-                        for candidate in saved.get("items") or []:
-                            if isinstance(candidate, dict) and candidate.get("id") == ref_id:
-                                items.append(candidate)
-                                found = True
-                                break
-                        if found:
-                            break
+                    if ref_index is None:
+                        ref_index = {}
+                        for saved in response_store.values():
+                            for candidate in saved.get("items") or []:
+                                if isinstance(candidate, dict):
+                                    cid = candidate.get("id")
+                                    if isinstance(cid, str) and cid and cid not in ref_index:
+                                        ref_index[cid] = candidate
+                    resolved = ref_index.get(ref_id)
+                    if resolved is not None:
+                        _append_bounded(resolved, cached_ref=True)
             else:
-                items.append(entry)
+                _append_bounded(entry)
         else:
             raise ValueError("input 元素格式无效")
     return items
@@ -847,6 +922,10 @@ def normalize_responses_request(
 
     new_items = _normalize_input_items(raw.get("input"), response_store)
     all_items = prior_items + new_items
+    if len(all_items) > MAX_INPUT_ITEMS:
+        raise ValueError(f"input 项数量超出上限（最多 {MAX_INPUT_ITEMS} 项）")
+    if estimate_serialized_bytes(all_items, MAX_BODY_BYTES) > MAX_BODY_BYTES:
+        raise ValueError("input 展开后的大小超出上限")
     if not all_items and not instructions:
         raise ValueError("input 不能为空")
 
@@ -978,10 +1057,15 @@ def normalize_compact_request(
         prior_items = list(response_store[previous_response_id].get("items") or [])
 
     new_items = _normalize_input_items(raw.get("input"), response_store)
+    all_items = prior_items + new_items
+    if len(all_items) > MAX_INPUT_ITEMS:
+        raise ValueError(f"input 项数量超出上限（最多 {MAX_INPUT_ITEMS} 项）")
+    if estimate_serialized_bytes(all_items, MAX_BODY_BYTES) > MAX_BODY_BYTES:
+        raise ValueError("input 展开后的大小超出上限")
     return {
         "model": model,
         "instructions": instructions,
-        "items": prior_items + new_items,
+        "items": all_items,
     }
 
 

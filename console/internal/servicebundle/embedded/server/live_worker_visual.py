@@ -15,6 +15,7 @@ import array
 import hashlib
 import json
 import math
+import os
 import shutil
 import subprocess
 import sys
@@ -28,6 +29,25 @@ from typing import Any
 from PIL import Image, ImageDraw, ImageOps
 
 from common.live_studio import COLABONE_LIVE_CLIP_EXTENSIONS, validate_colabone_live_id
+
+_SENSITIVE_VISUAL_ENV_KEYS = frozenset(
+    {
+        "COLABONE_REMOTE_CONFIG",
+        "HF_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "HUGGINGFACE_HUB_TOKEN",
+        "HF_API_TOKEN",
+        "OPENAI_API_KEY",
+    }
+)
+
+
+def _sanitized_visual_subprocess_env() -> dict[str, str]:
+    return {
+        k: v
+        for k, v in os.environ.items()
+        if k not in _SENSITIVE_VISUAL_ENV_KEYS and not k.startswith("TUNNEL_")
+    }
 
 
 def _fit_rgb_image(img: Image.Image, width: int, height: int) -> bytes:
@@ -102,9 +122,12 @@ def _decode_video_frames_rgb(
     )
     cmd = [
         ffmpeg_bin,
+        "-nostdin",
         "-hide_banner",
         "-loglevel",
         "error",
+        "-protocol_whitelist",
+        "file,pipe,fd",
         "-i",
         str(video_path),
         "-vf",
@@ -124,6 +147,7 @@ def _decode_video_frames_rgb(
             timeout=15.0,
             check=False,
             stdin=subprocess.DEVNULL,
+            env=_sanitized_visual_subprocess_env(),
         )
         raw = proc.stdout or b""
         if proc.returncode != 0 or len(raw) < frame_size:

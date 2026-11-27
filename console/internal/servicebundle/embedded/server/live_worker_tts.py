@@ -858,9 +858,9 @@ class ColabOneResidentTtsWorker(ColabOneStreamingTtsBase):
             self._stderr_thread = None
             self._stderr_lines = deque(maxlen=64)
             self._loaded = False
-        with self._abort_lock:
-            if self._active_proc is proc:
-                self._active_proc = None
+            with self._abort_lock:
+                if self._active_proc is proc:
+                    self._active_proc = None
         if proc is not None:
             self._cleanup_proc(
                 proc,
@@ -986,6 +986,9 @@ class ColabOneResidentTtsWorker(ColabOneStreamingTtsBase):
                         self._stderr_lines = stderr_lines
                         self._stderr_thread = t_err
                         self._loaded = True
+                        with self._abort_lock:
+                            self._active_proc = proc
+                            self._ensure_abort_dispatcher_locked()
                         publish_ok = True
                 if not publish_ok:
                     self._cleanup_proc(
@@ -995,9 +998,6 @@ class ColabOneResidentTtsWorker(ColabOneStreamingTtsBase):
                         stderr_thread=t_err,
                     )
                     self._ensure_not_disposed()
-                with self._abort_lock:
-                    self._active_proc = proc
-                    self._ensure_abort_dispatcher_locked()
             except Exception:
                 with self._lock:
                     if self._starting_proc is proc:
@@ -1058,11 +1058,11 @@ class ColabOneResidentTtsWorker(ColabOneStreamingTtsBase):
             self._stderr_thread = None
             self._stderr_lines = deque(maxlen=64)
             self._loaded = False
-        with self._abort_lock:
-            self._active_proc = None
-            abort_q = self._abort_queue
-            self._abort_queue = None
-            self._abort_thread = None
+            with self._abort_lock:
+                self._active_proc = None
+                abort_q = self._abort_queue
+                self._abort_queue = None
+                self._abort_thread = None
         if abort_q is not None:
             try:
                 abort_q.put_nowait(None)

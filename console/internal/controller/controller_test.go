@@ -9244,3 +9244,147 @@ func TestRemoveLocalModelPrunesInstanceStatesVaultConfigMuAndUploadControlChars(
 		t.Fatal("expected comfyui.input.upload to reject trailing newline control character")
 	}
 }
+
+func TestControllerDeleteRuntimeOnlyWorkflowSaveRollbackTtsCacheAndCUCorruptHardening(t *testing.T) {
+	ctx := context.Background()
+
+	// 1. comfyui.output.delete with runtime_only=true sends DELETE comfyui/outputs/<id>?runtime_only=1.
+	h := newTestHarness(t, false)
+	seedTestSession(h.vault, "ep-ro", "L4", true)
+	oid := "1234567890abcdef1234567890abcdef"
+	h.ctrl.Update(map[string]any{
+		"runtime":       map[string]any{"state": "ready", "id": "ep-ro"},
+		"comfy_outputs": []any{map[string]any{"id": oid, "extension": "mp4"}},
+	})
+	var gotDeletePath string
+	h.provider.rpcFn = func(ctx context.Context, method, path string, body any, opts ColabOneRPCOptions) (any, error) {
+		if method == "DELETE" {
+			gotDeletePath = path
+			return map[string]any{"ok": true}, nil
+		}
+		if path == "snapshot" {
+			return map[string]any{
+				"runtime":       map[string]any{"state": "ready", "id": "ep-ro", "protocol": 7, "tasks": []any{}},
+				"models":        []any{},
+				"workflows":     []any{},
+				"comfy_outputs": []any{},
+			}, nil
+		}
+		return map[string]any{"ok": true}, nil
+	}
+	if _, err := h.ctrl.Command(ctx, "comfyui.output.delete", map[string]any{
+		"id":           oid,
+		"runtime_only": true,
+	}); err != nil {
+		t.Fatalf("runtime_only output delete failed: %v", err)
+	}
+	if gotDeletePath != "comfyui/outputs/"+oid+"?runtime_only=1" {
+		t.Fatalf("runtime_only DELETE path = %q, want %q", gotDeletePath, "comfyui/outputs/"+oid+"?runtime_only=1")
+	}
+
+	// 2. comfyui.workflow.import and comfyui.workflow.delete roll back in-memory c.customWorkflows on saveWorkflows() error.
+	hWF := newTestHarness(t, false)
+	hWF.ctrl.comfy = realComfyTestAdapter{}
+	validWF := map[string]any{
+		"1": map[string]any{
+			"class_type": "CLIPTextEncode",
+			"inputs":     map[string]any{"text": "hello"},
+		},
+	}
+	if _, err := hWF.ctrl.Command(ctx, "comfyui.workflow.import", map[string]any{
+		"id":       "wf-rollback-1",
+		"name":     "Initial WF",
+		"workflow": validWF,
+	}); err != nil {
+		t.Fatalf("initial workflow import failed: %v", err)
+	}
+	// Block workflows.json persistence by replacing it with a non-empty directory.
+	wfFile := filepath.Join(hWF.configDir, "workflows.json")
+	_ = os.Remove(wfFile)
+	if err := os.Mkdir(wfFile, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wfFile, "blocker"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Offline import of new workflow fails saveWorkflows() -> must NOT linger in c.customWorkflows.
+	if _, err := hWF.ctrl.Command(ctx, "comfyui.workflow.import", map[string]any{
+		"id":       "wf-rollback-new",
+		"name":     "Should Rollback",
+		"workflow": validWF,
+	}); err == nil {
+		t.Fatal("expected offline workflow import to fail when workflows.json is unwritable")
+	}
+	hWF.ctrl.mu.Lock()
+	_, leakedNew := hWF.ctrl.customWorkflows["wf-rollback-new"]
+	hWF.ctrl.mu.Unlock()
+	if leakedNew {
+		t.Fatal("failed workflow import leaked wf-rollback-new into c.customWorkflows")
+	}
+	// Workflow delete fails saveWorkflows() -> must restore wf-rollback-1 in c.customWorkflows.
+	if _, err := hWF.ctrl.Command(ctx, "comfyui.workflow.delete", map[string]any{"id": "wf-rollback-1"}); err == nil {
+		t.Fatal("expected workflow delete to fail when workflows.json is unwritable")
+	}
+	hWF.ctrl.mu.Lock()
+	restoredWF := hWF.ctrl.customWorkflows["wf-rollback-1"]
+	hWF.ctrl.mu.Unlock()
+	if restoredWF == nil || asString(restoredWF["name"]) != "Initial WF" {
+		t.Fatalf("failed workflow delete did not restore wf-rollback-1: %+v", restoredWF)
+	}
+
+	// 3. tts_preview_cache.go rejects symlinks, directories, and oversized files safely without deleting symlink targets.
+	hTTS := newTestHarness(t, false)
+	cacheDir := hTTS.ctrl.ttsPreviewCacheDir()
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	secretTarget := filepath.Join(hTTS.configDir, "secret.txt")
+	if err := os.WriteFile(secretTarget, []byte("keep-me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	symID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	dirID := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	if err := os.Symlink(secretTarget, filepath.Join(cacheDir, symID+".wav")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(cacheDir, dirID+".wav"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	idx := newEmptyLocalTtsPreviewIndex()
+	idx.ByPreviewID[symID] = &colabOneLocalTtsPreviewEntry{PreviewID: symID, Size: 7}
+	idx.ByPreviewID[dirID] = &colabOneLocalTtsPreviewEntry{PreviewID: dirID, Size: 7}
+	if hTTS.ctrl.hasValidLocalPreviewFileLocked(idx, symID) {
+		t.Fatal("hasValidLocalPreviewFileLocked must reject symlink")
+	}
+	if hTTS.ctrl.hasValidLocalPreviewFileLocked(idx, dirID) {
+		t.Fatal("hasValidLocalPreviewFileLocked must reject directory")
+	}
+	if _, ok := hTTS.ctrl.readLocalTtsPreviewEntryLocked(idx, symID); ok {
+		t.Fatal("readLocalTtsPreviewEntryLocked must reject symlink")
+	}
+	if _, ok := hTTS.ctrl.readLocalTtsPreviewEntryLocked(idx, dirID); ok {
+		t.Fatal("readLocalTtsPreviewEntryLocked must reject directory")
+	}
+	if rawTarget, err := os.ReadFile(secretTarget); err != nil || string(rawTarget) != "keep-me" {
+		t.Fatalf("symlink target was modified or deleted: err=%v raw=%q", err, string(rawTarget))
+	}
+
+	// 4. cu_usage.go skips symlinked source and uses timestamped backup when .corrupt already exists or is a symlink.
+	cuDir := t.TempDir()
+	cuPath := filepath.Join(cuDir, colabOneCUUsageFilename)
+	existingCorrupt := cuPath + ".corrupt"
+	if err := os.WriteFile(existingCorrupt, []byte("prior-corrupt-backup"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cuPath, []byte("{corrupt-second"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_ = NewColabOneCUUsageStore(cuDir, nil)
+	if prevRaw, err := os.ReadFile(existingCorrupt); err != nil || string(prevRaw) != "prior-corrupt-backup" {
+		t.Fatalf("existing .corrupt backup was clobbered: err=%v raw=%q", err, string(prevRaw))
+	}
+	tsMatches, err := filepath.Glob(cuPath + ".corrupt-*")
+	if err != nil || len(tsMatches) == 0 {
+		t.Fatalf("expected timestamped .corrupt-<ts> backup when .corrupt already exists, matches=%v err=%v", tsMatches, err)
+	}
+}

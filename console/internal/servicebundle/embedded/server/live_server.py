@@ -16,6 +16,7 @@ import io
 import json
 import logging
 import math
+import os
 from pathlib import Path
 import queue
 import re
@@ -74,6 +75,24 @@ COLABONE_LIVE_MAX_MIC_FRAME_BYTES = 64 * 1024  # 64 KiB cap per incoming MIC_PCM
 COLABONE_LIVE_MAX_HISTORY_TURNS = 16
 
 _LOGGER = logging.getLogger(__name__)
+_SENSITIVE_LIVE_ENV_KEYS = frozenset(
+    {
+        "COLABONE_REMOTE_CONFIG",
+        "HF_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "HUGGINGFACE_HUB_TOKEN",
+        "HF_API_TOKEN",
+        "OPENAI_API_KEY",
+    }
+)
+
+
+def _sanitized_live_subprocess_env() -> dict[str, str]:
+    return {
+        k: v
+        for k, v in os.environ.items()
+        if k not in _SENSITIVE_LIVE_ENV_KEYS and not k.startswith("TUNNEL_")
+    }
 _SENSEVOICE_TAG_RE = re.compile(r"<\|([^|]+)\|>")
 _SENSEVOICE_EMOTION_MAP = {
     "HAPPY": "happy",
@@ -633,6 +652,7 @@ class ColabOneLiveVideoEncoder:
         self._stderr_lines: deque[str] = deque(maxlen=64)
         self._stderr_thread: threading.Thread | None = None
         self._closed = False
+        self._ffmpeg_failed = False
 
     @staticmethod
     def select_h264_level(width: int, height: int, fps: int = 25) -> str:
@@ -672,6 +692,7 @@ class ColabOneLiveVideoEncoder:
                     timeout=timeout_s,
                     check=False,
                     stdin=subprocess.DEVNULL,
+                    env=_sanitized_live_subprocess_env(),
                 )
                 return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
             except Exception:
@@ -727,11 +748,17 @@ class ColabOneLiveVideoEncoder:
             raise ValueError(f"视频编码分辨率宽高必须为正偶数: {w}x{h}")
         level = ColabOneLiveVideoEncoder.select_h264_level(w, h, f)
         safe_rtmp = validate_colabone_live_rtmp_url(rtmp_url) if rtmp_url else ""
+        protocol_whitelist = (
+            "pipe,lavfi,rtmp,rtmps,tcp,tls,crypto" if safe_rtmp else "pipe"
+        )
         cmd: list[str] = [
             ffmpeg_bin,
+            "-nostdin",
             "-hide_banner",
             "-loglevel",
             "error",
+            "-protocol_whitelist",
+            protocol_whitelist,
             "-f",
             "rawvideo",
             "-pix_fmt",
@@ -923,6 +950,7 @@ class ColabOneLiveVideoEncoder:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE if not self.rtmp_url else subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
+                env=_sanitized_live_subprocess_env(),
             )
             out_q: queue.Queue[bytes] = queue.Queue(maxsize=64)
             stderr_lines: deque[str] = deque(maxlen=64)
@@ -983,16 +1011,26 @@ class ColabOneLiveVideoEncoder:
             self._stderr_lines = stderr_lines
             self._stderr_thread = t_err
 
+    def _detach_ffmpeg_locked(
+        self,
+    ) -> tuple[
+        subprocess.Popen[bytes] | None,
+        threading.Thread | None,
+        threading.Thread | None,
+    ]:
+        proc = self._proc
+        t_out = self._stdout_thread
+        t_err = self._stderr_thread
+        self._proc = None
+        self._stdout_thread = None
+        self._stderr_thread = None
+        return proc, t_out, t_err
+
     def close(self) -> None:
         """Cleanly shut down any running FFmpeg process and join reader threads."""
         with self._lock:
             self._closed = True
-            proc = self._proc
-            t_out = self._stdout_thread
-            t_err = self._stderr_thread
-            self._proc = None
-            self._stdout_thread = None
-            self._stderr_thread = None
+            proc, t_out, t_err = self._detach_ffmpeg_locked()
         if proc is not None:
             self._cleanup_ffmpeg_proc(proc, t_out, t_err)
 
@@ -1004,45 +1042,79 @@ class ColabOneLiveVideoEncoder:
 
     def encode_frame(self, frame: ColabOneVisualFrame) -> tuple[int, bytes]:
         """Encode a visual frame into fMP4/RTMP via supervised FFmpeg or pure-Python JPEG."""
-        if (
-            self.enable_ffmpeg
-            and not self._closed
-            and self.mode in ("h264_nvenc", "libx264")
-        ):
-            if self._proc is None:
+        need_start = False
+        with self._lock:
+            can_use_ffmpeg = (
+                self.enable_ffmpeg
+                and not self._closed
+                and not self._ffmpeg_failed
+                and self.mode in ("h264_nvenc", "libx264")
+            )
+            if can_use_ffmpeg and self._proc is None:
+                need_start = True
+
+        if can_use_ffmpeg:
+            if need_start:
                 try:
                     self.start_ffmpeg()
                 except Exception as exc:
                     if self.rtmp_url:
+                        with self._lock:
+                            self._ffmpeg_failed = True
                         raise RuntimeError(
                             scrub_colabone_live_secrets(str(exc), self.rtmp_url)
                         ) from None
-                    self.mode = "jpeg"
-            proc = self._proc
-            if proc is not None and proc.poll() is None and proc.stdin is not None:
-                try:
                     with self._lock:
-                        if self._proc is proc and proc.poll() is None and proc.stdin is not None:
+                        self.mode = "jpeg"
+                    return COLABONE_LIVE_FRAME_VIDEO, self._encode_jpeg(frame)
+
+            failed_proc: subprocess.Popen[bytes] | None = None
+            failed_out: threading.Thread | None = None
+            failed_err: threading.Thread | None = None
+            write_error: Exception | None = None
+            chunks: list[bytes] = []
+
+            with self._lock:
+                if self._closed or self._ffmpeg_failed or self.mode not in ("h264_nvenc", "libx264"):
+                    return COLABONE_LIVE_FRAME_VIDEO, self._encode_jpeg(frame)
+                proc = self._proc
+                if proc is not None:
+                    if proc.poll() is not None or proc.stdin is None:
+                        write_error = RuntimeError("FFmpeg 编码进程已意外退出")
+                        failed_proc, failed_out, failed_err = self._detach_ffmpeg_locked()
+                        self._ffmpeg_failed = True
+                        if not self.rtmp_url:
+                            self.mode = "jpeg"
+                    else:
+                        try:
                             proc.stdin.write(frame.rgb_bytes)
                             proc.stdin.flush()
-                    if not self.rtmp_url:
-                        chunks: list[bytes] = []
-                        while True:
-                            try:
-                                chunks.append(self._stdout_queue.get_nowait())
-                            except queue.Empty:
-                                break
-                        if chunks:
-                            return COLABONE_LIVE_FRAME_FMP4, b"".join(chunks)
-                except Exception as exc:
-                    _LOGGER.warning(
-                        "FFmpeg encode failed; falling back to JPEG: %s",
-                        scrub_colabone_live_secrets(str(exc), self.rtmp_url),
-                    )
-                    self.close()
-                    self._closed = False
-                    if not self.rtmp_url:
-                        self.mode = "jpeg"
+                            if not self.rtmp_url:
+                                while True:
+                                    try:
+                                        chunks.append(self._stdout_queue.get_nowait())
+                                    except queue.Empty:
+                                        break
+                        except Exception as exc:
+                            write_error = exc
+                            failed_proc, failed_out, failed_err = self._detach_ffmpeg_locked()
+                            self._ffmpeg_failed = True
+                            if not self.rtmp_url:
+                                self.mode = "jpeg"
+
+            if failed_proc is not None:
+                self._cleanup_ffmpeg_proc(failed_proc, failed_out, failed_err)
+            if write_error is not None:
+                scrubbed = scrub_colabone_live_secrets(str(write_error), self.rtmp_url)
+                _LOGGER.warning(
+                    "FFmpeg encode failed; falling back to JPEG: %s",
+                    scrubbed,
+                )
+                if self.rtmp_url:
+                    raise RuntimeError(f"RTMP 推流编码失败: {scrubbed}") from None
+            elif chunks and not self.rtmp_url:
+                return COLABONE_LIVE_FRAME_FMP4, b"".join(chunks)
+
         return COLABONE_LIVE_FRAME_VIDEO, self._encode_jpeg(frame)
 
 
@@ -1611,16 +1683,24 @@ def create_colabone_live_app(
         base_vis = getattr(app.state, "base_visual_engine", None)
         if base_vis is None:
             return
-        driving_vis = app.state.visual_engine
-        driving_enc = app.state.encoder
         base_enc = getattr(app.state, "base_encoder", None)
         was_hot_swapped = bool(getattr(app.state, "base_visual_hot_swapped", False))
 
+        # Atomically detach driving visual engine and encoder inside render_lock
+        # BEFORE invoking unload()/close() so no concurrent frame render uses them.
+        render_lock = _get_render_lock()
+        async with render_lock:
+            driving_vis = app.state.visual_engine
+            driving_enc = app.state.encoder
+            if driving_vis is not None and driving_vis is not base_vis:
+                app.state.visual_engine = None if (
+                    was_hot_swapped or getattr(base_vis, "is_disposed", False)
+                ) else base_vis
+            if isinstance(base_enc, ColabOneLiveVideoEncoder) and driving_enc is not base_enc:
+                app.state.encoder = base_enc
+
         # Unload PersonaLive first so VRAM is released BEFORE recreating/reloading base visual.
         if driving_vis is not None and driving_vis is not base_vis:
-            render_lock = _get_render_lock()
-            async with render_lock:
-                pass
             if callable(getattr(driving_vis, "unload", None)):
                 try:
                     await asyncio.to_thread(driving_vis.unload)
@@ -1657,12 +1737,13 @@ def create_colabone_live_app(
         except Exception:
             pass
 
-        app.state.visual_engine = restored_vis
-        app.state.base_visual_engine = None
-        app.state.base_visual_hot_swapped = False
-        if isinstance(base_enc, ColabOneLiveVideoEncoder):
-            app.state.encoder = base_enc
-            app.state.base_encoder = None
+        async with render_lock:
+            app.state.visual_engine = restored_vis
+            app.state.base_visual_engine = None
+            app.state.base_visual_hot_swapped = False
+            if isinstance(base_enc, ColabOneLiveVideoEncoder):
+                app.state.encoder = base_enc
+                app.state.base_encoder = None
 
     async def _restore_base_visual_engine() -> None:
         async with _get_engine_op_lock():
@@ -1683,7 +1764,7 @@ def create_colabone_live_app(
                     async with render_lock:
                         cur_visual = app.state.visual_engine
                         cur_encoder = app.state.encoder
-                        if getattr(cur_visual, "is_disposed", False):
+                        if cur_visual is None or getattr(cur_visual, "is_disposed", False):
                             vframe = None
                             prev_action = ""
                             after_action = ""
@@ -1877,6 +1958,12 @@ def create_colabone_live_app(
     @app.get(health_path)
     def live_health() -> dict[str, Any]:
         snap = director.snapshot()
+        cur_vis = getattr(app.state, "visual_engine", None)
+        vis_engine_id = (
+            cur_vis.engine_id
+            if cur_vis is not None
+            else str(getattr(app.state.config, "visual_engine", ""))
+        )
         return {
             "ok": True,
             "service": "colabone_live",
@@ -1885,7 +1972,7 @@ def create_colabone_live_app(
             "director_mode": snap["director_mode"],
             "mic_mode": snap["mic_mode"],
             "active_clients": active_clients["count"],
-            "visual_engine": app.state.visual_engine.engine_id,
+            "visual_engine": vis_engine_id,
             "tts_engine": app.state.tts_engine.engine_id,
         }
 
@@ -1967,7 +2054,7 @@ def create_colabone_live_app(
                             return False
                         cur_visual = app.state.visual_engine
                         cur_encoder = app.state.encoder
-                        if getattr(cur_visual, "is_disposed", False):
+                        if cur_visual is None or getattr(cur_visual, "is_disposed", False):
                             return True
                         vframe = await asyncio.to_thread(
                             cur_visual.render_frame,
@@ -2663,13 +2750,20 @@ def create_colabone_live_app(
                                         app.state.encoder, "enable_ffmpeg", False
                                     ),
                                 )
+                                render_lock = _get_render_lock()
                                 if (
                                     old_driving_to_unload is not None
                                     or base_vis_for_hotswap is not None
+                                    or prev_enc_to_close is not None
                                 ):
-                                    render_lock = _get_render_lock()
                                     async with render_lock:
-                                        pass
+                                        if (
+                                            old_driving_to_unload is not None
+                                            or base_vis_for_hotswap is not None
+                                        ):
+                                            app.state.visual_engine = None
+                                        if prev_enc_to_close is not None:
+                                            app.state.encoder = new_drive_encoder
                                     if old_driving_to_unload is not None and callable(
                                         getattr(old_driving_to_unload, "unload", None)
                                     ):
@@ -2699,12 +2793,49 @@ def create_colabone_live_app(
                                         except Exception:
                                             pass
 
-                                # Load PersonaLive now that VRAM is free (for hot-swap)
-                                if not drive_engine.is_loaded:
-                                    await asyncio.to_thread(drive_engine.load)
+                                # Load PersonaLive now that VRAM is free (for hot-swap),
+                                # restoring base visual engine cleanly on failure.
+                                try:
+                                    if not drive_engine.is_loaded:
+                                        await asyncio.to_thread(drive_engine.load)
+                                except Exception as exc:
+                                    if callable(getattr(drive_engine, "unload", None)):
+                                        try:
+                                            await asyncio.to_thread(drive_engine.unload)
+                                        except Exception:
+                                            pass
+                                    if isinstance(
+                                        new_drive_encoder, ColabOneLiveVideoEncoder
+                                    ):
+                                        async with render_lock:
+                                            if app.state.encoder is new_drive_encoder:
+                                                base_enc_ref = getattr(
+                                                    app.state, "base_encoder", None
+                                                )
+                                                if isinstance(
+                                                    base_enc_ref,
+                                                    ColabOneLiveVideoEncoder,
+                                                ):
+                                                    app.state.encoder = base_enc_ref
+                                        try:
+                                            await asyncio.to_thread(
+                                                new_drive_encoder.close
+                                            )
+                                        except Exception:
+                                            pass
+                                    await _restore_base_visual_engine_locked()
+                                    await _send_json_safe(
+                                        {
+                                            "type": "error",
+                                            "code": "driving_failed",
+                                            "detail": _scrub_text(str(exc)),
+                                        }
+                                    )
+                                    continue
 
-                                app.state.visual_engine = drive_engine
-                                app.state.encoder = new_drive_encoder
+                                async with render_lock:
+                                    app.state.visual_engine = drive_engine
+                                    app.state.encoder = new_drive_encoder
 
                                 director.set_action(safe_mid)
                                 director.set_state("PERFORMING")
@@ -2799,111 +2930,114 @@ def create_colabone_live_app(
                                 }
                             )
                             continue
-                        if director.state in ("THINKING", "SPEAKING"):
-                            barge_ev = director.trigger_barge_in(
-                                "trigger_action", next_state="IDLE"
-                            )
-                            app.state.tts_engine.abort(barge_ev["epoch"])
-                            await _broadcast_json(barge_ev)
-                        elif director.state == "LISTENING" or director.has_active_asr_tasks():
-                            director.cancel_asr_tasks(bump_epoch=True)
-                        if getattr(app.state, "base_visual_engine", None) is not None:
-                            await _restore_base_visual_engine()
-                        director.set_action(safe_aid)
-                        director.set_state("PERFORMING")
-                        if "loop" in payload and payload.get("loop") is not None:
-                            loop_flag = bool(payload.get("loop"))
-                        else:
-                            action_kind = None
-                            avatar_actions = (
-                                app.state.avatar.get("actions")
-                                if isinstance(app.state.avatar, dict)
-                                else None
-                            )
-                            if isinstance(avatar_actions, list):
-                                for act_item in avatar_actions:
-                                    if (
-                                        isinstance(act_item, dict)
-                                        and str(act_item.get("id") or "").strip()
-                                        == safe_aid
-                                    ):
-                                        action_kind = (
-                                            str(act_item.get("kind") or "")
-                                            .strip()
-                                            .lower()
-                                        )
-                                        break
-                            if action_kind is not None:
-                                loop_flag = action_kind == "loop"
+                        async with _get_engine_op_lock():
+                            if director.state in ("THINKING", "SPEAKING"):
+                                barge_ev = director.trigger_barge_in(
+                                    "trigger_action", next_state="IDLE"
+                                )
+                                app.state.tts_engine.abort(barge_ev["epoch"])
+                                await _broadcast_json(barge_ev)
+                            elif director.state == "LISTENING" or director.has_active_asr_tasks():
+                                director.cancel_asr_tasks(bump_epoch=True)
+                            if getattr(app.state, "base_visual_engine", None) is not None:
+                                await _restore_base_visual_engine_locked()
+                            director.set_action(safe_aid)
+                            director.set_state("PERFORMING")
+                            if "loop" in payload and payload.get("loop") is not None:
+                                loop_flag = bool(payload.get("loop"))
                             else:
-                                loop_flag = safe_aid.endswith("_loop")
-                        epoch = director.turn_epoch
-                        target_visual = app.state.visual_engine
-                        target_visual.set_action(safe_aid, loop=loop_flag)
-                        await _broadcast_json(
-                            {
-                                "type": "action",
-                                "action_id": safe_aid,
-                                "epoch": epoch,
-                                "state": director.state,
-                            }
-                        )
-                        pts = _now_pts_ms()
-                        render_lock = _get_render_lock()
-                        async with render_lock:
-                            cur_visual = app.state.visual_engine
-                            cur_encoder = app.state.encoder
+                                action_kind = None
+                                avatar_actions = (
+                                    app.state.avatar.get("actions")
+                                    if isinstance(app.state.avatar, dict)
+                                    else None
+                                )
+                                if isinstance(avatar_actions, list):
+                                    for act_item in avatar_actions:
+                                        if (
+                                            isinstance(act_item, dict)
+                                            and str(act_item.get("id") or "").strip()
+                                            == safe_aid
+                                        ):
+                                            action_kind = (
+                                                str(act_item.get("kind") or "")
+                                                .strip()
+                                                .lower()
+                                            )
+                                            break
+                                if action_kind is not None:
+                                    loop_flag = action_kind == "loop"
+                                else:
+                                    loop_flag = safe_aid.endswith("_loop")
+                            epoch = director.turn_epoch
+                            target_visual = app.state.visual_engine
+                            if target_visual is None:
+                                continue
+                            target_visual.set_action(safe_aid, loop=loop_flag)
+                            await _broadcast_json(
+                                {
+                                    "type": "action",
+                                    "action_id": safe_aid,
+                                    "epoch": epoch,
+                                    "state": director.state,
+                                }
+                            )
+                            pts = _now_pts_ms()
+                            render_lock = _get_render_lock()
+                            async with render_lock:
+                                cur_visual = app.state.visual_engine
+                                cur_encoder = app.state.encoder
+                                if (
+                                    cur_visual is not target_visual
+                                    or getattr(cur_visual, "is_disposed", False)
+                                    or director.turn_epoch != epoch
+                                    or director.state != "PERFORMING"
+                                ):
+                                    vframe = None
+                                    prev_action = ""
+                                    after_action = ""
+                                else:
+                                    prev_action = cur_visual.current_action
+                                    vframe = await asyncio.to_thread(
+                                        cur_visual.render_frame,
+                                        b"",
+                                        epoch=epoch,
+                                        pts_ms=pts,
+                                        state="PERFORMING",
+                                    )
+                                    after_action = cur_visual.current_action
                             if (
-                                cur_visual is not target_visual
-                                or getattr(cur_visual, "is_disposed", False)
+                                vframe is None
                                 or director.turn_epoch != epoch
                                 or director.state != "PERFORMING"
                             ):
-                                vframe = None
-                                prev_action = ""
-                                after_action = ""
-                            else:
-                                prev_action = cur_visual.current_action
-                                vframe = await asyncio.to_thread(
-                                    cur_visual.render_frame,
-                                    b"",
-                                    epoch=epoch,
-                                    pts_ms=pts,
-                                    state="PERFORMING",
-                                )
-                                after_action = cur_visual.current_action
-                        if (
-                            vframe is None
-                            or director.turn_epoch != epoch
-                            or director.state != "PERFORMING"
-                        ):
-                            continue
-                        ftype, encoded = await asyncio.to_thread(
-                            cur_encoder.encode_frame, vframe
-                        )
-                        if (
-                            director.turn_epoch != epoch
-                            or director.state != "PERFORMING"
-                        ):
-                            continue
-                        await _broadcast_bytes(
-                            pack_colabone_live_frame(ftype, epoch, pts, encoded)
-                        )
-                        if (
-                            prev_action != cur_visual.default_action
-                            and after_action == cur_visual.default_action
-                        ):
-                            if director.complete_performing_if_matching(
-                                epoch, cur_visual.default_action
+                                continue
+                            ftype, encoded = await asyncio.to_thread(
+                                cur_encoder.encode_frame, vframe
+                            )
+                            if (
+                                director.turn_epoch != epoch
+                                or director.state != "PERFORMING"
                             ):
-                                await _broadcast_json(
-                                    {
-                                        "type": "state",
-                                        "state": "IDLE",
-                                        "action_id": cur_visual.default_action,
-                                        "epoch": epoch,
-                                    }
-                                )
+                                continue
+                            await _broadcast_bytes(
+                                pack_colabone_live_frame(ftype, epoch, pts, encoded)
+                            )
+                            if (
+                                prev_action != cur_visual.default_action
+                                and after_action == cur_visual.default_action
+                            ):
+                                if director.complete_performing_if_matching(
+                                    epoch, cur_visual.default_action
+                                ):
+                                    await _broadcast_json(
+                                        {
+                                            "type": "state",
+                                            "state": "IDLE",
+                                            "action_id": cur_visual.default_action,
+                                            "epoch": epoch,
+                                        }
+                                    )
                     elif mtype in ("show_card", "set_card"):
                         pid = str(payload.get("product_id") or "").strip()
                         inline_card = (
@@ -3020,56 +3154,58 @@ def create_colabone_live_app(
                                         "visual_engine_obj"
                                     )
                                     if isinstance(new_vis, ColabOneVisualEngineBase):
-                                        for cand_vis in (
-                                            result.get("old_visual"),
-                                            app.state.visual_engine,
-                                            getattr(app.state, "base_visual_engine", None),
-                                        ):
-                                            if (
-                                                cand_vis is not None
-                                                and cand_vis is not new_vis
-                                                and not any(
-                                                    cand_vis is existing
-                                                    for existing in old_visuals_to_unload
-                                                )
+                                        render_lock = _get_render_lock()
+                                        async with render_lock:
+                                            for cand_vis in (
+                                                result.get("old_visual"),
+                                                app.state.visual_engine,
+                                                getattr(app.state, "base_visual_engine", None),
                                             ):
-                                                old_visuals_to_unload.append(cand_vis)
-                                        for cand_enc in (
-                                            app.state.encoder,
-                                            getattr(app.state, "base_encoder", None),
-                                        ):
-                                            if (
-                                                isinstance(
-                                                    cand_enc, ColabOneLiveVideoEncoder
-                                                )
-                                                and not any(
-                                                    cand_enc is existing
-                                                    for existing in old_encoders_to_close
-                                                )
+                                                if (
+                                                    cand_vis is not None
+                                                    and cand_vis is not new_vis
+                                                    and not any(
+                                                        cand_vis is existing
+                                                        for existing in old_visuals_to_unload
+                                                    )
+                                                ):
+                                                    old_visuals_to_unload.append(cand_vis)
+                                            for cand_enc in (
+                                                app.state.encoder,
+                                                getattr(app.state, "base_encoder", None),
                                             ):
-                                                old_encoders_to_close.append(cand_enc)
-                                        app.state.visual_engine = new_vis
-                                        app.state.base_visual_engine = None
-                                        app.state.base_visual_hot_swapped = False
-                                        app.state.base_encoder = None
-                                        new_enc = result.get("encoder")
-                                        if isinstance(new_enc, ColabOneLiveVideoEncoder):
-                                            app.state.encoder = new_enc
-                                        else:
-                                            app.state.encoder = ColabOneLiveVideoEncoder(
-                                                width=new_vis.width,
-                                                height=new_vis.height,
-                                                fps=app.state.config.target_fps,
-                                                mode=app.state.encoder.mode,
-                                                rtmp_url=(
-                                                    app.state.config.rtmp_url
-                                                    if app.state.config.enable_rtmp
-                                                    else ""
-                                                ),
-                                                enable_ffmpeg=getattr(
-                                                    app.state.encoder, "enable_ffmpeg", False
-                                                ),
-                                            )
+                                                if (
+                                                    isinstance(
+                                                        cand_enc, ColabOneLiveVideoEncoder
+                                                    )
+                                                    and not any(
+                                                        cand_enc is existing
+                                                        for existing in old_encoders_to_close
+                                                    )
+                                                ):
+                                                    old_encoders_to_close.append(cand_enc)
+                                            app.state.visual_engine = new_vis
+                                            app.state.base_visual_engine = None
+                                            app.state.base_visual_hot_swapped = False
+                                            app.state.base_encoder = None
+                                            new_enc = result.get("encoder")
+                                            if isinstance(new_enc, ColabOneLiveVideoEncoder):
+                                                app.state.encoder = new_enc
+                                            else:
+                                                app.state.encoder = ColabOneLiveVideoEncoder(
+                                                    width=new_vis.width,
+                                                    height=new_vis.height,
+                                                    fps=app.state.config.target_fps,
+                                                    mode=app.state.encoder.mode,
+                                                    rtmp_url=(
+                                                        app.state.config.rtmp_url
+                                                        if app.state.config.enable_rtmp
+                                                        else ""
+                                                    ),
+                                                    enable_ffmpeg=getattr(
+                                                        app.state.encoder, "enable_ffmpeg", False
+                                                    ),
+                                                )
                                     new_tts = result.get("tts_engine") or result.get(
                                         "tts_engine_obj"
                                     )

@@ -11,6 +11,7 @@ import {
   Space as ASpace,
   Tag as ATag,
 } from "ant-design-vue";
+import ColabOnePrivacyText from "./ColabOnePrivacyText.vue";
 import ColabOneSkeleton from "./ColabOneSkeleton.vue";
 import {
   PhArrowSquareOut,
@@ -710,18 +711,22 @@ async function install(mode: "save" | "download" | "load" = "load") {
     }
     if (customName.value.trim()) payload.name = customName.value.trim();
     await colabOneCommand("hub.install", payload);
-    if (gen === fileGeneration && chosen.value === targetRepo) {
+    if (!isUnmounted) {
       emit("installed", mode);
     }
   } catch (e) {
-    if (gen === fileGeneration && chosen.value === targetRepo) {
+    if (!isUnmounted && gen === fileGeneration && chosen.value === targetRepo) {
       fileError.value = String(e);
     }
   } finally {
-    installing.value = false;
-    installingRepo.value = "";
+    if (!isUnmounted) {
+      installing.value = false;
+      installingRepo.value = "";
+    }
   }
 }
+
+let isUnmounted = false;
 
 function fitBadgeColor(fit: ColabOneRepoFitSummary): string {
   if (fit.status === "compatible") return "success";
@@ -734,6 +739,7 @@ function fitBadgeColor(fit: ColabOneRepoFitSummary): string {
 }
 
 onUnmounted(() => {
+  isUnmounted = true;
   ++searchGeneration;
   ++previewGeneration;
   ++fileGeneration;
@@ -844,9 +850,11 @@ onUnmounted(() => {
       v-if="error"
       type="error"
       show-icon
-      :message="tb(error)"
       role="alert"
     >
+      <template #message>
+        <ColabOnePrivacyText :text="tb(error)" />
+      </template>
       <template #action>
         <AButton size="small" @click="search()">{{ t("common.retry") }}</AButton>
       </template>

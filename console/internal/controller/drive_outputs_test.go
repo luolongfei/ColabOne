@@ -1212,3 +1212,195 @@ func TestDriveOutputsCanonicalMIMECorruptBackupRedirectRefusalAndSyncRaces(t *te
 		t.Fatalf("expected concurrently added output %s to be merged into final bucket, got %+v", addedID, finalBucket[addedID])
 	}
 }
+
+func TestDriveOutputsTaskIDSizePersistNegativeClampAndOnlineDeleteTrash(t *testing.T) {
+	// 1. TaskID extraction (capped to 120 runes), merge, emit in toOutputMap, and negative Size clamping.
+	longTask := strings.Repeat("任", 150)
+	rec := driveOutputRecordFromMap(map[string]any{
+		"id":        "aaaa1111bbbb2222cccc3333dddd4444",
+		"filename":  "clip.mp4",
+		"extension": "mp4",
+		"size":      -500,
+		"task_id":   longTask,
+	})
+	if rec == nil {
+		t.Fatal("expected valid drive output record")
+	}
+	if rec.Size != 0 {
+		t.Fatalf("negative size must clamp to 0, got %d", rec.Size)
+	}
+	if len([]rune(rec.TaskID)) != 120 {
+		t.Fatalf("expected task_id capped to 120 runes, got %d", len([]rune(rec.TaskID)))
+	}
+	outMap := rec.toOutputMap("drive", true)
+	if asString(outMap["task_id"]) != rec.TaskID {
+		t.Fatalf("toOutputMap missing task_id: %#v", outMap)
+	}
+	dst := &ColabOneDriveOutputRecord{ID: rec.ID, Extension: "mp4"}
+	if !mergeDriveOutputRecord(dst, rec) || dst.TaskID != rec.TaskID {
+		t.Fatalf("mergeDriveOutputRecord did not merge TaskID: %+v", dst)
+	}
+
+	// 2. loadDriveOutputs clamps negative Size < 0 to 0 and preserves TaskID.
+	h := newTestHarness(t, false)
+	oid := "dddd1111eeee2222ffff3333aaaa4444"
+	diskPayload := map[string]any{
+		"version": 1,
+		"accounts": map[string]any{
+			"sub:sub-task": map[string]any{
+				oid: map[string]any{
+					"id":        oid,
+					"filename":  "a.mp4",
+					"extension": "mp4",
+					"size":      -42,
+					"task_id":   "task-persisted-1",
+				},
+			},
+		},
+	}
+	raw, _ := json.Marshal(diskPayload)
+	if err := os.WriteFile(h.ctrl.driveOutputsPath(), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.ctrl.loadDriveOutputs()
+	h.ctrl.mu.Lock()
+	loaded := h.ctrl.driveOutputs["sub:sub-task"][oid]
+	h.ctrl.mu.Unlock()
+	if loaded == nil || loaded.Size != 0 || loaded.TaskID != "task-persisted-1" {
+		t.Fatalf("loadDriveOutputs expected Size=0 and TaskID preserved, got %+v", loaded)
+	}
+
+	// 3. readDriveOutputAssetChunk persists resolved Content-Range total size back into c.driveOutputs
+	//    when cached rec.Size <= 0, enabling subsequent chunk reads at offset > 0!
+	fullBytes := bytes.Repeat([]byte("A"), colabOneDriveAssetChunkBytes+128)
+	var trashMu sync.Mutex
+	var trashedIDs []string
+	trashFail := false
+	driveSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/files/") {
+			fid := strings.TrimPrefix(r.URL.Path, "/files/")
+			trashMu.Lock()
+			fail := trashFail
+			if !fail {
+				trashedIDs = append(trashedIDs, fid)
+			}
+			trashMu.Unlock()
+			if fail {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":"` + fid + `","trashed":true}`))
+			return
+		}
+		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/files/fid-zero-size") {
+			rng := r.Header.Get("Range")
+			start := 0
+			end := colabOneDriveAssetChunkBytes - 1
+			_, _ = fmt.Sscanf(rng, "bytes=%d-%d", &start, &end)
+			if end >= len(fullBytes) {
+				end = len(fullBytes) - 1
+			}
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(fullBytes)))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(fullBytes[start : end+1])
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer driveSrv.Close()
+
+	h.ctrl.driveAPIBaseURL = driveSrv.URL
+	h.auth.driveScope = true
+	h.auth.requiresQuota = false
+	_ = h.vault.Set("colab", map[string]any{"token": "tok-sz", "refresh_token": "rt-sz"})
+	_ = h.vault.Set("google_profile", map[string]any{"sub": "sub-task", "email": "task@example.com"})
+	h.ctrl.mu.Lock()
+	h.ctrl.driveOutputs["sub:sub-task"][oid] = &ColabOneDriveOutputRecord{
+		ID:            oid,
+		Kind:          "video",
+		Filename:      "a.mp4",
+		Extension:     "mp4",
+		Mime:          "video/mp4",
+		Size:          0,
+		DriveSynced:   true,
+		DriveExported: true,
+		DriveFileID:   "fid-zero-size",
+	}
+	h.ctrl.mu.Unlock()
+
+	if _, err := h.ctrl.readDriveOutputAssetChunk(context.Background(), oid, 0); err != nil {
+		t.Fatalf("chunk 0 failed: %v", err)
+	}
+	cachedAfter := h.ctrl.driveOutputRecordCopy(oid)
+	if cachedAfter == nil || cachedAfter.Size != int64(len(fullBytes)) {
+		t.Fatalf("expected resolved size %d persisted back to driveOutputs, got %+v", len(fullBytes), cachedAfter)
+	}
+	chunk1, err := h.ctrl.readDriveOutputAssetChunk(context.Background(), oid, colabOneDriveAssetChunkBytes)
+	if err != nil {
+		t.Fatalf("chunk 1 after size persistence failed: %v", err)
+	}
+	decoded1, _ := base64.StdEncoding.DecodeString(asString(chunk1["data"]))
+	if len(decoded1) != 128 {
+		t.Fatalf("expected 128 bytes in chunk 1, got %d", len(decoded1))
+	}
+
+	// 4. Host online comfyui.output.delete trashes exported DriveFileID via Drive API v3;
+	//    if Drive API fails, keeps the exported record (clearing workspace links) to avoid orphaned resurrection.
+	seedTestSession(h.vault, "ep-del", "L4", true)
+	h.ctrl.Update(map[string]any{
+		"runtime":       map[string]any{"state": "ready", "id": "ep-del"},
+		"comfy_outputs": []any{map[string]any{"id": oid, "extension": "mp4"}},
+	})
+	h.provider.rpcFn = func(ctx context.Context, method, path string, body any, opts ColabOneRPCOptions) (any, error) {
+		if method == "DELETE" && path == "comfyui/outputs/"+oid {
+			return map[string]any{"ok": true}, nil
+		}
+		if path == "snapshot" {
+			return map[string]any{
+				"runtime":       map[string]any{"state": "ready", "id": "ep-del", "protocol": 7, "tasks": []any{}},
+				"models":        []any{},
+				"workflows":     []any{},
+				"comfy_outputs": []any{},
+			}, nil
+		}
+		return map[string]any{"ok": true}, nil
+	}
+
+	// 4a. Drive API trash failure keeps exported record with workspace links cleared.
+	h.ctrl.mu.Lock()
+	h.ctrl.driveOutputs["sub:sub-task"][oid].DriveWorkspaceFileID = "fid-ws-old"
+	h.ctrl.mu.Unlock()
+	trashMu.Lock()
+	trashFail = true
+	trashMu.Unlock()
+	if _, err := h.ctrl.Command(context.Background(), "comfyui.output.delete", map[string]any{"id": oid}); err != nil {
+		t.Fatalf("online delete expected nil err when remote deleted & Drive trash warned, got %v", err)
+	}
+	kept := h.ctrl.driveOutputRecordCopy(oid)
+	if kept == nil || kept.DriveFileID != "fid-zero-size" || kept.DriveWorkspaceFileID != "" {
+		t.Fatalf("expected exported Drive record preserved with workspace link cleared on trash failure, got %+v", kept)
+	}
+
+	// 4b. Drive API trash success trashes DriveFileID and removes local Drive record.
+	h.ctrl.Update(map[string]any{
+		"runtime":       map[string]any{"state": "ready", "id": "ep-del"},
+		"comfy_outputs": []any{map[string]any{"id": oid, "extension": "mp4"}},
+	})
+	trashMu.Lock()
+	trashFail = false
+	trashedIDs = nil
+	trashMu.Unlock()
+	if _, err := h.ctrl.Command(context.Background(), "comfyui.output.delete", map[string]any{"id": oid}); err != nil {
+		t.Fatalf("online delete with Drive trash failed: %v", err)
+	}
+	trashMu.Lock()
+	gotTrashed := append([]string(nil), trashedIDs...)
+	trashMu.Unlock()
+	if len(gotTrashed) != 1 || gotTrashed[0] != "fid-zero-size" {
+		t.Fatalf("expected DriveFileID fid-zero-size trashed during online delete, got %v", gotTrashed)
+	}
+	if h.ctrl.driveOutputRecordCopy(oid) != nil {
+		t.Fatalf("expected local Drive record removed after successful online delete + Drive trash")
+	}
+}

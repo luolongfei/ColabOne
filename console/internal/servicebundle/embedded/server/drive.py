@@ -21,6 +21,7 @@ import subprocess
 import threading
 import time
 import uuid
+import weakref
 import zipfile
 from http.cookiejar import DefaultCookiePolicy
 from pathlib import Path, PurePosixPath
@@ -29,11 +30,41 @@ from urllib.parse import quote as _url_quote
 import requests
 
 
+_SENSITIVE_RCLONE_ENV_KEYS = frozenset(
+    {
+        "COLABONE_REMOTE_CONFIG",
+        "HF_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "HUGGINGFACE_HUB_TOKEN",
+        "HF_API_TOKEN",
+        "OPENAI_API_KEY",
+        "TUNNEL_TOKEN",
+    }
+)
+
+
+def _sanitized_rclone_env() -> dict[str, str]:
+    return {
+        k: v
+        for k, v in os.environ.items()
+        if k not in _SENSITIVE_RCLONE_ENV_KEYS
+        and not k.startswith("TUNNEL_")
+        and not k.startswith("RCLONE_")
+    }
+
+
 def _create_http_session() -> requests.Session:
     session = requests.Session()
     session.trust_env = False
     session.cookies.set_policy(DefaultCookiePolicy(allowed_domains=[]))
     return session
+
+
+def _close_http_session(session: requests.Session) -> None:
+    try:
+        session.close()
+    except Exception:
+        pass
 
 COLABONE_DRIVE_REMOTE = "colabone_gdrive"
 COLABONE_DRIVE_FOLDER = "ColabOne_Drive"
@@ -44,6 +75,8 @@ _QUOTA_PROJECT_LINE_RE = re.compile(
     r"^\s*#\s*colabone_quota_project\s*=\s*([a-z][a-z0-9-]{4,28}[a-z0-9])\s*$"
 )
 _EXPORT_EXT_RE = re.compile(r"^[a-z0-9]{1,10}$")
+_WORKFLOW_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,80}$", re.ASCII)
+_COMFY_OUTPUT_ID_RE = re.compile(r"^[a-f0-9]{32}$", re.ASCII)
 _DRIVE_FILE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{4,256}$")
 _LIVE_AVATAR_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$", re.ASCII)
 _FORBIDDEN_EXPORT_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f]+')
@@ -271,7 +304,9 @@ def stage_rclone_config(stage_path: Path, data_root: Path) -> Path | None:
     return target
 
 
-def ensure_rclone_binary(root: Path, catalog: Path, http=None) -> Path:
+def ensure_rclone_binary(
+    root: Path, catalog: Path, http=None, *, http_factory=None
+) -> Path:
     """Return system rclone or download and SHA-256-verify the pinned release."""
     existing = shutil.which("rclone")
     if existing:
@@ -289,11 +324,17 @@ def ensure_rclone_binary(root: Path, catalog: Path, http=None) -> Path:
         raise RuntimeError("rclone 自动安装仅支持远端 Linux 实例")
     expected = manifest["sha256"][arch]
     bin_dir = root / "bin"
+    if bin_dir.is_symlink():
+        raise ValueError("rclone 目录不能是符号链接")
     bin_dir.mkdir(parents=True, exist_ok=True)
     binary = bin_dir / f"rclone-{tag}"
+    if binary.is_symlink():
+        raise ValueError("rclone 二进制文件不能是符号链接")
     if binary.is_file():
         return binary
     with _RCLONE_INSTALL_LOCK:
+        if binary.is_symlink():
+            raise ValueError("rclone 二进制文件不能是符号链接")
         if binary.is_file():
             return binary
         archive_name = f"rclone-{tag}-linux-{arch}.zip"
@@ -304,8 +345,14 @@ def ensure_rclone_binary(root: Path, catalog: Path, http=None) -> Path:
             f"https://github.com/rclone/rclone/releases/download/{tag}/{archive_name}",
             f"https://downloads.rclone.org/{tag}/{archive_name}",
         )
-        own_session = http is None
-        session = http or _create_http_session()
+        own_session = False
+        if http is not None:
+            session = http
+        elif callable(http_factory):
+            session = http_factory()
+        else:
+            session = _create_http_session()
+            own_session = True
         try:
             downloaded = False
             for url in urls:
@@ -459,7 +506,10 @@ class ColabOneDrive:
         self.http = http
         self._http_local = threading.local()
         self._http_sessions_lock = threading.Lock()
-        self._http_sessions: list[requests.Session] = []
+        self._http_sessions: weakref.WeakSet[requests.Session] = weakref.WeakSet()
+        self._http_finalizers: weakref.WeakKeyDictionary[
+            requests.Session, weakref.finalize
+        ] = weakref.WeakKeyDictionary()
         self.lock = threading.RLock()
         self._mount_lock = threading.Lock()
         self.mode = "disabled"  # "disabled" | "colab_drivefs" | "mount" | "rclone_sync"
@@ -475,20 +525,31 @@ class ColabOneDrive:
         if session is None:
             session = _create_http_session()
             self._http_local.session = session
+            fin: weakref.finalize | None = None
+            try:
+                fin = weakref.finalize(
+                    threading.current_thread(), _close_http_session, session
+                )
+            except TypeError:
+                fin = None
             with self._http_sessions_lock:
-                self._http_sessions.append(session)
+                self._http_sessions.add(session)
+                if fin is not None:
+                    self._http_finalizers[session] = fin
         return session
 
     def close_http_sessions(self) -> None:
         with self._http_sessions_lock:
             sessions = list(self._http_sessions)
+            finalizers = [self._http_finalizers.pop(s, None) for s in sessions]
             self._http_sessions.clear()
+            self._http_finalizers.clear()
         self._http_local = threading.local()
+        for fin in finalizers:
+            if fin is not None:
+                fin.detach()
         for session in sessions:
-            try:
-                session.close()
-            except Exception:
-                pass
+            _close_http_session(session)
 
     def _has_rclone_config(self) -> bool:
         try:
@@ -657,12 +718,15 @@ class ColabOneDrive:
                 self.mode = "disabled"
             raise RuntimeError("未检测到云盘凭据配置；请确认已登录 Google 账户")
 
-        binary = ensure_rclone_binary(self.root, self.catalog, self._http_session())
+        binary = ensure_rclone_binary(
+            self.root, self.catalog, http_factory=self._http_session
+        )
         try:
             mkdir_res = subprocess.run(
                 self._rclone_cmd(binary, "mkdir", COLABONE_DRIVE_SPEC),
                 check=False,
                 timeout=25,
+                env=_sanitized_rclone_env(),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
@@ -730,6 +794,7 @@ class ColabOneDrive:
                             stdin=subprocess.DEVNULL,
                             stdout=log_out,
                             stderr=log_out,
+                            env=_sanitized_rclone_env(),
                             start_new_session=True,
                         )
                     with self.lock:
@@ -846,7 +911,9 @@ class ColabOneDrive:
         if mode == "colab_drivefs":
             return self._pull_drivefs_workspace(target_dir)
         try:
-            binary = ensure_rclone_binary(self.root, self.catalog, self._http_session())
+            binary = ensure_rclone_binary(
+                self.root, self.catalog, http_factory=self._http_session
+            )
             res = subprocess.run(
                 self._rclone_cmd(
                     binary,
@@ -861,6 +928,7 @@ class ColabOneDrive:
                 ),
                 check=False,
                 timeout=120,
+                env=_sanitized_rclone_env(),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
@@ -887,7 +955,9 @@ class ColabOneDrive:
         if mode == "colab_drivefs":
             return self._push_drivefs_workspace()
         try:
-            binary = ensure_rclone_binary(self.root, self.catalog, self._http_session())
+            binary = ensure_rclone_binary(
+                self.root, self.catalog, http_factory=self._http_session
+            )
             res = subprocess.run(
                 self._rclone_cmd(
                     binary,
@@ -904,6 +974,7 @@ class ColabOneDrive:
                 ),
                 check=False,
                 timeout=180,
+                env=_sanitized_rclone_env(),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
@@ -929,6 +1000,8 @@ class ColabOneDrive:
         return "not found" in err_low or "doesn't exist" in err_low
 
     def remove_remote_workflow(self, workflow_id: str) -> bool:
+        if not isinstance(workflow_id, str) or not _WORKFLOW_ID_RE.fullmatch(workflow_id):
+            raise ValueError("工作流编号不合法")
         if not self.available():
             return False
         with self.lock:
@@ -936,13 +1009,30 @@ class ColabOneDrive:
         try:
             if mode == "colab_drivefs":
                 ws = self._drivefs_workspace_dir() / "workflows"
+                if ws.is_symlink():
+                    raise ValueError("云盘工作流目录不能是符号链接")
+                if not ws.is_dir():
+                    return True
                 src = ws / f"{workflow_id}.json"
-                if src.is_file() and not src.is_symlink():
-                    trash = ws / ".trash"
-                    trash.mkdir(parents=True, exist_ok=True)
-                    src.replace(trash / src.name)
+                if src.is_symlink():
+                    raise ValueError("云盘工作流文件不能是符号链接")
+                if src.exists():
+                    ws_resolved = ws.resolve()
+                    if src.resolve().parent != ws_resolved:
+                        raise ValueError("工作流文件路径越界")
+                    if src.is_file():
+                        trash = ws / ".trash"
+                        if trash.is_symlink():
+                            raise ValueError("云盘回收目录不能是符号链接")
+                        trash.mkdir(parents=True, exist_ok=True)
+                        dst = trash / src.name
+                        if dst.is_symlink():
+                            raise ValueError("云盘回收目标不能是符号链接")
+                        src.replace(dst)
                 return True
-            binary = ensure_rclone_binary(self.root, self.catalog, self._http_session())
+            binary = ensure_rclone_binary(
+                self.root, self.catalog, http_factory=self._http_session
+            )
             res = subprocess.run(
                 self._rclone_cmd(
                     binary,
@@ -952,16 +1042,24 @@ class ColabOneDrive:
                 ),
                 check=False,
                 timeout=20,
+                env=_sanitized_rclone_env(),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 text=True,
             )
             return self._rclone_trash_succeeded(res)
+        except ValueError:
+            raise
         except Exception:
             return False
 
     def remove_remote_comfy_output(self, identity: str, extension: str) -> bool:
+        if not isinstance(identity, str) or not _COMFY_OUTPUT_ID_RE.fullmatch(identity):
+            raise ValueError("作品编号不合法")
+        ext_clean = str(extension or "").lstrip(".").lower()
+        if not _EXPORT_EXT_RE.fullmatch(ext_clean):
+            raise ValueError("作品文件扩展名不合法")
         if not self.available():
             return False
         with self.lock:
@@ -969,16 +1067,36 @@ class ColabOneDrive:
         try:
             if mode == "colab_drivefs":
                 ws = self._drivefs_workspace_dir() / "comfyui-outputs"
+                if ws.is_symlink():
+                    raise ValueError("云盘作品目录不能是符号链接")
+                if not ws.is_dir():
+                    return True
+                ws_resolved = ws.resolve()
                 trash = ws / ".trash"
-                for ext in dict.fromkeys((extension, "json")):
+                if trash.is_symlink():
+                    raise ValueError("云盘回收目录不能是符号链接")
+                targets: list[Path] = []
+                for ext in dict.fromkeys((ext_clean, "json")):
                     src = ws / f"{identity}.{ext}"
-                    if src.is_file() and not src.is_symlink():
-                        trash.mkdir(parents=True, exist_ok=True)
-                        src.replace(trash / src.name)
+                    if src.is_symlink():
+                        raise ValueError("云盘作品文件不能是符号链接")
+                    if src.exists():
+                        if src.resolve().parent != ws_resolved:
+                            raise ValueError("作品文件路径越界")
+                        if src.is_file():
+                            targets.append(src)
+                for src in targets:
+                    trash.mkdir(parents=True, exist_ok=True)
+                    dst = trash / src.name
+                    if dst.is_symlink():
+                        raise ValueError("云盘回收目标不能是符号链接")
+                    src.replace(dst)
                 return True
-            binary = ensure_rclone_binary(self.root, self.catalog, self._http_session())
+            binary = ensure_rclone_binary(
+                self.root, self.catalog, http_factory=self._http_session
+            )
             all_ok = True
-            for ext in dict.fromkeys((extension, "json")):
+            for ext in dict.fromkeys((ext_clean, "json")):
                 res = subprocess.run(
                     self._rclone_cmd(
                         binary,
@@ -988,6 +1106,7 @@ class ColabOneDrive:
                     ),
                     check=False,
                     timeout=20,
+                    env=_sanitized_rclone_env(),
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.PIPE,
@@ -996,6 +1115,8 @@ class ColabOneDrive:
                 if not self._rclone_trash_succeeded(res):
                     all_ok = False
             return all_ok
+        except ValueError:
+            raise
         except Exception:
             return False
 
@@ -1034,7 +1155,9 @@ class ColabOneDrive:
                             dst.unlink()
                     src.replace(dst)
                 return True
-            binary = ensure_rclone_binary(self.root, self.catalog, self._http_session())
+            binary = ensure_rclone_binary(
+                self.root, self.catalog, http_factory=self._http_session
+            )
             res = subprocess.run(
                 self._rclone_cmd(
                     binary,
@@ -1045,6 +1168,7 @@ class ColabOneDrive:
                 ),
                 check=False,
                 timeout=30,
+                env=_sanitized_rclone_env(),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
@@ -1076,6 +1200,7 @@ class ColabOneDrive:
                 self._rclone_cmd(binary, "lsjson", "--stat", "--hash", remote_path),
                 check=False,
                 timeout=20,
+                env=_sanitized_rclone_env(),
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
@@ -1222,7 +1347,9 @@ class ColabOneDrive:
                 self.error = err
             raise RuntimeError(err)
 
-        binary = ensure_rclone_binary(self.root, self.catalog, self._http_session())
+        binary = ensure_rclone_binary(
+            self.root, self.catalog, http_factory=self._http_session
+        )
         remote_dir = f"{COLABONE_DRIVE_SPEC}/{COLABONE_DRIVE_OUTPUTS_SUBDIR}"
         src_md5_cache: str | None = None
 
@@ -1300,6 +1427,7 @@ class ColabOneDrive:
                 ),
                 check=False,
                 timeout=210,
+                env=_sanitized_rclone_env(),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
@@ -1395,7 +1523,7 @@ class ColabOneDrive:
             tag = manifest.get("tag")
             if tag:
                 candidate = self.root / "bin" / f"rclone-{tag}"
-                if candidate.is_file():
+                if candidate.is_file() and not candidate.is_symlink():
                     return candidate
         except Exception:
             pass
@@ -1446,6 +1574,7 @@ class ColabOneDrive:
                         self._rclone_cmd(binary, "about", f"{COLABONE_DRIVE_REMOTE}:", "--json"),
                         check=False,
                         timeout=8,
+                        env=_sanitized_rclone_env(),
                         stdin=subprocess.DEVNULL,
                         capture_output=True,
                         text=True,

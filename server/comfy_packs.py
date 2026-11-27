@@ -67,7 +67,18 @@ COMFY_MODEL_SUBDIRS: tuple[str, ...] = (
 _COMFY_MODEL_SUBDIR_SET = frozenset(COMFY_MODEL_SUBDIRS)
 _COMFY_MODEL_EXTENSIONS: tuple[str, ...] = COMFY_MODEL_EXTENSIONS
 
-TORCH_SKIP_PACKAGES = frozenset({"torch", "torchvision", "torchaudio", "xformers"})
+TORCH_SKIP_PACKAGES = frozenset(
+    {
+        "torch",
+        "torchvision",
+        "torchaudio",
+        "xformers",
+        "triton",
+        "sageattention",
+        "sageattn3",
+        "flash-attn",
+    }
+)
 ALLOWED_NODE_PATCH_KINDS = frozenset({"wav2vec2_hidden_states_hook"})
 WAV2VEC2_PATCH_MARKER = "# COLABONE_WAV2VEC2_HOOK_PATCH"
 PACK_PATCH_VERSION = 2
@@ -79,6 +90,7 @@ SAGEATTN_REPO_URL = "https://github.com/thu-ml/SageAttention.git"
 SAGEATTN_COMMIT = "d1a57a546c3d395b1ffcbeecc66d81db76f3b4b5"
 _BLACKWELL_COMPUTE_CAPABILITIES = frozenset({(10, 0), (12, 0), (12, 1)})
 _SAGEATTN_WHEEL_LOCK = threading.RLock()
+_SAGEATTN_GEN_LOCK = threading.Lock()
 _SAGEATTN_FAILED_BUILDS: set[tuple[str, str]] = set()
 _SAGEATTN_INSTALL_GENERATION: int = 0
 _MAX_BUILD_LOG_BYTES = 16 * 1024 * 1024
@@ -105,7 +117,7 @@ def is_blackwell_cc(cc_major: int, cc_minor: int) -> bool:
 
 
 def _current_sageattn_install_generation() -> int:
-    with _SAGEATTN_WHEEL_LOCK:
+    with _SAGEATTN_GEN_LOCK:
         return _SAGEATTN_INSTALL_GENERATION
 _CACHE_KEY_UNSAFE_RE = re.compile(r"[^a-zA-Z0-9._-]+")
 _VERSION_PREFIX_RE = re.compile(r"^\s*v?(\d+(?:\.\d+)*)")
@@ -139,7 +151,8 @@ _LOCAL_ARCHIVE_SUFFIXES: tuple[str, ...] = (
 )
 _EGG_NAME_RE = re.compile(r"#egg=([A-Za-z0-9_.-]+)", re.IGNORECASE)
 _WHEEL_TORCH_RE = re.compile(
-    r"^(?:torch|torchvision|torchaudio|xformers)[-_][0-9]", re.IGNORECASE
+    r"^(?:torch|torchvision|torchaudio|xformers|triton|sageattention|sageattn3|flash[-_]attn)[-_][0-9]",
+    re.IGNORECASE,
 )
 
 _WAV2VEC2_HELPER_SNIPPET = f"""{WAV2VEC2_PATCH_MARKER}
@@ -285,11 +298,16 @@ def _validate_pip_packages(packages: list[Any]) -> list[str]:
         if not isinstance(item, str):
             raise ValueError(f"非法的 pip 依赖声明：{item!r}")
         pkg = item.strip()
+        pkg_lower = pkg.lower()
         if (
             not pkg
-            or pkg.startswith("-")
+            or pkg.startswith(("-", ".", "/", "\\"))
             or "://" in pkg
             or ".." in pkg
+            or "@" in pkg
+            or "/" in pkg
+            or "\\" in pkg
+            or pkg_lower.endswith(_LOCAL_ARCHIVE_SUFFIXES)
             or not _PIP_PKG_RE.fullmatch(pkg)
         ):
             raise ValueError(f"非法的 pip 依赖声明：{item!r}")
@@ -2446,7 +2464,8 @@ def ensure_sageattention_wheels_shared(
             )
 
         if installed_any:
-            _SAGEATTN_INSTALL_GENERATION += 1
+            with _SAGEATTN_GEN_LOCK:
+                _SAGEATTN_INSTALL_GENERATION += 1
 
     caps["installed_any"] = installed_any
     return caps
@@ -3289,35 +3308,61 @@ class ColabOneComfyPackManager:
                     )
 
             disk_changed = False
+            current_managed: dict[str, str] = dict(prev_state["nodes"])
+            completed = False
 
-            # Remove obsolete ColabOne-managed symlinks; never touch user-placed directories/files.
-            for old_name in sorted(prev_managed - set(desired.keys())):
-                try:
-                    safe_old = _validate_safe_node_name(old_name)
-                except ValueError:
-                    continue
-                old_link = custom_nodes_dir / safe_old
-                if old_link.is_symlink():
-                    old_link.unlink()
+            try:
+                # Remove obsolete ColabOne-managed symlinks; never touch user-placed directories/files.
+                for old_name in sorted(prev_managed - set(desired.keys())):
+                    try:
+                        safe_old = _validate_safe_node_name(old_name)
+                    except ValueError:
+                        continue
+                    old_link = custom_nodes_dir / safe_old
+                    if old_link.is_symlink():
+                        old_link.unlink()
+                        disk_changed = True
+                    current_managed.pop(old_name, None)
+
+                # Atomically activate symlinks for this pack's custom nodes.
+                for node_name, target_str in desired.items():
+                    link_path = custom_nodes_dir / node_name
+                    if link_path.is_symlink():
+                        try:
+                            if link_path.is_dir() and str(link_path.resolve()) == target_str:
+                                current_managed[node_name] = target_str
+                                continue
+                        except OSError:
+                            pass
+                    tmp_link = custom_nodes_dir / f".{node_name}.{uuid.uuid4().hex[:8]}.tmp"
+                    try:
+                        os.symlink(target_str, tmp_link)
+                        os.replace(tmp_link, link_path)
+                    finally:
+                        if tmp_link.is_symlink() or tmp_link.exists():
+                            tmp_link.unlink(missing_ok=True)
+                    current_managed[node_name] = target_str
                     disk_changed = True
 
-            # Atomically activate symlinks for this pack's custom nodes.
-            for node_name, target_str in desired.items():
-                link_path = custom_nodes_dir / node_name
-                if link_path.is_symlink():
-                    try:
-                        if link_path.is_dir() and str(link_path.resolve()) == target_str:
-                            continue
-                    except OSError:
-                        pass
-                tmp_link = custom_nodes_dir / f".{node_name}.{uuid.uuid4().hex[:8]}.tmp"
-                try:
-                    os.symlink(target_str, tmp_link)
-                    os.replace(tmp_link, link_path)
-                finally:
-                    if tmp_link.is_symlink() or tmp_link.exists():
-                        tmp_link.unlink(missing_ok=True)
-                disk_changed = True
+                completed = True
+            finally:
+                if not completed and disk_changed:
+                    manifest_path = self._managed_manifest_path()
+                    if not manifest_path.is_symlink():
+                        try:
+                            atomic_json(
+                                manifest_path,
+                                {
+                                    "pack_id": "",
+                                    "signature": "",
+                                    "nodes": current_managed,
+                                    "updated_at": time.time(),
+                                },
+                            )
+                        except OSError:
+                            pass
+                    self._active_pack_id = ""
+                    self.active_pack_signature = ""
 
             sig_changed = self.active_pack_signature != desired_sig
             if sig_changed or disk_changed or prev_state["pack_id"] != desired_pack_id:
