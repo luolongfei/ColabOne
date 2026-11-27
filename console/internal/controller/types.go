@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -190,6 +191,21 @@ func httpStatusCode(err error) int {
 	return 0
 }
 
+// isNonSyscallNetError reports whether err matches net.Error via a genuine
+// network error type rather than a bare syscall.Errno (which implements
+// net.Error in Go's stdlib even for local OS/filesystem errors such as
+// ERROR_ACCESS_DENIED or EACCES).
+func isNonSyscallNetError(err error) bool {
+	var netErr net.Error
+	if !errors.As(err, &netErr) {
+		return false
+	}
+	if _, isErrno := netErr.(syscall.Errno); isErrno {
+		return false
+	}
+	return true
+}
+
 func isNotFoundError(err error) bool {
 	if err == nil {
 		return false
@@ -204,8 +220,7 @@ func isNotFoundError(err error) bool {
 		return false
 	}
 	var urlErr *url.Error
-	var netErr net.Error
-	if errors.As(err, &urlErr) || errors.As(err, &netErr) {
+	if errors.As(err, &urlErr) || isNonSyscallNetError(err) {
 		return false
 	}
 	msg := err.Error()
@@ -250,7 +265,7 @@ func errTypeName(err error) string {
 	}
 	var opErr *net.OpError
 	var dnsErr *net.DNSError
-	if errors.As(err, &opErr) || errors.As(err, &dnsErr) || errors.As(err, &netErr) ||
+	if errors.As(err, &opErr) || errors.As(err, &dnsErr) || isNonSyscallNetError(err) ||
 		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return "ConnectionError"
 	}

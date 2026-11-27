@@ -7,12 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -3555,9 +3558,28 @@ func TestPollExternalMonitorGenerationGuardsAndRedactBeforeTruncate(t *testing.T
 }
 
 func TestErrTypeNameSanitizeNilMapAndNullBooleanOffset(t *testing.T) {
-	// 1. errTypeName(errors.New("x")) returns "Error" (never unexported "errorString").
+	// 1. errTypeName(errors.New("x")) returns "Error" (never unexported "errorString"),
+	//    and bare syscall.Errno / local PathError must NOT be misclassified as ConnectionError
+	//    (syscall.Errno implements net.Error in Go stdlib), while genuine net.OpError / url.Error still are.
 	if got := errTypeName(errors.New("x")); got != "Error" {
 		t.Fatalf("errTypeName(errors.New(\"x\")) = %q, want \"Error\"", got)
+	}
+	for _, localErr := range []error{
+		syscall.EACCES,
+		fmt.Errorf("colabone vault: SetSecurityInfo failed: %w", syscall.EACCES),
+		&os.PathError{Op: "open", Path: "vault.enc", Err: syscall.EACCES},
+	} {
+		if got := errTypeName(localErr); got == "ConnectionError" {
+			t.Fatalf("errTypeName(%T: %v) = %q, must not be ConnectionError", localErr, localErr, got)
+		}
+	}
+	for _, netErr := range []error{
+		&net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED},
+		&url.Error{Op: "Get", URL: "https://colab.research.google.com/tun/m/ccu-info", Err: errors.New("eof")},
+	} {
+		if got := errTypeName(netErr); got != "ConnectionError" {
+			t.Fatalf("errTypeName(%T: %v) = %q, want \"ConnectionError\"", netErr, netErr, got)
+		}
 	}
 
 	// 2. SanitizeJSONValue preserves typed-nil map[string]any(nil) as nil.
@@ -9344,23 +9366,30 @@ func TestControllerDeleteRuntimeOnlyWorkflowSaveRollbackTtsCacheAndCUCorruptHard
 	}
 	symID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	dirID := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	if err := os.Symlink(secretTarget, filepath.Join(cacheDir, symID+".wav")); err != nil {
+	symlinkCreated := false
+	if err := os.Symlink(secretTarget, filepath.Join(cacheDir, symID+".wav")); err == nil {
+		symlinkCreated = true
+	} else if runtime.GOOS != "windows" {
 		t.Fatal(err)
 	}
 	if err := os.Mkdir(filepath.Join(cacheDir, dirID+".wav"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	idx := newEmptyLocalTtsPreviewIndex()
-	idx.ByPreviewID[symID] = &colabOneLocalTtsPreviewEntry{PreviewID: symID, Size: 7}
+	if symlinkCreated {
+		idx.ByPreviewID[symID] = &colabOneLocalTtsPreviewEntry{PreviewID: symID, Size: 7}
+	}
 	idx.ByPreviewID[dirID] = &colabOneLocalTtsPreviewEntry{PreviewID: dirID, Size: 7}
-	if hTTS.ctrl.hasValidLocalPreviewFileLocked(idx, symID) {
+	if symlinkCreated && hTTS.ctrl.hasValidLocalPreviewFileLocked(idx, symID) {
 		t.Fatal("hasValidLocalPreviewFileLocked must reject symlink")
 	}
 	if hTTS.ctrl.hasValidLocalPreviewFileLocked(idx, dirID) {
 		t.Fatal("hasValidLocalPreviewFileLocked must reject directory")
 	}
-	if _, ok := hTTS.ctrl.readLocalTtsPreviewEntryLocked(idx, symID); ok {
-		t.Fatal("readLocalTtsPreviewEntryLocked must reject symlink")
+	if symlinkCreated {
+		if _, ok := hTTS.ctrl.readLocalTtsPreviewEntryLocked(idx, symID); ok {
+			t.Fatal("readLocalTtsPreviewEntryLocked must reject symlink")
+		}
 	}
 	if _, ok := hTTS.ctrl.readLocalTtsPreviewEntryLocked(idx, dirID); ok {
 		t.Fatal("readLocalTtsPreviewEntryLocked must reject directory")

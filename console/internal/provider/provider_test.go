@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -3132,6 +3133,14 @@ func TestIsTransportErrorRetryReconciliationAndReleasePolling(t *testing.T) {
 	}
 	if isNetworkOrTransportError(errors.Join(context.Canceled, transientAuthErr)) {
 		t.Fatalf("expected context.Canceled to take precedence over IsTransportError()")
+	}
+	// Bare syscall.Errno (e.g. local vault/filesystem permission error) implements net.Error in Go stdlib
+	// and must NOT be misclassified as a retryable network transport error, whereas real net.OpError/url.Error must be.
+	if isNetworkOrTransportError(syscall.EACCES) || isNetworkOrTransportError(fmt.Errorf("vault save: %w", syscall.EACCES)) || isNetworkOrTransportError(&os.PathError{Op: "open", Path: "vault.enc", Err: syscall.EACCES}) {
+		t.Fatalf("expected local syscall.Errno / os.PathError NOT to be classified as network/transport error")
+	}
+	if !isNetworkOrTransportError(&net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}) {
+		t.Fatalf("expected *net.OpError to be classified as network/transport error")
 	}
 
 	// 2. assignRuntime retries and reconciles via GetAssignment on intermediate IsTransportError().

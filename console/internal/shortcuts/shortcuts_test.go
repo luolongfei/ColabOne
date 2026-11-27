@@ -1233,9 +1233,12 @@ func TestWriteWindowsLnkUsesWinPowerShellExecutable(t *testing.T) {
 		t.Fatalf("writeWindowsLnk executed %q, want %q", calledCmd, want)
 	}
 	if runtime.GOOS == "windows" {
-		wantWin := filepath.Join(`C:\CustomWindowsRoot`, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
-		if calledCmd != wantWin {
-			t.Fatalf("Windows writeWindowsLnk executed %q, want %q", calledCmd, wantWin)
+		untrusted := filepath.Join(`C:\CustomWindowsRoot`, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+		if strings.EqualFold(calledCmd, untrusted) {
+			t.Fatalf("Windows writeWindowsLnk must ignore untrusted SystemRoot override, got %q", calledCmd)
+		}
+		if !filepath.IsAbs(calledCmd) || !strings.HasSuffix(strings.ToLower(calledCmd), strings.ToLower(filepath.Join("WindowsPowerShell", "v1.0", "powershell.exe"))) {
+			t.Fatalf("Windows writeWindowsLnk executed %q, want absolute system WindowsPowerShell executable", calledCmd)
 		}
 	} else if calledCmd != "powershell.exe" {
 		t.Fatalf("non-Windows winPowerShellExecutable = %q, want powershell.exe", calledCmd)

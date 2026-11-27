@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -4396,9 +4397,16 @@ func isNetworkOrTransportError(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
 	}
+	var opErr *net.OpError
+	var dnsErr *net.DNSError
+	if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
+		return true
+	}
 	var netErr net.Error
 	if errors.As(err, &netErr) {
-		return true
+		if _, isErrno := netErr.(syscall.Errno); !isErrno {
+			return true
+		}
 	}
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {

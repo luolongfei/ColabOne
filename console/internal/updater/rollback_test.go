@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -736,6 +737,8 @@ func TestExtractArchiveRejectsSymlinkChainEscapeAndSymlinkOverwrite(t *testing.T
 	}
 
 	// 4. Legitimate internal macOS .app framework symlinks succeed cleanly.
+	// On Windows without elevated/Developer Mode symlink privilege, skip only
+	// when os.Symlink itself is unavailable.
 	validFramework := buildCustomTarGz(t, []struct {
 		hdr  tar.Header
 		body string
@@ -746,7 +749,12 @@ func TestExtractArchiveRejectsSymlinkChainEscapeAndSymlinkOverwrite(t *testing.T
 	})
 	validDir := t.TempDir()
 	if err := extractColabOneSignedArchive(bytes.NewReader(validFramework), validDir); err != nil {
-		t.Fatalf("expected valid internal framework symlinks to succeed, got: %v", err)
+		probeLink := filepath.Join(t.TempDir(), "probe-link")
+		if runtime.GOOS == "windows" && os.Symlink("A", probeLink) != nil {
+			t.Logf("skipping internal framework symlink extraction assertion on Windows without symlink privilege: %v", err)
+		} else {
+			t.Fatalf("expected valid internal framework symlinks to succeed, got: %v", err)
+		}
 	}
 
 	// 5. Cross-platform Readlink normalization allows Windows relative backslashes while rejecting drive/UNC/absolute targets.
