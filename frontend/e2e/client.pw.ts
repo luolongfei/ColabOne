@@ -8805,6 +8805,35 @@ test("privacy mask allows unrestricted pasting and editing across all domain and
   await page.mouse.move(10, 10);
   await originInput.blur();
   expect(await originInput.inputValue()).not.toContain("console.pasted.acme.dev");
+
+  // 4. Inner <input> inside affix-wrapped inputs & InputNumber must have 0px border-radius
+  //    so the blinking text caret at x=0 is never clipped top/bottom by container corner radii (both light & dark).
+  const passcodeInput = page.locator("#settings-web-console-passcode");
+  const portInput = page.locator("#settings-web-console-port");
+  const assertCleanInnerInputs = async () => {
+    await passcodeInput.click();
+    await expect(passcodeInput).toBeFocused();
+    for (const selector of ["#settings-web-console-passcode", "#settings-web-console-public-origin"]) {
+      const styles = await page.locator(selector).evaluate((el) => {
+        const cs = window.getComputedStyle(el);
+        return {
+          borderRadius: cs.borderRadius,
+          backgroundColor: cs.backgroundColor,
+          boxShadow: cs.boxShadow,
+        };
+      });
+      expect(styles.borderRadius).toBe("0px");
+      expect(styles.boxShadow).toBe("none");
+      expect(styles.backgroundColor).toBe("rgba(0, 0, 0, 0)");
+    }
+    const portRadius = await portInput.evaluate((el) => window.getComputedStyle(el).borderRadius);
+    expect(portRadius).toBe("0px");
+  };
+  await assertCleanInnerInputs();
+  // Verify dark mode :focus rule never bleeds background or border-radius onto inner affix <input>.
+  await page.evaluate(() => document.documentElement.setAttribute("data-theme", "dark"));
+  await assertCleanInnerInputs();
+  await page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"));
 });
 
 test("settings page customizes GPU allocation max attempts with 20 default and 1-100 clamping", async ({

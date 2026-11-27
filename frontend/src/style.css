@@ -493,6 +493,13 @@ samp {
     box-shadow 0.16s ease;
 }
 
+.ant-input-sm,
+.ant-input-affix-wrapper-sm,
+.ant-input-number-sm,
+.ant-select-sm:not(.ant-select-customize-input) .ant-select-selector {
+  border-radius: var(--co-radius-sm) !important;
+}
+
 .ant-input:focus,
 .ant-input-affix-wrapper-focused,
 .ant-input-number-focused,
@@ -509,11 +516,6 @@ samp {
   background: #181b22 !important;
 }
 
-.ant-input-affix-wrapper > input.ant-input {
-  background: transparent !important;
-  box-shadow: none !important;
-}
-
 .ant-input[disabled],
 .ant-input-affix-wrapper-disabled,
 .ant-input-affix-wrapper-disabled input,
@@ -521,6 +523,23 @@ samp {
   background: var(--co-subtle) !important;
   border-color: var(--co-border-secondary) !important;
   color: var(--co-muted) !important;
+}
+
+/* Inner <input> inside affix-wrapper / input-number must never inherit rounded
+ * container corners, borders, or focus backgrounds: a non-zero border-radius on
+ * a zero-padding inner <input> clips the top and bottom of the text caret at x=0. */
+.ant-input-affix-wrapper > input.ant-input,
+.ant-input-affix-wrapper > input.ant-input:focus,
+:root[data-theme="dark"] .ant-input-affix-wrapper > input.ant-input:focus,
+.ant-input-affix-wrapper-disabled > input.ant-input {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.ant-input-number .ant-input-number-input {
+  border-radius: 0 !important;
 }
 
 /* ColabOne Select dropdown popups — crisp bounds, smooth option contrast & clean ellipsis */
