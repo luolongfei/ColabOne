@@ -1120,17 +1120,18 @@ func (c *ColabOneController) validateMigrationCredentials(src *migration.ColabOn
 
 func (c *ColabOneController) validateMigrationSettings(src *migration.ColabOneMigrationSettingsData, hasProxyAfter bool) (map[string]any, error) {
 	next := map[string]any{
-		"gpu":                    COLABONE_DEFAULT_GPU,
-		"idle_minutes":           30,
-		"idle_countdown_seconds": 60,
-		"auto_drive":             true,
-		"download_threads":       16,
-		"assign_max_attempts":    COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS,
-		"assign_proxy_enabled":   false,
-		"locale":                 "",
-		"idle_policy":            3,
-		"rclone_drive_policy":    1,
-		"default_gpu_policy":     COLABONE_DEFAULT_GPU_POLICY_VERSION,
+		"gpu":                                COLABONE_DEFAULT_GPU,
+		"idle_minutes":                       30,
+		"idle_countdown_seconds":             60,
+		"auto_drive":                         true,
+		"download_threads":                   16,
+		"assign_max_attempts":                COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS,
+		"assign_proxy_enabled":               false,
+		"locale":                             "",
+		"idle_policy":                        3,
+		"rclone_drive_policy":                1,
+		"default_gpu_policy":                 COLABONE_DEFAULT_GPU_POLICY_VERSION,
+		"default_assign_max_attempts_policy": COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS_POLICY_VERSION,
 	}
 	if src == nil {
 		return next, nil
@@ -1153,6 +1154,10 @@ func (c *ColabOneController) validateMigrationSettings(src *migration.ColabOneMi
 			next["download_threads"] = v
 		}
 		if v, ok := asExactInt(raw["assign_max_attempts"]); ok && v >= COLABONE_MIN_ASSIGN_MAX_ATTEMPTS && v <= COLABONE_MAX_ASSIGN_MAX_ATTEMPTS {
+			srcPolicy, hasPolicy := asExactInt(raw["default_assign_max_attempts_policy"])
+			if (!hasPolicy || srcPolicy < COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS_POLICY_VERSION) && v == 20 {
+				v = COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS
+			}
 			next["assign_max_attempts"] = v
 		}
 		if v, ok := isStrictBool(raw["assign_proxy_enabled"]); ok {

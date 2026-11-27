@@ -19,6 +19,7 @@ import (
 
 	"github.com/luolongfei/ColabOne/console/internal/assignproxy"
 	"github.com/luolongfei/ColabOne/console/internal/colabclient"
+	"github.com/luolongfei/ColabOne/console/internal/controller"
 	"github.com/luolongfei/ColabOne/console/internal/provider"
 	"github.com/luolongfei/ColabOne/console/internal/vault"
 )
@@ -714,5 +715,18 @@ func TestSelfTestValidatesAllEmbeddedCatalogsAndRejectsInvalid(t *testing.T) {
 	// OS-level encrypted local vault round-trip (DPAPI/file-KEK + ACL/DACL + atomic replace).
 	if err := runColabOneSelfTest(); err != nil {
 		t.Fatalf("runColabOneSelfTest() failed: %v", err)
+	}
+}
+
+func TestWireDefaultAssignMaxAttemptsParity(t *testing.T) {
+	if controller.COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS != provider.COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS {
+		t.Fatalf(
+			"default assign_max_attempts mismatch: controller=%d provider=%d",
+			controller.COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS,
+			provider.COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS,
+		)
+	}
+	if controller.COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS != 30 {
+		t.Fatalf("expected COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS == 30, got %d", controller.COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS)
 	}
 }

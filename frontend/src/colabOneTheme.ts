@@ -15,7 +15,7 @@ export const COLABONE_UI_FONT_FAMILY =
 export const COLABONE_LOCALE_FONT_FAMILIES: Record<ColabOneLocale, string> = {
   "zh-CN": COLABONE_UI_FONT_FAMILY,
   "en-US":
-    '-apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif',
+    '-apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", "Sarasa UI SC", sans-serif',
   "zh-TW":
     '-apple-system, BlinkMacSystemFont, "PingFang TC", "Microsoft JhengHei UI", "Microsoft JhengHei", "Noto Sans TC", "Segoe UI", "Sarasa UI SC", sans-serif',
   "zh-HK":

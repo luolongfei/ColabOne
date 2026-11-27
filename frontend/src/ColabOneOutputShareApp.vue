@@ -116,6 +116,7 @@ let downloadGen = 0;
 const probeItemGen = new Map<string, number>();
 let manifestEpoch = 0;
 let unmounted = false;
+let headerResizeObserver: ResizeObserver | null = null;
 
 const preparedGroups = computed<PreparedGalleryGroup[]>(() => {
   const rawGroups = manifest.value?.groups ?? [];
@@ -539,6 +540,12 @@ onMounted(() => {
   );
   window.addEventListener("resize", updateToastOffset, { passive: true });
   updateToastOffset();
+  if (headerRef.value && typeof ResizeObserver !== "undefined") {
+    headerResizeObserver = new ResizeObserver(() => {
+      updateToastOffset();
+    });
+    headerResizeObserver.observe(headerRef.value);
+  }
   void loadManifest();
 });
 
@@ -556,6 +563,8 @@ onUnmounted(() => {
     handleAuthRequired,
   );
   window.removeEventListener("resize", updateToastOffset);
+  headerResizeObserver?.disconnect();
+  headerResizeObserver = null;
   if (!isColabOneOutputSharePath()) {
     colabOneOutputShareMode.value = false;
   }
@@ -755,22 +764,28 @@ onUnmounted(() => {
           class="co-gal-state-wrap"
           data-testid="output-share-empty-card"
         >
-          <AEmpty :description="t('outputShare.guestEmptyTitle')">
-            <template #image>
-              <div class="co-gal-state-emblem" aria-hidden="true">
-                <PhImages :size="30" weight="duotone" />
-              </div>
-            </template>
-            <p class="co-gal-state-desc">
-              {{ t("outputShare.guestEmptyDesc") }}
-            </p>
-          </AEmpty>
+          <div class="co-gal-state-card">
+            <AEmpty :description="t('outputShare.guestEmptyTitle')">
+              <template #image>
+                <div class="co-gal-state-emblem" aria-hidden="true">
+                  <PhImages :size="30" weight="duotone" />
+                </div>
+              </template>
+              <p class="co-gal-state-desc">
+                {{ t("outputShare.guestEmptyDesc") }}
+              </p>
+            </AEmpty>
+          </div>
         </section>
 
         <!-- Active Gallery Grid -->
         <template v-else>
           <p class="co-gal-readonly-hint">
-            {{ t("outputShare.guestReadonlyHint") }}
+            <span>{{ t("outputShare.guestReadonlyHint") }}</span>
+            <span v-if="expiryLabel" class="co-gal-mobile-expiry">
+              <PhClock :size="12" aria-hidden="true" />
+              <span>{{ expiryLabel }}</span>
+            </span>
           </p>
 
           <div class="co-gal-grid" data-testid="output-share-gallery-grid">
@@ -855,8 +870,10 @@ onUnmounted(() => {
                     <strong class="co-gal-card-title" :title="tb(group.title)">
                       {{ tb(group.title) }}
                     </strong>
+                  </div>
+
+                  <div v-if="group.inspectCount > 0" class="co-gal-card-tags">
                     <ATag
-                      v-if="group.inspectCount > 0"
                       color="orange"
                       :bordered="false"
                       class="co-gal-small-tag"
@@ -1283,6 +1300,9 @@ onUnmounted(() => {
   margin-inline-end: 0;
   font-size: 11.5px;
   line-height: 19px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  border-radius: var(--co-radius-pill);
 }
 
 .co-gal-expiry-pill {
@@ -1301,8 +1321,12 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
+.co-gal-header-actions :deep(.co-locale-trigger) {
+  height: 38px;
+}
+
 .co-gal-zip-all-btn {
-  height: 36px;
+  height: 38px;
   border-radius: 9999px;
   font-weight: 500;
 }
@@ -1359,8 +1383,26 @@ onUnmounted(() => {
 
 .co-gal-readonly-hint {
   margin: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
   font-size: 13px;
   color: var(--co-secondary-text);
+}
+
+.co-gal-mobile-expiry {
+  display: none;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--co-radius-pill);
+  border: 1px solid var(--co-border-secondary);
+  background: var(--co-surface);
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--co-muted);
+  white-space: nowrap;
 }
 
 /* Responsive Gallery Grid */
@@ -1630,11 +1672,20 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
+.co-gal-card-tags {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
 .co-gal-small-tag {
   margin-inline-end: 0;
   font-size: 11px;
   line-height: 18px;
+  white-space: nowrap;
   flex-shrink: 0;
+  border-radius: var(--co-radius-pill);
 }
 
 .co-gal-filename {
@@ -1731,6 +1782,11 @@ onUnmounted(() => {
   padding: 36px 0 48px;
 }
 
+.co-gal-state-wrap :deep(.ant-empty-image) {
+  height: auto;
+  margin-bottom: 12px;
+}
+
 .co-gal-state-card {
   width: 100%;
   max-width: 440px;
@@ -1792,7 +1848,11 @@ onUnmounted(() => {
 
 @media (max-width: 680px) {
   .co-gal-header-inner {
-    padding: 10px 14px;
+    padding: 9px 14px;
+    gap: 8px;
+  }
+
+  .co-gal-brand-group {
     gap: 8px;
   }
 
@@ -1802,13 +1862,26 @@ onUnmounted(() => {
     border-radius: 9px;
   }
 
+  .co-gal-title-row {
+    gap: 4px 6px;
+  }
+
   .co-gal-title {
     font-size: 15px;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .co-gal-zip-all-label,
   .co-gal-expiry-pill {
     display: none;
+  }
+
+  .co-gal-mobile-expiry {
+    display: inline-flex;
   }
 
   .co-gal-zip-all-btn {
@@ -1823,8 +1896,35 @@ onUnmounted(() => {
     height: 34px;
   }
 
+  .co-gal-header-actions :deep(.co-locale-trigger) {
+    height: 34px;
+  }
+
   .co-gal-main {
     padding: 16px 14px 32px;
+  }
+}
+
+@media (max-width: 480px) {
+  .co-gal-guest-tag {
+    display: none;
+  }
+}
+
+@media (max-width: 420px) {
+  .co-gal-zip-all-btn {
+    width: 32px;
+    min-width: 32px;
+    height: 32px;
+  }
+
+  .co-gal-icon-btn {
+    width: 32px;
+    height: 32px;
+  }
+
+  .co-gal-header-actions :deep(.co-locale-trigger) {
+    height: 32px;
   }
 }
 </style>

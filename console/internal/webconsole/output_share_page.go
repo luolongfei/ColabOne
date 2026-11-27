@@ -347,6 +347,7 @@ const colabOneOutputShareUnlockJS = `
   var submitBtn = document.getElementById("co-submit-btn");
   var alertBox = document.getElementById("co-alert");
   if (!form || !input || !challenge || !submitBtn || !alertBox) return;
+  form.noValidate = true;
 
   var msgEmpty = form.getAttribute("data-err-empty") || "";
   var msgNet = form.getAttribute("data-err-net") || "";

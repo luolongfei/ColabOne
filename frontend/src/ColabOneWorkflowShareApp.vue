@@ -80,6 +80,7 @@ const colabOneTheme = computed(() =>
 );
 
 const snapshot = shallowRef<ColabOneSnapshot>(createColabOneSnapshot());
+const hasSnapshot = ref(false);
 const capabilities = ref<ColabOneWorkflowShareCapabilities | null>(null);
 const initialLoading = ref(true);
 const checkingSession = ref(false);
@@ -490,6 +491,7 @@ function handleClearError() {
 }
 
 function openOutputsDrawer() {
+  if (connectionLost.value && !hasSnapshot.value) return;
   comfyPanelRef.value?.openOutputsDrawer();
 }
 
@@ -499,6 +501,7 @@ function markSessionExpired() {
   initialLoading.value = false;
   pollFailures.value = 0;
   snapshot.value = createColabOneSnapshot();
+  hasSnapshot.value = false;
   capabilities.value = null;
   colabOneWorkflowShareCapabilities.value = null;
   colabOneWorkflowShareId.value = "";
@@ -556,6 +559,7 @@ async function syncSnapshot() {
     }
     lastSnapshotRaw = raw;
     snapshot.value = next;
+    hasSnapshot.value = true;
     initialLoading.value = false;
     if (prevShareId && nextShareId && nextShareId !== prevShareId) {
       resetComfyDrawerState();
@@ -604,7 +608,7 @@ async function bootstrapShareSession(options?: { fromRecheck?: boolean }) {
     if (caps.share_id) {
       colabOneWorkflowShareId.value = caps.share_id;
     }
-    if (sessionExpired.value) {
+    if (sessionExpired.value || !hasSnapshot.value) {
       initialLoading.value = true;
     }
     sessionExpired.value = false;
@@ -659,6 +663,7 @@ async function recheckSessionStatus() {
   appliedSnapshotSeq = ++snapshotSeq;
   pollFailures.value = 0;
   snapshot.value = createColabOneSnapshot();
+  hasSnapshot.value = false;
   capabilities.value = null;
   colabOneWorkflowShareCapabilities.value = null;
   colabOneWorkflowShareId.value = "";
@@ -771,7 +776,11 @@ onUnmounted(() => {
             <AButton
               v-if="!sessionExpired"
               class="co-share-outputs-btn"
-              :class="{ 'is-running': hasGuestRunningTask }"
+              :class="{
+                'is-running': hasGuestRunningTask,
+                'is-compact-icon': !hasGuestRunningTask && outputsCount === 0,
+              }"
+              :disabled="connectionLost && !hasSnapshot"
               :aria-label="t('workflowShare.guestOutputsBtn')"
               data-testid="workflow-share-outputs-btn"
               @click="openOutputsDrawer"
@@ -931,6 +940,7 @@ onUnmounted(() => {
 
           <!-- Shared ComfyPanel (Workflow Cards + Parameter Drawer + Outputs Drawer) -->
           <ComfyPanel
+            v-if="!(connectionLost && !hasSnapshot)"
             :key="activeShareId || 'pending'"
             ref="comfyPanelRef"
             :state="snapshot"
@@ -1086,12 +1096,14 @@ onUnmounted(() => {
 .co-share-title-row {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 8px 10px;
   min-width: 0;
 }
 
 .co-share-title {
+  flex: 0 1 auto;
+  min-width: 0;
   margin: 0;
   font-size: 17px;
   font-weight: 700;
@@ -1186,6 +1198,10 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+}
+
+.co-share-header-actions :deep(.co-locale-trigger) {
+  height: 38px;
 }
 
 .co-share-outputs-btn {
@@ -1451,6 +1467,11 @@ onUnmounted(() => {
     border-radius: 9px;
   }
 
+  .co-share-title-row {
+    flex-wrap: wrap;
+    gap: 4px 8px;
+  }
+
   .co-share-title {
     font-size: 15px;
   }
@@ -1466,21 +1487,73 @@ onUnmounted(() => {
     height: 34px;
   }
 
+  .co-share-header-actions :deep(.co-locale-trigger) {
+    height: 34px;
+  }
+
   .co-share-main {
     padding: 16px 14px 32px;
     gap: 14px;
   }
 }
 
-@media (max-width: 440px) {
+@media (max-width: 560px) {
+  .co-share-banner {
+    flex-wrap: wrap;
+  }
+
+  .co-share-banner-copy {
+    flex: 1 1 calc(100% - 46px);
+  }
+
+  .co-share-banner-action {
+    margin-left: 46px;
+  }
+}
+
+@media (max-width: 520px) {
   .co-share-outputs-label {
     display: none;
   }
 
+  .co-share-outputs-btn {
+    padding-inline: 10px !important;
+  }
+
+  .co-share-outputs-btn.is-compact-icon {
+    width: 34px;
+    min-width: 34px;
+    padding-inline: 0 !important;
+    justify-content: center;
+    gap: 0;
+  }
+}
+
+@media (max-width: 440px) {
   .co-share-status-pill {
     height: 22px;
     padding: 0 8px;
     font-size: 11px;
+  }
+}
+
+@media (max-width: 420px) {
+  .co-share-outputs-btn {
+    height: 32px;
+  }
+
+  .co-share-outputs-btn.is-compact-icon {
+    width: 32px;
+    min-width: 32px;
+  }
+
+  .co-share-icon-btn {
+    width: 32px;
+    height: 32px;
+  }
+
+  .co-share-header-actions :deep(.co-locale-trigger) {
+    height: 32px;
   }
 }
 </style>

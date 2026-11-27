@@ -161,6 +161,8 @@ function tokenStyle(
 
 <style scoped>
 .co-code-highlighted {
+  box-sizing: border-box;
+  max-width: 100%;
   padding: 14px 16px;
   border: 1px solid var(--co-code-border);
   border-radius: var(--co-radius-md);
@@ -200,5 +202,12 @@ function tokenStyle(
 
 .co-code-highlighted ::selection {
   background: var(--co-code-selection);
+}
+
+@media (max-width: 680px) {
+  .co-code-highlighted {
+    padding: 12px;
+    font-size: 12px;
+  }
 }
 </style>

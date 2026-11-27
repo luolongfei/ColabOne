@@ -383,6 +383,7 @@ body::before {
 .co-pill {
   display: inline-flex;
   align-items: center;
+  max-width: 100%;
   padding: 5px 12px;
   margin-bottom: 22px;
   border-radius: 999px;
@@ -390,6 +391,7 @@ body::before {
   border: 1px solid var(--co-pill-border);
   font-size: 12px;
   font-weight: 500;
+  overflow-wrap: break-word;
   color: var(--co-secondary);
 }
 .co-status-badge {
@@ -411,17 +413,20 @@ body::before {
 }
 .co-title {
   margin: 0 0 10px;
+  max-width: 100%;
   font-size: 20px;
   font-weight: 650;
   line-height: 1.32;
   letter-spacing: -0.02em;
+  overflow-wrap: break-word;
   color: var(--co-text);
 }
 .co-desc {
   margin: 0 0 20px;
-  max-width: 340px;
+  max-width: min(340px, 100%);
   font-size: 14px;
   line-height: 1.65;
+  overflow-wrap: break-word;
   color: var(--co-secondary);
 }
 .co-hint {
@@ -432,13 +437,13 @@ body::before {
   border: 1px solid var(--co-border);
   font-size: 13px;
   line-height: 1.55;
+  overflow-wrap: break-word;
   color: var(--co-muted);
 }
 .co-footer {
   font-size: 12px;
   color: var(--co-muted);
   letter-spacing: 0.01em;
-  opacity: 0.8;
 }
 .co-switch-badge {
   width: 56px;
@@ -513,6 +518,14 @@ body::before {
   text-decoration: none;
   cursor: pointer;
   border: 1px solid transparent;
+  transition: background-color 0.16s ease, transform 0.12s ease, opacity 0.16s ease;
+}
+.co-btn:active {
+  transform: scale(0.988);
+}
+.co-btn:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
 }
 .co-btn-primary {
   background: #2563eb;

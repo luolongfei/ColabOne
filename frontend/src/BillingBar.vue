@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onUnmounted, ref, watch } from "vue";
 import { t } from "./i18n";
 import {
   Badge as ABadge,
@@ -162,15 +162,21 @@ const isStaleData = computed(
   () => overview.value.loggedIn && overview.value.stale,
 );
 
+const billingBarRef = ref<HTMLElement | null>(null);
 const isCompactMobile = ref(false);
-const isRunColumnHidden = ref(false);
+const isViewportRunColumnHidden = ref(false);
+const isNarrowStatusContainer = ref(false);
+const isRunColumnHidden = computed(
+  () => isViewportRunColumnHidden.value || isNarrowStatusContainer.value,
+);
 let compactMobileMql: MediaQueryList | null = null;
 let runColumnHiddenMql: MediaQueryList | null = null;
+let statusContainerObserver: ResizeObserver | null = null;
 const onCompactMobileChange = (event: MediaQueryListEvent) => {
   isCompactMobile.value = event.matches;
 };
 const onRunColumnHiddenChange = (event: MediaQueryListEvent) => {
-  isRunColumnHidden.value = event.matches;
+  isViewportRunColumnHidden.value = event.matches;
 };
 if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
   compactMobileMql = window.matchMedia("(max-width: 680px)");
@@ -184,13 +190,42 @@ if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
   runColumnHiddenMql = window.matchMedia(
     `(max-width: ${COLABONE_BILLING_COMPACT_RUN_BREAKPOINT}px)`,
   );
-  isRunColumnHidden.value = runColumnHiddenMql.matches;
+  isViewportRunColumnHidden.value = runColumnHiddenMql.matches;
   if (typeof runColumnHiddenMql.addEventListener === "function") {
     runColumnHiddenMql.addEventListener("change", onRunColumnHiddenChange);
   } else if (typeof runColumnHiddenMql.addListener === "function") {
     runColumnHiddenMql.addListener(onRunColumnHiddenChange);
   }
 }
+
+watch(
+  billingBarRef,
+  (el) => {
+    statusContainerObserver?.disconnect();
+    statusContainerObserver = null;
+    if (!el) {
+      isNarrowStatusContainer.value = false;
+      return;
+    }
+    const statusContainer = el.closest<HTMLElement>(".co-status-bar");
+    if (!statusContainer) {
+      isNarrowStatusContainer.value = false;
+      return;
+    }
+    const initialWidth = statusContainer.getBoundingClientRect().width;
+    isNarrowStatusContainer.value = initialWidth > 0 && initialWidth <= 680;
+    if (typeof ResizeObserver !== "undefined") {
+      statusContainerObserver = new ResizeObserver((entries) => {
+        const entry = entries[entries.length - 1];
+        if (!entry) return;
+        const width = entry.contentRect.width;
+        isNarrowStatusContainer.value = width > 0 && width <= 680;
+      });
+      statusContainerObserver.observe(statusContainer);
+    }
+  },
+  { flush: "post", immediate: true },
+);
 
 const enduranceLabel = computed(() => {
   const { active, endurance } = overview.value;
@@ -336,6 +371,11 @@ watch(
   { immediate: true },
 );
 
+onBeforeUnmount(() => {
+  statusContainerObserver?.disconnect();
+  statusContainerObserver = null;
+});
+
 onUnmounted(() => {
   stopTicker();
   if (compactMobileMql) {
@@ -360,6 +400,7 @@ onUnmounted(() => {
 <template>
   <div
     v-if="showIdle || showBilling"
+    ref="billingBarRef"
     class="co-billing-bar"
     role="group"
     :aria-label="t('billing.barAria')"
@@ -589,13 +630,13 @@ onUnmounted(() => {
               aria-hidden="true"
             />
             <template v-if="skeleton.balance">
-              <span>{{ t("billing.barBalancePrefix") }}</span>
+              <span class="co-billing-balance-prefix">{{ t("billing.barBalancePrefix") }}</span>
               <ColabOneSkeleton variant="text" :width="52" :height="12" :delay="90" inline />
               <span class="co-sr-only">{{ overview.balanceText }}</span>
             </template>
             <span v-else
-              >{{ t("billing.barBalancePrefix") }}
-              <b>{{ overview.balanceText }}</b></span
+              ><span class="co-billing-balance-prefix">{{ t("billing.barBalancePrefix") }}{{ " " }}</span
+              ><b>{{ overview.balanceText }}</b></span
             >
           </span>
 
@@ -651,8 +692,11 @@ onUnmounted(() => {
 .co-billing-bar {
   display: inline-flex;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 8px;
   min-width: 0;
+  max-width: 100%;
   flex-shrink: 0;
 }
 
@@ -735,6 +779,10 @@ onUnmounted(() => {
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
   cursor: default;
   user-select: none;
 }
@@ -768,6 +816,15 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
   line-height: 1;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.co-billing-strip-inner::-webkit-scrollbar {
+  display: none;
 }
 
 .co-billing-bar .co-billing-pill {
@@ -1097,6 +1154,49 @@ onUnmounted(() => {
   }
 }
 
+@container co-status-bar (max-width: 680px) {
+  .co-billing-bar {
+    gap: 6px;
+  }
+
+  .co-billing-bar .co-idle-timer {
+    height: 26px;
+    padding: 0 8px;
+    font-size: 11.5px;
+  }
+
+  .co-billing-bar .co-billing-strip {
+    height: 26px;
+    padding: 0 5px 0 4px;
+  }
+
+  .co-billing-strip-inner {
+    gap: 5px;
+  }
+
+  .co-billing-bar .co-billing-pill,
+  .co-endurance-tag {
+    height: 20px;
+    padding: 0 6px;
+    font-size: 11.5px;
+  }
+
+  .co-billing-run-divider,
+  .co-billing-run,
+  .co-coins-icon,
+  .co-run-flame-icon,
+  .co-run-timer-icon {
+    display: none;
+  }
+
+  .co-billing-rate,
+  .co-billing-balance {
+    font-size: 11.5px;
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+}
+
 @media (max-width: 680px) {
   .co-billing-bar {
     display: contents;
@@ -1171,6 +1271,8 @@ onUnmounted(() => {
 
   .co-billing-rate,
   .co-billing-balance {
+    height: 19px;
+    line-height: 19px;
     font-size: 11px;
     flex-shrink: 0;
     white-space: nowrap;
@@ -1185,6 +1287,44 @@ onUnmounted(() => {
   .co-strip-divider {
     height: 10px;
     margin: 0 -1px;
+  }
+}
+
+@media (max-width: 440px) {
+  .co-billing-bar .co-billing-strip {
+    padding: 0 5px 0 4px;
+  }
+
+  .co-billing-strip-inner {
+    gap: 3px;
+  }
+
+  .co-billing-bar .co-billing-pill,
+  .co-endurance-tag {
+    padding: 0 4px;
+    font-size: 10.5px;
+  }
+
+  .co-billing-pill > svg,
+  .co-billing-pill :deep(svg) {
+    display: none;
+  }
+
+  .co-billing-pill.active .co-billing-dot-badge {
+    display: inline-flex;
+  }
+
+  .co-billing-rate,
+  .co-billing-balance {
+    font-size: 10.5px;
+  }
+
+  .co-billing-balance {
+    gap: 3px;
+  }
+
+  .co-billing-balance-prefix {
+    display: none;
   }
 }
 

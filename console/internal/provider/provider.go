@@ -41,8 +41,8 @@ var (
 
 const (
 	// COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS is the default total number of GPU allocation attempts
-	// (1 initial attempt + 19 retries = 20 total attempts).
-	COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS = 20
+	// (1 initial attempt + 29 retries = 30 total attempts).
+	COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS = 30
 
 	// COLABONE_ASSIGN_BACKOFF_INITIAL is the initial exponential backoff delay after the first failed attempt.
 	COLABONE_ASSIGN_BACKOFF_INITIAL = 2 * time.Second
@@ -76,8 +76,8 @@ func AssignRetryDelays(maxAttempts int) []time.Duration {
 	return delays
 }
 
-// DefaultAssignRetryDelays returns the default 19-retry backoff schedule (20 total attempts:
-// 1 initial + 19 retries with 2s -> 4s -> 8s -> 16s -> 32s capped delays).
+// DefaultAssignRetryDelays returns the default 29-retry backoff schedule (30 total attempts:
+// 1 initial + 29 retries with 2s -> 4s -> 8s -> 16s -> 32s capped delays).
 func DefaultAssignRetryDelays() []time.Duration {
 	return AssignRetryDelays(COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS)
 }

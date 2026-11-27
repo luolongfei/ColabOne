@@ -788,7 +788,7 @@ onUnmounted(() => {
             <template v-if="model">
               <span>{{ t("api.modelIdLabel") }}<code>{{ activeApiModelId }}</code></span>
               <template v-if="state.runtime.gpu">
-                <span>·</span>
+                <span class="co-sep-dot">·</span>
                 <span class="co-tabular">
                   {{
                     t("api.vramUsage", {
@@ -1762,6 +1762,7 @@ onUnmounted(() => {
   font-size: 15px;
   font-weight: 600;
   color: var(--co-text);
+  overflow-wrap: anywhere;
 }
 
 .co-api-model-sub {
@@ -1782,6 +1783,7 @@ onUnmounted(() => {
   background: var(--co-subtle);
   border: 1px solid var(--co-border-secondary);
   color: var(--co-text);
+  overflow-wrap: anywhere;
 }
 
 .co-api-model-actions {
@@ -1874,14 +1876,26 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  flex-wrap: wrap;
+  row-gap: 6px;
   margin-bottom: 10px;
 }
 
 .co-section-subhead h3 {
   margin: 0;
+  min-width: 0;
   font-size: 15px;
   font-weight: 600;
   color: var(--co-text);
+}
+
+.co-section-subhead :deep(.ant-tag) {
+  flex-shrink: 0;
+  white-space: nowrap;
+  word-break: normal;
+  overflow-wrap: normal;
+  height: 22px;
+  border-radius: var(--co-radius-pill);
 }
 
 .co-api-access {
@@ -2183,6 +2197,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
 }
 
 .co-api-request-row.is-running {
@@ -2194,12 +2209,19 @@ onUnmounted(() => {
   background: var(--co-danger-bg);
 }
 
+.co-api-request-row.is-failed :deep(.ant-tag-error),
+.co-api-request-row.is-failed :deep(.ant-tag-error.ant-tag-borderless) {
+  background: var(--co-surface);
+  border-color: var(--co-danger-border);
+}
+
 .co-api-request-top {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  flex-wrap: nowrap;
+  row-gap: 6px;
+  flex-wrap: wrap;
 }
 
 .co-api-request-ident {
@@ -2208,7 +2230,7 @@ onUnmounted(() => {
   gap: 4px 6px;
   flex-wrap: wrap;
   min-width: 0;
-  flex: 1;
+  flex: 1 1 200px;
 }
 
 .co-api-request-seq {
@@ -2220,8 +2242,15 @@ onUnmounted(() => {
 .co-api-request-tag {
   margin-inline-end: 0;
   font-size: 11px;
-  line-height: 18px;
-  padding-inline: 6px;
+  height: 22px;
+  min-height: 22px;
+  line-height: 20px;
+  padding: 0 7px;
+  border-radius: var(--co-radius-pill);
+  white-space: nowrap;
+  word-break: normal;
+  overflow-wrap: normal;
+  flex-shrink: 0;
 }
 
 .co-api-request-dot {
@@ -2238,6 +2267,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+  margin-inline-start: auto;
 }
 
 .co-api-request-cancel {
@@ -2270,12 +2300,17 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px 10px;
   flex-wrap: wrap;
+  min-width: 0;
   font-size: 12px;
   color: var(--co-secondary-text);
 }
 
 .co-api-request-error {
   color: var(--co-danger-text);
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .co-api-request-empty-hint {
@@ -2427,19 +2462,30 @@ onUnmounted(() => {
     margin-left: auto;
   }
 
+  .co-api-examples :deep(.ant-card-head-title) {
+    flex: 1 1 auto;
+    white-space: normal;
+    line-height: 1.3;
+  }
+
+  .co-api-examples :deep(.ant-card-extra) {
+    margin-inline-start: auto;
+  }
+
   .co-api-speed-summary-left,
   .co-api-speed-summary-right {
     white-space: normal;
     flex-wrap: wrap;
   }
+}
 
-  .co-api-request-top {
-    flex-wrap: wrap;
-    row-gap: 6px;
+@media (max-width: 640px) {
+  .co-sep-dot {
+    display: none;
   }
 
-  .co-api-request-right {
-    margin-left: auto;
+  .co-api-model-sub {
+    column-gap: 10px;
   }
 }
 </style>

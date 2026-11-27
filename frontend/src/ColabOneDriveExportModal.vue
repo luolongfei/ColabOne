@@ -1189,21 +1189,36 @@ function onAutoDriveToggle(event: { target?: { checked?: boolean } }) {
   font-size: 13px;
   line-height: 1.6;
   color: var(--co-text);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.co-drive-auth-steps li {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .co-drive-account-row {
   margin-top: 4px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .co-drive-account-chip {
   display: inline-flex;
   align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   padding: 2px 9px;
-  border-radius: 9999px;
+  border-radius: 10px;
   background: var(--co-surface);
   border: 1px solid var(--co-border-secondary);
   font-size: 12px;
+  line-height: 1.4;
   color: var(--co-secondary-text);
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .co-drive-saved-path {
@@ -1255,6 +1270,10 @@ function onAutoDriveToggle(event: { target?: { checked?: boolean } }) {
   align-items: center;
   gap: 6px;
   min-width: 0;
+}
+
+.co-drive-headless-summary-main svg {
+  flex-shrink: 0;
 }
 
 .co-drive-headless-caret {
@@ -1334,16 +1353,22 @@ function onAutoDriveToggle(event: { target?: { checked?: boolean } }) {
 
   .co-drive-modal-footer > .ant-btn:not(.co-drive-footer-mobile-more-btn):not(:last-child) {
     flex: 0 1 auto;
-    max-width: 48%;
-    min-width: 0;
+    min-width: 74px;
+    max-width: 60%;
     padding-inline: 11px !important;
   }
 
   .co-drive-modal-footer > .ant-btn:last-child {
-    flex: 1 1 0;
+    flex: 1 1 auto;
     max-width: none;
-    min-width: 0;
+    min-width: 108px;
     padding-inline: 12px !important;
+  }
+
+  .co-drive-modal-footer > .ant-btn:only-child {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 100%;
   }
 }
 </style>

@@ -226,6 +226,7 @@ function setTemp(raw: unknown) {
 
 <style scoped>
 .co-param-presets-panel {
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -271,12 +272,6 @@ function setTemp(raw: unknown) {
   gap: 8px;
 }
 
-@media (max-width: 420px) {
-  .co-preset-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
 .co-preset-card {
   appearance: none;
   text-align: left;
@@ -308,6 +303,16 @@ function setTemp(raw: unknown) {
   background: var(--co-selected);
 }
 
+.co-preset-card.active :deep(.ant-tag-blue) {
+  background: var(--co-surface);
+  border-color: rgba(59, 130, 246, 0.28);
+}
+
+:root[data-theme="dark"] .co-preset-card.active :deep(.ant-tag-blue) {
+  background: rgba(59, 130, 246, 0.24);
+  border-color: rgba(96, 165, 250, 0.42);
+}
+
 .co-preset-card-top {
   display: flex;
   align-items: center;
@@ -330,6 +335,8 @@ function setTemp(raw: unknown) {
   line-height: 1.3;
   padding: 0 5px;
   margin-inline-end: 0;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .co-preset-check {
@@ -418,6 +425,25 @@ function setTemp(raw: unknown) {
 .co-param-effect-vram {
   color: var(--co-text);
   font-weight: 500;
+}
+
+@container (max-width: 340px) {
+  .co-temp-scale {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    column-gap: 6px;
+    row-gap: 2px;
+    position: static;
+    height: auto;
+  }
+
+  .co-temp-tick-low,
+  .co-temp-tick-mid,
+  .co-temp-tick-high {
+    position: static;
+    transform: none;
+  }
 }
 
 @media (max-width: 480px) {

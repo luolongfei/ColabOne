@@ -529,22 +529,24 @@ function libraryCompactText(mod: ColabOneMigrationModuleSummary): string {
   >
     <template #title>
       <div class="co-mig-title">
-        <span
-          class="co-mig-title-icon"
-          :class="mode === 'export' ? 'is-export' : 'is-import'"
-          aria-hidden="true"
-        >
-          <PhFileArrowUp v-if="mode === 'export'" :size="18" weight="duotone" />
-          <PhFileArrowDown v-else :size="18" weight="duotone" />
-        </span>
-        <span class="co-mig-title-text">
-          {{
-            mode === "export"
-              ? t("migration.exportModalTitle")
-              : importStep === "decrypt"
-                ? t("migration.importDecryptModalTitle")
-                : t("migration.importPreviewModalTitle")
-          }}
+        <span class="co-mig-title-main">
+          <span
+            class="co-mig-title-icon"
+            :class="mode === 'export' ? 'is-export' : 'is-import'"
+            aria-hidden="true"
+          >
+            <PhFileArrowUp v-if="mode === 'export'" :size="18" weight="duotone" />
+            <PhFileArrowDown v-else :size="18" weight="duotone" />
+          </span>
+          <span class="co-mig-title-text">
+            {{
+              mode === "export"
+                ? t("migration.exportModalTitle")
+                : importStep === "decrypt"
+                  ? t("migration.importDecryptModalTitle")
+                  : t("migration.importPreviewModalTitle")
+            }}
+          </span>
         </span>
         <ATag color="blue" :bordered="false" class="co-mig-cipher-tag">
           <PhLockKey :size="12" aria-hidden="true" />
@@ -814,7 +816,7 @@ function libraryCompactText(mod: ColabOneMigrationModuleSummary): string {
       data-testid="migration-import-preview-modal"
     >
       <div class="co-mig-meta-strip">
-        <span class="co-mig-meta-chip">
+        <span class="co-mig-meta-chip co-mig-meta-filename">
           <strong>{{ importPreview?.filename }}</strong>
         </span>
         <span v-if="importPreview?.source_os" class="co-mig-meta-chip">
@@ -1074,11 +1076,21 @@ function libraryCompactText(mod: ColabOneMigrationModuleSummary): string {
 
 <style scoped>
 .co-mig-title {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
+  max-width: 100%;
   flex-wrap: wrap;
+  padding-right: 20px;
+}
+
+.co-mig-title-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .co-mig-title-icon {
@@ -1104,7 +1116,9 @@ function libraryCompactText(mod: ColabOneMigrationModuleSummary): string {
 .co-mig-title-text {
   font-size: 15px;
   font-weight: 600;
+  line-height: 1.35;
   color: var(--co-text);
+  min-width: 0;
 }
 
 .co-mig-cipher-tag {
@@ -1152,7 +1166,8 @@ function libraryCompactText(mod: ColabOneMigrationModuleSummary): string {
 .co-mig-quick-actions {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: 4px 10px;
 }
 
 .co-mig-link-btn {
@@ -1162,6 +1177,8 @@ function libraryCompactText(mod: ColabOneMigrationModuleSummary): string {
   font-size: 12px;
   color: var(--co-accent);
   cursor: pointer;
+  white-space: nowrap;
+  text-align: left;
   transition: opacity 0.15s ease;
 }
 
@@ -1224,6 +1241,16 @@ function libraryCompactText(mod: ColabOneMigrationModuleSummary): string {
 .co-mig-module-item.is-selected {
   border-color: rgba(59, 130, 246, 0.35);
   background: var(--co-selected);
+}
+
+.co-mig-module-item.is-selected .co-mig-mod-meta :deep(.ant-tag-blue) {
+  background: var(--co-surface);
+  border-color: rgba(59, 130, 246, 0.28);
+}
+
+:root[data-theme="dark"] .co-mig-module-item.is-selected .co-mig-mod-meta :deep(.ant-tag-blue) {
+  background: rgba(59, 130, 246, 0.24);
+  border-color: rgba(96, 165, 250, 0.42);
 }
 
 .co-mig-module-item.is-disabled {
@@ -1290,6 +1317,8 @@ function libraryCompactText(mod: ColabOneMigrationModuleSummary): string {
   justify-content: space-between;
   gap: 8px;
   flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .co-mig-mod-title {
@@ -1303,6 +1332,8 @@ function libraryCompactText(mod: ColabOneMigrationModuleSummary): string {
   align-items: center;
   gap: 4px;
   flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .co-mig-mod-meta :deep(.ant-tag) {
@@ -1433,10 +1464,20 @@ function libraryCompactText(mod: ColabOneMigrationModuleSummary): string {
   gap: 4px;
 }
 
+.co-mig-meta-filename {
+  flex: 1 1 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .co-mig-meta-chip + .co-mig-meta-chip::before {
   content: "·";
   margin-right: 4px;
   color: var(--co-muted);
+}
+
+.co-mig-meta-filename + .co-mig-meta-chip::before {
+  content: none;
 }
 
 .co-mig-footer {
@@ -1444,6 +1485,34 @@ function libraryCompactText(mod: ColabOneMigrationModuleSummary): string {
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
+}
+
+:global(.co-migration-modal-wrap .ant-modal-content) {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 24px);
+  max-height: calc(100dvh - 24px);
+}
+
+:global(.co-migration-modal-wrap .ant-modal-header),
+:global(.co-migration-modal-wrap .ant-modal-footer) {
+  flex-shrink: 0;
+}
+
+:global(.co-migration-modal-wrap .ant-modal-body) {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+@media (max-width: 680px), (max-height: 768px) {
+  .co-mig-module-list {
+    max-height: none;
+    overflow-y: visible;
+    padding-right: 0;
+  }
 }
 
 @media (max-width: 680px) {
@@ -1459,6 +1528,37 @@ function libraryCompactText(mod: ColabOneMigrationModuleSummary): string {
   .co-mig-footer > :last-child {
     flex: 1 1 0;
     min-width: 0;
+  }
+}
+
+@media (max-width: 520px) {
+  .co-mig-meta-strip {
+    gap: 4px 12px;
+  }
+
+  .co-mig-meta-chip + .co-mig-meta-chip::before {
+    display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .co-mig-quick-actions .co-mig-dot {
+    display: none;
+  }
+}
+
+@media (max-width: 440px) {
+  .co-mig-footer {
+    flex-direction: column-reverse;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .co-mig-footer > :first-child,
+  .co-mig-footer > :last-child,
+  .co-mig-footer :deep(.ant-btn) {
+    width: 100%;
+    flex: none;
   }
 }
 </style>

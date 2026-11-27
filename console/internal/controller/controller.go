@@ -1042,7 +1042,7 @@ func (c *ColabOneController) Snapshot() map[string]any {
 	assignProxyEnabled := asBool(c.settings["assign_proxy_enabled"]) && assignProxySpec != nil
 	publicSettings := make(map[string]any, len(c.settings))
 	for k, v := range c.settings {
-		if k == "idle_policy" || k == "rclone_drive_policy" || k == "default_gpu_policy" {
+		if k == "idle_policy" || k == "rclone_drive_policy" || k == "default_gpu_policy" || k == "default_assign_max_attempts_policy" {
 			continue
 		}
 		publicSettings[k] = v

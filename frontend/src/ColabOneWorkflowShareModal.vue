@@ -222,6 +222,7 @@ function onModalKeydown(event: KeyboardEvent) {
   if (!props.open || event.key !== "Escape") return;
   if (openConfirmKey.value) {
     event.preventDefault();
+    event.stopImmediatePropagation();
     openConfirmKey.value = "";
   }
 }
@@ -975,6 +976,7 @@ function entrySubtitle(entry: ColabOneStudioWorkflowEntry): string {
                     v-for="wfName in resolveShareWorkflowNames(share.workflow_ids)"
                     :key="wfName"
                     class="co-ws-wf-chip"
+                    :title="wfName"
                   >
                     {{ wfName }}
                   </span>
@@ -1335,6 +1337,20 @@ function entrySubtitle(entry: ColabOneStudioWorkflowEntry): string {
   background: var(--co-selected);
 }
 
+.co-ws-wf-item.is-selected .co-ws-wf-tag {
+  background: var(--co-surface);
+  border-color: var(--co-border);
+}
+
+.co-ws-wf-item.is-selected .co-ws-wf-tag.ant-tag-blue {
+  border-color: rgba(59, 130, 246, 0.28);
+}
+
+:root[data-theme="dark"] .co-ws-wf-item.is-selected .co-ws-wf-tag.ant-tag-blue {
+  background: rgba(59, 130, 246, 0.24);
+  border-color: rgba(96, 165, 250, 0.42);
+}
+
 .co-ws-wf-item.is-disabled {
   opacity: 0.6;
   cursor: not-allowed;
@@ -1387,6 +1403,9 @@ function entrySubtitle(entry: ColabOneStudioWorkflowEntry): string {
   margin-inline-end: 0;
   font-size: 11px;
   line-height: 17px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  border-radius: var(--co-radius-pill);
 }
 
 .co-ws-wf-desc {
@@ -1421,11 +1440,18 @@ function entrySubtitle(entry: ColabOneStudioWorkflowEntry): string {
 
 .co-ws-ttl-wrap {
   width: 100%;
-  overflow-x: auto;
 }
 
 .co-ws-ttl-segmented {
   width: 100%;
+}
+
+.co-ws-ttl-segmented.ant-segmented :deep(.ant-segmented-item) {
+  flex: 1 1 auto;
+}
+
+.co-ws-ttl-segmented.ant-segmented :deep(.ant-segmented-item-label) {
+  padding-inline: 10px;
 }
 
 .co-ws-hint {
@@ -1541,6 +1567,7 @@ function entrySubtitle(entry: ColabOneStudioWorkflowEntry): string {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
   padding: 12px 14px;
   border-radius: 12px;
   border: 1px solid var(--co-border-secondary);
@@ -1602,11 +1629,16 @@ function entrySubtitle(entry: ColabOneStudioWorkflowEntry): string {
   align-items: center;
   flex-wrap: wrap;
   gap: 5px;
+  min-width: 0;
 }
 
 .co-ws-wf-chip {
-  display: inline-flex;
-  align-items: center;
+  display: inline-block;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   padding: 2px 8px;
   border-radius: 6px;
   background: var(--co-surface);
@@ -1657,33 +1689,87 @@ function entrySubtitle(entry: ColabOneStudioWorkflowEntry): string {
   }
 
   .co-ws-ttl-wrap {
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
+    overflow: visible;
   }
 
-  .co-ws-ttl-wrap::-webkit-scrollbar {
+  .co-ws-ttl-segmented.ant-segmented {
+    border-radius: 14px !important;
+    width: 100%;
+    overflow: visible;
+  }
+
+  .co-ws-ttl-segmented.ant-segmented :deep(.ant-segmented-group) {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    justify-items: stretch;
+    gap: 4px;
+    width: 100%;
+  }
+
+  .co-ws-ttl-segmented.ant-segmented :deep(.ant-segmented-item) {
+    flex: none;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow: hidden;
+    box-sizing: border-box;
+    border-radius: 10px !important;
+  }
+
+  .co-ws-ttl-segmented.ant-segmented
+    :deep(.ant-segmented-item:has(> .ant-segmented-item-input:checked)) {
+    background: var(--co-subpill-active-bg) !important;
+    color: var(--co-subpill-active-text) !important;
+    font-weight: 600;
+    box-shadow:
+      0 0 0 1px var(--co-subpill-active-border),
+      var(--co-subpill-active-shadow) !important;
+  }
+
+  .co-ws-ttl-segmented.ant-segmented
+    :deep(
+      .ant-segmented-item:has(> .ant-segmented-item-input:checked)
+        .ant-segmented-item-label
+    ) {
+    color: var(--co-subpill-active-text) !important;
+  }
+
+  .co-ws-ttl-segmented.ant-segmented
+    :deep(.ant-segmented-item:has(> .ant-segmented-item-input:focus-visible)) {
+    outline: 2px solid var(--co-focus);
+    outline-offset: -2px;
+  }
+
+  .co-ws-ttl-segmented.ant-segmented :deep(.ant-segmented-thumb) {
+    display: none !important;
+    transition: none !important;
+  }
+
+  .co-ws-ttl-segmented.ant-segmented :deep(.ant-segmented-item-label) {
+    display: block;
+    min-height: 28px;
+    line-height: 28px;
+    padding-inline: 6px;
+    font-size: 12px;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .co-ws-meta-strip {
+    gap: 4px 12px;
+  }
+
+  .co-ws-meta-dot {
     display: none;
   }
+}
 
-  .co-ws-ttl-segmented {
-    width: max-content;
-    min-width: 100%;
-  }
-
-  .co-ws-ttl-segmented :deep(.ant-segmented-group) {
-    flex-wrap: nowrap;
-  }
-
-  .co-ws-ttl-segmented :deep(.ant-segmented-item) {
-    flex: 0 0 auto;
-  }
-
-  .co-ws-ttl-segmented :deep(.ant-segmented-item-label) {
-    padding-inline: 10px;
-    font-size: 12px;
-    white-space: nowrap;
-    text-overflow: clip;
-    overflow: visible;
+@media (max-width: 400px) {
+  .co-ws-ttl-segmented.ant-segmented :deep(.ant-segmented-item-label) {
+    padding-inline: 4px;
+    font-size: 11.5px;
   }
 }
 </style>

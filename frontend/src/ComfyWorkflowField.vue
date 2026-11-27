@@ -1202,8 +1202,14 @@ function onMediaDrop(event: DragEvent) {
         >
           {{ t("comfy.voicePreviewCachedTag") }}
         </ATag>
-        <ATag v-if="voicePreviewMeta.engineName" class="co-comfy-meta-tag">
-          {{ tb(voicePreviewMeta.engineName) }}
+        <ATag
+          v-if="voicePreviewMeta.engineName"
+          class="co-comfy-meta-tag co-comfy-voice-preview-engine-tag"
+          :title="tb(voicePreviewMeta.engineName)"
+        >
+          <span class="co-comfy-voice-preview-engine-text">{{
+            tb(voicePreviewMeta.engineName)
+          }}</span>
         </ATag>
       </div>
     </div>
@@ -1724,6 +1730,36 @@ function onMediaDrop(event: DragEvent) {
   max-width: 100%;
 }
 
+.co-comfy-voice-preview-meta :deep(.ant-tag) {
+  margin-inline-end: 0;
+  max-width: 100%;
+}
+
+.co-comfy-voice-preview-meta :deep(.co-comfy-voice-preview-engine-tag) {
+  max-width: 100%;
+  min-width: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  line-height: 18px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  word-break: keep-all;
+  overflow-wrap: normal;
+  text-box-trim: none !important;
+}
+
+.co-comfy-voice-preview-meta .co-comfy-voice-preview-engine-text {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  text-box-trim: none !important;
+}
+
 /* Boolean Switch */
 .co-comfy-switch-row {
   display: flex;
@@ -1844,7 +1880,7 @@ function onMediaDrop(event: DragEvent) {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   min-width: 0;
 }
 
@@ -1854,7 +1890,11 @@ function onMediaDrop(event: DragEvent) {
   flex-wrap: wrap;
   gap: 6px;
   min-width: 0;
-  flex: 1 1 auto;
+  flex: 1 1 0;
+}
+
+.co-comfy-media-status-tags :deep(.ant-tag) {
+  margin-inline-end: 0;
 }
 
 .co-comfy-filename-pill {
@@ -1862,6 +1902,7 @@ function onMediaDrop(event: DragEvent) {
   min-width: 0;
   justify-content: flex-start;
   overflow: hidden;
+  text-box-trim: none !important;
 }
 
 .co-comfy-filename-pill-text {
@@ -1872,7 +1913,7 @@ function onMediaDrop(event: DragEvent) {
   text-overflow: ellipsis;
   white-space: nowrap;
   line-height: 1.4;
-  text-box-trim: normal !important;
+  text-box-trim: none !important;
 }
 
 .co-comfy-media-clear-btn {

@@ -1158,18 +1158,18 @@ onUnmounted(() => {
                 inline
               />
 
-              <span>·</span>
+              <span class="co-sep-dot">·</span>
               <span class="co-hub-stat">
                 <PhDownloadSimple :size="12" />
                 {{ repo.downloads.toLocaleString(colabOneLocaleCode) }}
               </span>
-              <span>·</span>
+              <span class="co-sep-dot">·</span>
               <span class="co-hub-stat">
                 <PhHeart :size="12" />
                 {{ repo.likes.toLocaleString(colabOneLocaleCode) }}
               </span>
               <template v-if="repo.versions">
-                <span>·</span>
+                <span class="co-sep-dot">·</span>
                 <span>{{
                   repo.versions === 1
                     ? t("models.hubVersionCountSingle", { count: repo.versions })
@@ -1615,12 +1615,15 @@ onUnmounted(() => {
   color: var(--co-muted);
 }
 
-.co-repo-param-tag,
-.co-hub-fit-pill {
+.co-hub-repo-title :deep(.ant-tag),
+.co-hub-facts .co-hub-fit-pill {
   margin-inline-end: 0;
   font-size: 11px;
   line-height: 1.4;
-  padding: 0 6px;
+  padding: 1px 7px;
+  min-height: 20px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .co-hub-facts {
@@ -1669,6 +1672,8 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-wrap: wrap;
+  text-align: center;
   gap: 6px;
   padding: 6px 10px;
   font-size: 12px;
@@ -1679,6 +1684,16 @@ onUnmounted(() => {
   display: flex;
   justify-content: center;
   padding: 4px 0;
+}
+
+@media (max-width: 640px) {
+  .co-sep-dot {
+    display: none;
+  }
+
+  .co-hub-facts {
+    column-gap: 10px;
+  }
 }
 
 @media (max-width: 560px) {

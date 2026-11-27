@@ -875,7 +875,7 @@ export interface ColabOneSnapshot {
   };
 }
 export const COLABONE_DEFAULT_GPU = "G4" as const;
-export const COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS = 20 as const;
+export const COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS = 30 as const;
 export const COLABONE_MIN_ASSIGN_MAX_ATTEMPTS = 1 as const;
 export const COLABONE_MAX_ASSIGN_MAX_ATTEMPTS = 100 as const;
 

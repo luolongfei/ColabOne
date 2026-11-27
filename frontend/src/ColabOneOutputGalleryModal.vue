@@ -1428,7 +1428,8 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   height: min(90vh, 920px);
-  min-height: 460px;
+  min-height: min(460px, 90vh);
+  min-height: min(460px, 90dvh);
   background: var(--co-surface);
   color: var(--co-text);
   overflow: hidden;
@@ -1460,11 +1461,13 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   min-width: 0;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .co-gal-modal-title {
   margin: 0;
+  flex: 0 1 auto;
+  min-width: 0;
   font-size: 15px;
   font-weight: 600;
   line-height: 1.35;
@@ -1472,7 +1475,7 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 340px;
+  max-width: min(340px, 100%);
 }
 
 .co-gal-modal-counter {
@@ -1495,6 +1498,9 @@ onBeforeUnmount(() => {
   margin-inline-end: 0;
   font-size: 11px;
   line-height: 18px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  border-radius: var(--co-radius-pill);
 }
 
 .co-gal-modal-meta-line {
@@ -1507,10 +1513,11 @@ onBeforeUnmount(() => {
 }
 
 .co-gal-modal-filename {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 340px;
+  max-width: min(340px, 100%);
   font-family: var(--co-font-mono);
 }
 
@@ -1698,6 +1705,7 @@ onBeforeUnmount(() => {
 .co-gal-stage-audio {
   width: min(460px, 100%);
   padding: 28px 24px;
+  box-sizing: border-box;
   border-radius: 16px;
   border: 1px solid var(--co-border-secondary);
   background: var(--co-surface);
@@ -1758,6 +1766,7 @@ onBeforeUnmount(() => {
   z-index: 4;
   width: 42px;
   height: 42px;
+  padding: 0;
   border-radius: 9999px;
   border: 1px solid var(--co-border);
   background: color-mix(in srgb, var(--co-surface) 88%, transparent);
@@ -1773,6 +1782,10 @@ onBeforeUnmount(() => {
     background-color 0.15s ease,
     border-color 0.15s ease,
     transform 0.12s ease;
+}
+
+.co-gal-nav-btn svg {
+  flex-shrink: 0;
 }
 
 .co-gal-nav-btn.is-prev {
@@ -1821,6 +1834,7 @@ onBeforeUnmount(() => {
   background: var(--co-subtle);
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(186px, 1fr));
+  grid-auto-rows: max-content;
   gap: 14px;
   align-content: start;
 }
@@ -1828,6 +1842,8 @@ onBeforeUnmount(() => {
 .co-gal-grid-tile {
   display: flex;
   flex-direction: column;
+  align-self: start;
+  min-width: 0;
   padding: 0;
   border-radius: 12px;
   border: 1px solid var(--co-border-secondary);
@@ -1854,6 +1870,7 @@ onBeforeUnmount(() => {
 
 .co-gal-grid-thumb {
   position: relative;
+  flex: 0 0 auto;
   width: 100%;
   aspect-ratio: 4 / 3;
   background: var(--co-track);
@@ -2052,11 +2069,56 @@ onBeforeUnmount(() => {
 @media (max-width: 720px) {
   .co-gal-modal {
     height: 92vh;
+    height: 92dvh;
+    min-height: 0;
   }
 
   .co-gal-modal-header {
+    position: relative;
     padding: 10px 12px;
     gap: 8px;
+  }
+
+  .co-gal-modal-title-group {
+    flex: 1 1 100%;
+    min-width: 0;
+    min-height: 28px;
+    justify-content: center;
+    padding-right: 36px;
+  }
+
+  .co-gal-close-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 2;
+  }
+
+  .co-gal-modal-controls {
+    width: 100%;
+    justify-content: space-between;
+    gap: 6px;
+  }
+
+  .co-gal-action-group {
+    margin-left: auto;
+  }
+
+  .co-gal-action-group:not(:has(> :not(.co-gal-close-btn))) {
+    display: contents;
+  }
+
+  .co-gal-modal-controls:not(:has(> :not(.co-gal-action-group))):not(
+      :has(.co-gal-action-group > :not(.co-gal-close-btn))
+    ) {
+    display: contents;
+  }
+
+  .co-gal-action-group :deep(.ant-btn:not(.co-gal-close-btn)) {
+    width: 30px;
+    min-width: 30px;
+    padding-inline: 0 !important;
+    gap: 0;
   }
 
   .co-gal-btn-label,
@@ -2065,20 +2127,91 @@ onBeforeUnmount(() => {
   }
 
   .co-gal-stage-viewport {
-    padding: 12px 46px 16px;
+    padding: 12px 38px 16px;
+  }
+
+  .co-gal-stage-audio {
+    padding: 18px 12px;
+    gap: 10px;
   }
 
   .co-gal-nav-btn {
-    width: 34px;
-    height: 34px;
+    width: 30px;
+    height: 30px;
+  }
+
+  .co-gal-nav-btn svg {
+    width: 18px;
+    height: 18px;
   }
 
   .co-gal-nav-btn.is-prev {
-    left: 6px;
+    left: 4px;
   }
 
   .co-gal-nav-btn.is-next {
-    right: 6px;
+    right: 4px;
+  }
+}
+
+@media (max-width: 640px) {
+  .co-gal-grid-overview {
+    padding: 12px;
+    gap: 10px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 420px) {
+  .co-gal-modal-header {
+    padding: 8px 10px;
+    gap: 6px;
+  }
+
+  .co-gal-modal-title {
+    font-size: 14px;
+    line-height: 1.25;
+  }
+
+  .co-gal-modal-counter {
+    height: 20px;
+    padding: 0 7px;
+    font-size: 11px;
+  }
+
+  .co-gal-modal-controls {
+    gap: 4px;
+  }
+
+  .co-gal-mode-switch :deep(.ant-segmented-item-label) {
+    padding-inline: 6px;
+    font-size: 11.5px;
+  }
+
+  .co-gal-zoom-group {
+    gap: 0;
+    padding: 1px 2px;
+  }
+
+  .co-gal-tool-btn {
+    width: 22px;
+    height: 24px;
+  }
+
+  .co-gal-zoom-pct {
+    min-width: 36px;
+    height: 24px;
+    padding: 0 2px;
+    font-size: 11px;
+  }
+
+  .co-gal-action-group {
+    gap: 4px;
+  }
+
+  .co-gal-action-group :deep(.ant-btn:not(.co-gal-close-btn)) {
+    width: 28px;
+    min-width: 28px;
   }
 }
 </style>

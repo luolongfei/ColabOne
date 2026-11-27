@@ -69,7 +69,7 @@ function scheduleConfirmFocus() {
     const btn = confirmBtnWrapRef.value?.querySelector<HTMLButtonElement>(
       "button:not([disabled])",
     );
-    btn?.focus();
+    btn?.focus({ preventScroll: true });
   };
   if (
     typeof window !== "undefined" &&
@@ -586,7 +586,46 @@ function handleConfirm() {
   display: inline-flex;
 }
 
+:global(.co-close-modal-wrap .ant-modal-content) {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 24px);
+  max-height: calc(100dvh - 24px);
+}
+
+:global(.co-close-modal-wrap .ant-modal-header) {
+  flex-shrink: 0;
+}
+
+:global(.co-close-modal-wrap .ant-modal-body) {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 @media (max-width: 680px) {
+  .co-close-modal-body {
+    gap: 10px;
+  }
+
+  .co-close-modal-body > * {
+    flex-shrink: 0;
+  }
+
+  .co-close-options {
+    gap: 8px;
+  }
+
+  .co-close-option {
+    padding: 10px 12px;
+    gap: 10px;
+  }
+
+  .co-close-remember {
+    padding: 8px 10px;
+  }
+
   .co-close-footer {
     flex-wrap: nowrap;
   }

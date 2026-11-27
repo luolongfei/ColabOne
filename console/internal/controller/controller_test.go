@@ -1147,16 +1147,19 @@ func TestSettingsDefaultsMigrationsAndSecretIsolation(t *testing.T) {
 	if freshSettings["gpu"] != "G4" {
 		t.Fatalf("expected fresh default gpu G4, got %v", freshSettings["gpu"])
 	}
-	if v, _ := asInt(freshSettings["assign_max_attempts"]); v != COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS {
-		t.Fatalf("expected fresh default assign_max_attempts=%d, got %v", COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS, freshSettings["assign_max_attempts"])
+	if v, _ := asInt(freshSettings["assign_max_attempts"]); v != 30 {
+		t.Fatalf("expected fresh default assign_max_attempts=30, got %v", freshSettings["assign_max_attempts"])
 	}
 	if _, hasPolicy := freshSettings["default_gpu_policy"]; hasPolicy {
 		t.Fatalf("internal default_gpu_policy must not be exposed in snapshot settings")
 	}
+	if _, hasPolicy := freshSettings["default_assign_max_attempts_policy"]; hasPolicy {
+		t.Fatalf("internal default_assign_max_attempts_policy must not be exposed in snapshot settings")
+	}
 
-	// Legacy settings.json with explicit non-T4 GPU is preserved across upgrade.
+	// Legacy settings.json with explicit non-T4 GPU and explicit non-20 assign_max_attempts is preserved across upgrade.
 	explicitDir := t.TempDir()
-	explicitBytes, _ := json.Marshal(map[string]any{"gpu": "A100"})
+	explicitBytes, _ := json.Marshal(map[string]any{"gpu": "A100", "assign_max_attempts": 15})
 	if err := os.WriteFile(filepath.Join(explicitDir, "settings.json"), explicitBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1170,6 +1173,45 @@ func TestSettingsDefaultsMigrationsAndSecretIsolation(t *testing.T) {
 	explicitCtrl.Close()
 	if explicitSettings["gpu"] != "A100" {
 		t.Fatalf("expected explicit legacy gpu A100 preserved, got %v", explicitSettings["gpu"])
+	}
+	if v, _ := asInt(explicitSettings["assign_max_attempts"]); v != 15 {
+		t.Fatalf("expected explicit legacy assign_max_attempts=15 preserved, got %v", explicitSettings["assign_max_attempts"])
+	}
+
+	// Legacy settings.json carrying the previous default 20 attempts migrates once to 30,
+	// while an explicit post-migration save of 20 is preserved across reload.
+	legacyAttemptsDir := t.TempDir()
+	legacyAttemptsBytes, _ := json.Marshal(map[string]any{"assign_max_attempts": 20})
+	if err := os.WriteFile(filepath.Join(legacyAttemptsDir, "settings.json"), legacyAttemptsBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	legacyAttemptsVault := NewColabOneMemoryVault()
+	legacyAttemptsCtrl := NewColabOneController(ColabOneControllerConfig{
+		Root:           legacyAttemptsDir,
+		ConfigDir:      legacyAttemptsDir,
+		Vault:          legacyAttemptsVault,
+		ServiceBundler: defaultMockBundler(),
+	})
+	migratedAttemptSettings := asMap(legacyAttemptsCtrl.Snapshot()["settings"])
+	if v, _ := asInt(migratedAttemptSettings["assign_max_attempts"]); v != COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS {
+		legacyAttemptsCtrl.Close()
+		t.Fatalf("expected legacy default assign_max_attempts=20 migrated to %d, got %v", COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS, migratedAttemptSettings["assign_max_attempts"])
+	}
+	if _, err := legacyAttemptsCtrl.Command(context.Background(), "settings.save", map[string]any{"assign_max_attempts": 20}); err != nil {
+		legacyAttemptsCtrl.Close()
+		t.Fatalf("saving explicit post-migration assign_max_attempts=20 failed: %v", err)
+	}
+	legacyAttemptsCtrl.Close()
+	reloadedAttemptsCtrl := NewColabOneController(ColabOneControllerConfig{
+		Root:           legacyAttemptsDir,
+		ConfigDir:      legacyAttemptsDir,
+		Vault:          legacyAttemptsVault,
+		ServiceBundler: defaultMockBundler(),
+	})
+	reloadedAttemptSettings := asMap(reloadedAttemptsCtrl.Snapshot()["settings"])
+	reloadedAttemptsCtrl.Close()
+	if v, _ := asInt(reloadedAttemptSettings["assign_max_attempts"]); v != 20 {
+		t.Fatalf("expected explicit post-migration assign_max_attempts=20 persisted, got %v", reloadedAttemptSettings["assign_max_attempts"])
 	}
 
 	legacyDir := t.TempDir()
@@ -1221,6 +1263,9 @@ func TestSettingsDefaultsMigrationsAndSecretIsolation(t *testing.T) {
 	}
 	if _, hasGPUPolicy := settings["default_gpu_policy"]; hasGPUPolicy {
 		t.Fatalf("internal default_gpu_policy must not be exposed in snapshot settings")
+	}
+	if _, hasAttemptsPolicy := settings["default_assign_max_attempts_policy"]; hasAttemptsPolicy {
+		t.Fatalf("internal default_assign_max_attempts_policy must not be exposed in snapshot settings")
 	}
 
 	// Validation errors.

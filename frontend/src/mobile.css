@@ -11,11 +11,13 @@
 }
 
 @media (max-width: 768px) {
-  /* Guard floating popups/menus/popovers inside mobile viewport bounds */
+  /* Guard floating popups/menus/popovers/tooltips inside mobile viewport bounds */
   body .ant-popover,
   body .ant-popconfirm,
   body .ant-dropdown,
-  body .ant-select-dropdown {
+  body .ant-select-dropdown,
+  body .ant-tooltip,
+  body .co-tooltip-overlay {
     max-width: calc(100vw - 16px) !important;
   }
 
@@ -57,16 +59,22 @@
 
   .ant-card:not(.ant-card-small) > .ant-card-head {
     min-height: 46px;
-    padding: 6px 14px;
+    padding: 10px 14px;
   }
 
-  .ant-card > .ant-card-head .ant-card-head-wrapper {
+  body .ant-card :where(.ant-card-head) > .ant-card-head-wrapper {
     flex-wrap: wrap;
     row-gap: 6px;
   }
 
-  .ant-card > .ant-card-head .ant-card-head-title {
+  body .ant-card :where(.ant-card-head-wrapper) > .ant-card-head-title {
+    flex: 1 1 auto;
     min-width: 0;
+    padding: 0;
+  }
+
+  body .ant-card :where(.ant-card-head-wrapper) > .ant-card-extra {
+    padding: 0;
   }
 
   .ant-card:not(.ant-card-small) > .ant-card-body {
@@ -74,27 +82,8 @@
     min-width: 0;
   }
 
-  /* Prevent any long badge/tag on mobile pages from bursting out of cards or drawers.
-     Use :where(...) so specificity stays (0,1,1): above Ant Design's (0,1,0) default,
-     while letting scoped component single-line pill rules override cleanly. */
-  body .ant-tag:where(:not(.co-runtime-tag):not(.co-location-tag):not(.co-billing-pill):not(.co-endurance-tag):not(.co-web-mode-badge):not(.co-comfy-filename-pill)) {
-    max-width: 100%;
-    height: auto;
-    min-height: 22px;
-    padding-top: 2px;
-    padding-bottom: 2px;
-    border-radius: 11px;
-    line-height: 1.35;
-    white-space: normal;
-    overflow-wrap: anywhere;
-    word-break: break-word;
-    text-align: left;
-  }
-
-  body .ant-tag:where(:not(.co-runtime-tag):not(.co-location-tag):not(.co-billing-pill):not(.co-endurance-tag):not(.co-web-mode-badge):not(.co-comfy-filename-pill)) > span:not(.ant-badge) {
-    min-width: 0;
-    overflow-wrap: anywhere;
-  }
+  /* Base .ant-tag stays single-line with max-width: 100%, overflow: hidden, and
+   * text-overflow: ellipsis by default; intentionally multi-line tags opt in via .co-tag-wrap. */
 
   .ant-space {
     max-width: 100%;
@@ -105,8 +94,8 @@
     max-width: 100%;
   }
 
-  .ant-card-small > .ant-card-head {
-    padding: 0 14px;
+  body .ant-card-small > .ant-card-head {
+    padding: 8px 14px;
   }
 
   .ant-card-small > .ant-card-body {
@@ -149,12 +138,28 @@
     margin-inline-start: 0 !important;
   }
 
-  .ant-modal-footer > .ant-btn:first-child {
-    flex-shrink: 0;
+  .ant-modal-footer > .ant-btn:not(:last-child) {
+    flex: 0 1 auto;
+    max-width: 55%;
+    min-width: 0;
   }
 
   .ant-modal-footer > .ant-btn:last-child {
-    flex: 1 1 0;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .ant-modal-footer > .ant-btn:only-child {
+    flex: 0 1 auto;
+  }
+
+  .ant-modal-footer:has(> .ant-btn ~ .ant-btn ~ .ant-btn) {
+    flex-wrap: wrap !important;
+  }
+
+  .ant-modal-footer:has(> .ant-btn ~ .ant-btn ~ .ant-btn) > .ant-btn {
+    max-width: none;
+    flex: 1 1 auto;
   }
 
   .ant-modal-footer .ant-btn,
@@ -195,19 +200,40 @@
   }
 
   .ant-drawer .ant-drawer-header-title {
+    flex: 1 1 0;
     min-width: 0;
-    flex: 1 1 auto;
+    overflow: hidden;
   }
 
   .ant-drawer .ant-drawer-title {
     min-width: 0;
     overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .ant-drawer .ant-drawer-extra {
+    flex: 0 0 auto;
     min-width: 0;
-    max-width: 56%;
-    flex-shrink: 1;
+    max-width: 60%;
+  }
+
+  .ant-drawer .ant-drawer-extra > .ant-btn {
+    max-width: 100%;
+    overflow: hidden;
+  }
+
+  .ant-drawer .ant-drawer-header:has(> .ant-drawer-extra .ant-space) {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+
+  .ant-drawer :where(.ant-drawer-header:has(> .ant-drawer-extra .ant-space)) > .ant-drawer-header-title {
+    flex: 1 1 140px;
+  }
+
+  .ant-drawer :where(.ant-drawer-header:has(> .ant-drawer-extra .ant-space)) > .ant-drawer-extra {
+    max-width: 100%;
   }
 
   .ant-drawer .ant-drawer-extra .ant-space {
@@ -228,27 +254,9 @@
     padding: 10px 14px calc(10px + var(--co-safe-bottom)) !important;
   }
 
-  /* Capsule tabs: horizontally scrollable track with compact pills so multi-tab
-   * workspaces (e.g. ComfyUI Studio / Live / Canvas) never clip off-screen on 375px phones */
+  /* Capsule tabs: let AntD TabNavList drive touch drag, scrollToTab, and ping-* edge fades */
   .ant-tabs-top > .ant-tabs-nav {
     max-width: 100%;
-  }
-
-  .ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-wrap {
-    overflow-x: auto !important;
-    overflow-y: hidden;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
-    max-width: 100%;
-  }
-
-  .ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-wrap::-webkit-scrollbar {
-    display: none;
-  }
-
-  .ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-wrap::before,
-  .ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-wrap::after {
-    display: none !important;
   }
 
   .ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-operations {
@@ -259,7 +267,6 @@
     gap: 2px;
     padding: 3px;
     max-width: none;
-    transform: none !important;
   }
 
   .ant-tabs-top > .ant-tabs-nav .ant-tabs-tab {
@@ -281,15 +288,41 @@
     display: none;
   }
 
+  .ant-segmented:not(.ant-segmented-block) .ant-segmented-group {
+    width: max-content;
+    min-width: 100%;
+  }
+
+  .ant-segmented:not(.ant-segmented-block) .ant-segmented-item {
+    flex: 1 0 auto;
+  }
+
+  .ant-segmented .ant-segmented-item-label {
+    white-space: nowrap;
+  }
+
+  .ant-segmented:not(.ant-segmented-block) .ant-segmented-item-label {
+    padding-inline: 10px;
+  }
+
   /* Alerts wrap actions gracefully instead of squeezing message text on phones */
   .ant-alert {
     padding: 10px 12px;
     flex-wrap: wrap;
-    row-gap: 8px;
+    gap: 8px 10px;
+  }
+
+  body .ant-alert .ant-alert-icon {
+    margin-inline-end: 0;
+  }
+
+  body .ant-alert .ant-alert-close-icon {
+    margin-inline-start: 0;
   }
 
   .ant-alert .ant-alert-content {
-    min-width: 180px;
+    min-width: min(160px, calc(100% - 36px));
+    max-width: 100%;
   }
 
   .ant-alert .ant-alert-action {
@@ -335,12 +368,6 @@
     justify-content: flex-end;
   }
 
-  .co-comfy-canvas-banner-row,
-  .co-comfy-wf-card-foot,
-  .co-comfy-output-head {
-    flex-wrap: wrap !important;
-  }
-
   /* Prevent fixed-size skeletons from overflowing 360px-375px mobile cards */
   .co-skeleton {
     max-width: 100%;
@@ -366,8 +393,30 @@
   }
 
   .ant-input-sm,
-  .ant-input-affix-wrapper-sm {
+  .ant-input-affix-wrapper-sm,
+  .ant-input-number-sm {
     min-height: 32px;
+  }
+
+  body .ant-input-number.ant-input-number-sm input.ant-input-number-input {
+    height: 30px;
+    min-height: 30px;
+  }
+
+  body .ant-select-single.ant-select-sm:not(.ant-select-customize-input) .ant-select-selector {
+    height: 32px;
+    min-height: 32px;
+    align-items: center;
+  }
+
+  body .ant-select-single.ant-select-sm:not(.ant-select-customize-input) .ant-select-selector .ant-select-selection-item,
+  body .ant-select-single.ant-select-sm:not(.ant-select-customize-input) .ant-select-selector .ant-select-selection-placeholder,
+  body .ant-select-single.ant-select-sm:not(.ant-select-customize-input) .ant-select-selector::after {
+    line-height: 30px;
+  }
+
+  body .ant-select-single.ant-select-sm:not(.ant-select-customize-input) .ant-select-selector .ant-select-selection-search-input {
+    height: 30px;
   }
 
   .co-privacy-input-veil {

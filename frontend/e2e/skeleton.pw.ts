@@ -81,7 +81,7 @@ function baseSnapshot(overrides: Record<string, any> = {}) {
       idle_countdown_seconds: 60,
       auto_drive: true,
       download_threads: 16,
-      assign_max_attempts: 20,
+      assign_max_attempts: 30,
     },
     ...overrides,
   };

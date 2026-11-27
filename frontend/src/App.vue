@@ -3237,7 +3237,11 @@ function updateToastLayout() {
   if (el) {
     const top = Math.round(el.getBoundingClientRect().top);
     if (top > 0) {
-      toastTopOffsetPx.value = Math.min(260, Math.max(72, top + 6));
+      const maxTop =
+        typeof window !== "undefined" && window.innerHeight > 0
+          ? Math.max(96, Math.round(window.innerHeight * 0.55))
+          : 260;
+      toastTopOffsetPx.value = Math.min(maxTop, Math.max(72, top + 6));
     }
   }
   if (activeOverlayDrawer.value.open) {
@@ -5930,80 +5934,82 @@ onUnmounted(() => {
                     v-if="ready && (state.setup.drive || state.setup.drive_authorized || state.setup.colab)"
                     class="co-drive-strip co-sync-note"
                   >
-                    <PhCloud :size="16" class="co-drive-icon" />
-                    <span
-                      class="co-drive-text"
-                      :class="{
-                        'is-warning':
-                          !!state.drive_auth_hint &&
-                          !!state.auth_url &&
-                          !!state.operation &&
-                          !state.setup.drive,
-                      }"
-                    >
-                      <template v-if="state.auth_url && state.operation && !state.setup.drive">
-                        <ColabOnePrivacyText
-                          v-if="state.drive_auth_hint"
-                          :text="tb(state.drive_auth_hint)"
-                          :context="privacyContext"
-                        />
-                        <template v-else>{{
-                          t("device.driveWaitingBrowserConfirm")
-                        }}</template>
-                      </template>
-                      <template
-                        v-else-if="
-                          !state.setup.drive &&
-                          state.operation?.kind === 'drive_connect' &&
-                          (state.operation?.stage === 'mounting' ||
-                            state.operation?.stage === 'initializing')
-                        "
+                    <div class="co-drive-info">
+                      <PhCloud :size="16" class="co-drive-icon" />
+                      <span
+                        class="co-drive-text"
+                        :class="{
+                          'is-warning':
+                            !!state.drive_auth_hint &&
+                            !!state.auth_url &&
+                            !!state.operation &&
+                            !state.setup.drive,
+                        }"
                       >
-                        {{
-                          state.operation?.interactive
-                            ? t("device.driveMountingAfterAuth")
-                            : state.operation?.title
-                              ? tb(state.operation.title)
-                              : t("comfy.driveModalMountingDirectTitle")
-                        }}
-                      </template>
-                      <template v-else-if="state.setup.drive">
-                        <ColabOnePrivacyText
-                          v-if="state.runtime.drive?.error"
-                          :text="tb(state.runtime.drive.error)"
-                          :context="privacyContext"
-                        />
-                        <template v-else>{{
-                          t("device.driveMountedFull", {
-                            folder:
-                              state.runtime.drive?.remote_folder ||
-                              "ColabOne_Drive",
-                            free: state.runtime.drive?.free_bytes
-                              ? t("device.driveFreeSegment", {
-                                  size: bytes(state.runtime.drive.free_bytes),
-                                })
-                              : "",
-                            tail: state.runtime.drive?.pending
-                              ? t("device.drivePendingSync", {
-                                  count: state.runtime.drive.pending,
-                                })
-                              : t("device.driveAutoPersist"),
-                          })
-                        }}</template>
-                      </template>
-                      <template v-else-if="state.runtime.drive?.error">
-                        <ColabOnePrivacyText
-                          :text="tb(state.runtime.drive.error)"
-                          :context="privacyContext"
-                        />
-                      </template>
-                      <template v-else-if="state.setup.drive_authorized">
-                        {{ t("device.driveAuthorizedHint") }}
-                      </template>
-                      <template v-else>
-                        {{ t("device.driveNeedAuthHint") }}
-                      </template>
-                    </span>
+                        <template v-if="state.auth_url && state.operation && !state.setup.drive">
+                          <ColabOnePrivacyText
+                            v-if="state.drive_auth_hint"
+                            :text="tb(state.drive_auth_hint)"
+                            :context="privacyContext"
+                          />
+                          <template v-else>{{
+                            t("device.driveWaitingBrowserConfirm")
+                          }}</template>
+                        </template>
+                        <template
+                          v-else-if="
+                            !state.setup.drive &&
+                            state.operation?.kind === 'drive_connect' &&
+                            (state.operation?.stage === 'mounting' ||
+                              state.operation?.stage === 'initializing')
+                          "
+                        >
+                          {{
+                            state.operation?.interactive
+                              ? t("device.driveMountingAfterAuth")
+                              : state.operation?.title
+                                ? tb(state.operation.title)
+                                : t("comfy.driveModalMountingDirectTitle")
+                          }}
+                        </template>
+                        <template v-else-if="state.setup.drive">
+                          <ColabOnePrivacyText
+                            v-if="state.runtime.drive?.error"
+                            :text="tb(state.runtime.drive.error)"
+                            :context="privacyContext"
+                          />
+                          <template v-else>{{
+                            t("device.driveMountedFull", {
+                              folder:
+                                state.runtime.drive?.remote_folder ||
+                                "ColabOne_Drive",
+                              free: state.runtime.drive?.free_bytes
+                                ? t("device.driveFreeSegment", {
+                                    size: bytes(state.runtime.drive.free_bytes),
+                                  })
+                                : "",
+                              tail: state.runtime.drive?.pending
+                                ? t("device.drivePendingSync", {
+                                    count: state.runtime.drive.pending,
+                                  })
+                                : t("device.driveAutoPersist"),
+                            })
+                          }}</template>
+                        </template>
+                        <template v-else-if="state.runtime.drive?.error">
+                          <ColabOnePrivacyText
+                            :text="tb(state.runtime.drive.error)"
+                            :context="privacyContext"
+                          />
+                        </template>
+                        <template v-else-if="state.setup.drive_authorized">
+                          {{ t("device.driveAuthorizedHint") }}
+                        </template>
+                        <template v-else>
+                          {{ t("device.driveNeedAuthHint") }}
+                        </template>
+                      </span>
+                    </div>
                     <template v-if="state.auth_url && state.operation && !state.setup.drive">
                       <ASpace :size="6" wrap>
                         <AButton
@@ -6564,10 +6570,12 @@ onUnmounted(() => {
                       <div class="co-sr-main">
                         <div class="co-sr-info">
                           <div class="co-sr-title-line">
-                            <span class="co-sr-icon is-blue" aria-hidden="true">
-                              <PhUserCircle :size="14" weight="duotone" />
+                            <span class="co-sr-title-group">
+                              <span class="co-sr-icon is-blue" aria-hidden="true">
+                                <PhUserCircle :size="14" weight="duotone" />
+                              </span>
+                              <h3 class="co-sr-title">{{ t("settings.googleCardTitle") }}</h3>
                             </span>
-                            <h3 class="co-sr-title">{{ t("settings.googleCardTitle") }}</h3>
                             <ColabOneSkeleton
                               v-if="!snapshotLoaded"
                               :width="52"
@@ -6728,10 +6736,12 @@ onUnmounted(() => {
                       <div class="co-sr-main">
                         <div class="co-sr-info">
                           <div class="co-sr-title-line">
-                            <span class="co-sr-icon is-emerald" aria-hidden="true">
-                              <PhCloud :size="14" weight="duotone" />
+                            <span class="co-sr-title-group">
+                              <span class="co-sr-icon is-emerald" aria-hidden="true">
+                                <PhCloud :size="14" weight="duotone" />
+                              </span>
+                              <h3 class="co-sr-title">{{ t("settings.driveHeading") }}</h3>
                             </span>
-                            <h3 class="co-sr-title">{{ t("settings.driveHeading") }}</h3>
                             <ColabOneSkeleton
                               v-if="!snapshotLoaded"
                               :width="56"
@@ -6898,10 +6908,12 @@ onUnmounted(() => {
                       <div class="co-sr-main">
                         <div class="co-sr-info">
                           <div class="co-sr-title-line">
-                            <span class="co-sr-icon is-violet" aria-hidden="true">
-                              <PhKey :size="14" weight="duotone" />
+                            <span class="co-sr-title-group">
+                              <span class="co-sr-icon is-violet" aria-hidden="true">
+                                <PhKey :size="14" weight="duotone" />
+                              </span>
+                              <h3 class="co-sr-title">{{ t("settings.hfCardTitle") }}</h3>
                             </span>
-                            <h3 class="co-sr-title">{{ t("settings.hfCardTitle") }}</h3>
                             <ColabOneSkeleton
                               v-if="!snapshotLoaded"
                               :width="46"
@@ -6970,10 +6982,12 @@ onUnmounted(() => {
                       <div class="co-sr-main">
                         <div class="co-sr-info">
                           <div class="co-sr-title-line">
-                            <span class="co-sr-icon is-blue" aria-hidden="true">
-                              <PhSlidersHorizontal :size="14" weight="duotone" />
+                            <span class="co-sr-title-group">
+                              <span class="co-sr-icon is-blue" aria-hidden="true">
+                                <PhSlidersHorizontal :size="14" weight="duotone" />
+                              </span>
+                              <h3 class="co-sr-title">{{ t("settings.defaultGpuLabel") }}</h3>
                             </span>
-                            <h3 class="co-sr-title">{{ t("settings.defaultGpuLabel") }}</h3>
                           </div>
                           <p class="co-sr-desc">
                             {{ t("settings.computeSyncNote") }}
@@ -7174,10 +7188,12 @@ onUnmounted(() => {
                       <div class="co-sr-main">
                         <div class="co-sr-info">
                           <div class="co-sr-title-line">
-                            <span class="co-sr-icon is-emerald" aria-hidden="true">
-                              <PhShieldCheck :size="14" weight="duotone" />
+                            <span class="co-sr-title-group">
+                              <span class="co-sr-icon is-emerald" aria-hidden="true">
+                                <PhShieldCheck :size="14" weight="duotone" />
+                              </span>
+                              <h3 class="co-sr-title">{{ t("settings.assignProxyTitle") }}</h3>
                             </span>
-                            <h3 class="co-sr-title">{{ t("settings.assignProxyTitle") }}</h3>
                             <ColabOneSkeleton
                               v-if="!snapshotLoaded"
                               :width="60"
@@ -7339,12 +7355,14 @@ onUnmounted(() => {
                       <div class="co-sr-main">
                         <div class="co-sr-info">
                           <div class="co-sr-title-line">
-                            <span class="co-sr-icon is-amber" aria-hidden="true">
-                              <PhSun :size="14" weight="duotone" />
+                            <span class="co-sr-title-group">
+                              <span class="co-sr-icon is-amber" aria-hidden="true">
+                                <PhSun :size="14" weight="duotone" />
+                              </span>
+                              <h3 id="appearance-heading" class="co-sr-title">
+                                {{ t("settings.appearanceLabel") }}
+                              </h3>
                             </span>
-                            <h3 id="appearance-heading" class="co-sr-title">
-                              {{ t("settings.appearanceLabel") }}
-                            </h3>
                           </div>
                           <p class="co-sr-desc">
                             {{ t("settings.appearanceDesc") }}
@@ -7395,12 +7413,14 @@ onUnmounted(() => {
                       <div class="co-sr-main">
                         <div class="co-sr-info">
                           <div class="co-sr-title-line">
-                            <span class="co-sr-icon is-violet" aria-hidden="true">
-                              <PhEyeSlash :size="14" weight="duotone" />
+                            <span class="co-sr-title-group">
+                              <span class="co-sr-icon is-violet" aria-hidden="true">
+                                <PhEyeSlash :size="14" weight="duotone" />
+                              </span>
+                              <h3 id="privacy-mask-heading" class="co-sr-title">
+                                {{ t("settings.privacyMaskDefaultTitle") }}
+                              </h3>
                             </span>
-                            <h3 id="privacy-mask-heading" class="co-sr-title">
-                              {{ t("settings.privacyMaskDefaultTitle") }}
-                            </h3>
                             <ATag
                               v-if="colabOnePrivacyActive"
                               color="blue"
@@ -7479,12 +7499,14 @@ onUnmounted(() => {
                       <div class="co-sr-main">
                         <div class="co-sr-info">
                           <div class="co-sr-title-line">
-                            <span class="co-sr-icon is-blue" aria-hidden="true">
-                              <PhPackage :size="14" weight="duotone" />
+                            <span class="co-sr-title-group">
+                              <span class="co-sr-icon is-blue" aria-hidden="true">
+                                <PhPackage :size="14" weight="duotone" />
+                              </span>
+                              <h3 id="migration-heading" class="co-sr-title">
+                                {{ t("settings.migrationTitle") }}
+                              </h3>
                             </span>
-                            <h3 id="migration-heading" class="co-sr-title">
-                              {{ t("settings.migrationTitle") }}
-                            </h3>
                             <ATag color="blue" :bordered="false">
                               {{ t("settings.migrationEncryptedTag") }}
                             </ATag>
@@ -7544,12 +7566,14 @@ onUnmounted(() => {
                       <div class="co-sr-main">
                         <div class="co-sr-info">
                           <div class="co-sr-title-line">
-                            <span class="co-sr-icon is-slate" aria-hidden="true">
-                              <PhAppWindow :size="14" weight="duotone" />
+                            <span class="co-sr-title-group">
+                              <span class="co-sr-icon is-slate" aria-hidden="true">
+                                <PhAppWindow :size="14" weight="duotone" />
+                              </span>
+                              <h3 id="close-behavior-heading" class="co-sr-title">
+                                {{ t("settings.closeBehaviorTitle") }}
+                              </h3>
                             </span>
-                            <h3 id="close-behavior-heading" class="co-sr-title">
-                              {{ t("settings.closeBehaviorTitle") }}
-                            </h3>
                           </div>
                           <p class="co-sr-desc">
                             {{
@@ -7593,12 +7617,14 @@ onUnmounted(() => {
                       <div class="co-sr-main">
                         <div class="co-sr-info">
                           <div class="co-sr-title-line">
-                            <span class="co-sr-icon is-slate" aria-hidden="true">
-                              <PhDesktop :size="14" weight="duotone" />
+                            <span class="co-sr-title-group">
+                              <span class="co-sr-icon is-slate" aria-hidden="true">
+                                <PhDesktop :size="14" weight="duotone" />
+                              </span>
+                              <h3 id="shortcuts-heading" class="co-sr-title">
+                                {{ t("settings.shortcutsTitle") }}
+                              </h3>
                             </span>
-                            <h3 id="shortcuts-heading" class="co-sr-title">
-                              {{ t("settings.shortcutsTitle") }}
-                            </h3>
                             <ColabOneSkeleton
                               v-if="!snapshotLoaded"
                               :width="60"
@@ -7673,12 +7699,14 @@ onUnmounted(() => {
                       <div class="co-sr-main">
                         <div class="co-sr-info">
                           <div class="co-sr-title-line">
-                            <span class="co-sr-icon is-blue" aria-hidden="true">
-                              <PhCloudArrowDown :size="14" weight="duotone" />
+                            <span class="co-sr-title-group">
+                              <span class="co-sr-icon is-blue" aria-hidden="true">
+                                <PhCloudArrowDown :size="14" weight="duotone" />
+                              </span>
+                              <h3 id="updates-heading" class="co-sr-title">
+                                {{ t("update.settingsTitle") }}
+                              </h3>
                             </span>
-                            <h3 id="updates-heading" class="co-sr-title">
-                              {{ t("update.settingsTitle") }}
-                            </h3>
                             <ATag
                               v-if="updateStatusTag"
                               :color="updateStatusTag.color"
@@ -8553,6 +8581,10 @@ onUnmounted(() => {
   align-items: center;
   gap: 4px;
   min-width: 0;
+  overflow-x: clip;
+  overflow-y: visible;
+  padding: 4px;
+  margin: -4px;
 }
 
 .co-brand {
@@ -8612,6 +8644,7 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   flex-shrink: 0;
+  padding: 2px 3px 2px 0;
 }
 
 .co-brand-version {
@@ -8753,6 +8786,7 @@ onUnmounted(() => {
   display: flex;
   justify-content: center;
   min-width: 0;
+  flex-shrink: 0;
 }
 
 .co-nav-pill-track {
@@ -8810,7 +8844,7 @@ onUnmounted(() => {
   box-shadow: var(--co-pill-active-shadow);
 }
 
-/* ColabOne NavMenu: clean text-only pills on desktop, icon-only pills below 800px */
+/* ColabOne NavMenu: clean text-only pills on desktop, icon-only pills below 960px */
 .co-nav-pill-icon {
   display: none;
   flex-shrink: 0;
@@ -8964,15 +8998,17 @@ onUnmounted(() => {
 .co-topbar-left {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 4px 8px;
   min-width: 0;
   flex: 1 1 auto;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .co-runtime-tag {
   margin-inline-end: 0;
   font-weight: 500;
+  white-space: nowrap;
   flex-shrink: 0;
 }
 
@@ -8983,19 +9019,20 @@ onUnmounted(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  min-width: 0;
+  min-width: 72px;
   flex: 0 1 auto;
 }
 
 .co-location-tag {
   margin-inline-end: 0;
+  white-space: nowrap;
   flex-shrink: 0;
 }
 
 .co-model-chip {
   height: 28px;
   max-width: 220px;
-  min-width: 0;
+  min-width: 84px;
   border-radius: 9999px !important;
   flex-shrink: 1;
   display: inline-flex;
@@ -9012,14 +9049,15 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
-@container co-status-bar (max-width: 1120px) {
+@container co-status-bar (max-width: 1420px) {
   .co-status-bar-inner {
     flex-wrap: wrap;
     row-gap: 6px;
   }
 
   .co-topbar-left {
-    flex: 1 1 260px;
+    flex: 1 1 auto;
+    min-width: 0;
   }
 
   .co-topbar-right {
@@ -9028,7 +9066,7 @@ onUnmounted(() => {
 }
 
 .co-instance-select {
-  min-width: 170px;
+  min-width: 130px;
   max-width: 240px;
   flex-shrink: 1;
 }
@@ -9038,6 +9076,8 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* Global Banners */
@@ -9138,6 +9178,8 @@ onUnmounted(() => {
 }
 
 .co-settings-inner {
+  container-type: inline-size;
+  container-name: co-settings;
   width: 100%;
   max-width: 840px;
   margin-inline: auto;
@@ -9259,7 +9301,46 @@ onUnmounted(() => {
   flex-direction: column;
 }
 
-@container co-navbar (max-width: 1120px) {
+@container co-navbar (1180px < width <= 1340px) {
+  .co-navbar-inner:has(.co-nav-update-pill, .co-web-signout-btn) {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .co-navbar-inner:has(.co-nav-update-pill, .co-web-signout-btn) .co-nav-left {
+    flex: 0 1 auto;
+  }
+
+  .co-navbar-inner:has(.co-nav-update-pill, .co-web-signout-btn) .co-nav-center,
+  .co-navbar-inner:has(.co-nav-update-pill, .co-web-signout-btn) .co-nav-right {
+    flex: 0 0 auto;
+  }
+
+  .co-brand-version:has(.co-nav-update-pill) {
+    padding: 2px 7px;
+    gap: 5px;
+  }
+
+  .co-nav-update-pill {
+    padding: 1px 5px;
+    margin-right: -2px;
+  }
+}
+
+@container co-navbar (1180px < width <= 1260px) {
+  .co-navbar-inner:has(.co-nav-update-pill, .co-web-signout-btn) .co-logs-trigger {
+    width: 40px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .co-navbar-inner:has(.co-nav-update-pill, .co-web-signout-btn) .co-logs-trigger-label {
+    display: none;
+  }
+}
+
+@container co-navbar (max-width: 1180px) {
   .co-navbar-inner {
     display: flex;
     justify-content: space-between;
@@ -9271,31 +9352,61 @@ onUnmounted(() => {
   }
 
   .co-nav-center {
-    flex: 0 1 auto;
+    flex: 0 0 auto;
   }
 
   .co-nav-right {
     flex: 0 0 auto;
   }
 
+  .co-brand {
+    gap: 10px;
+    font-size: 22px;
+  }
+
+  .co-brand-icon {
+    width: 40px;
+    height: 40px;
+  }
+
+  .co-brand-version:has(.co-nav-update-pill) {
+    padding: 2px 7px;
+    gap: 5px;
+  }
+
+  .co-nav-update-pill {
+    padding: 1px 5px;
+    margin-right: -2px;
+  }
+
   .co-nav-pill-item {
-    padding: 0 16px;
+    padding: 0 15px;
+  }
+
+  .co-logs-trigger {
+    width: 40px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .co-logs-trigger-label {
+    display: none;
   }
 }
 
-@container co-navbar (max-width: 1020px) {
+@container co-navbar (max-width: 1080px) {
   .co-navbar-inner {
     height: 64px;
   }
 
   .co-brand {
-    gap: 10px;
-    font-size: 21px;
+    gap: 8px;
+    font-size: 20px;
   }
 
   .co-brand-icon {
-    width: 38px;
-    height: 38px;
+    width: 36px;
+    height: 36px;
   }
 
   .co-brand-version {
@@ -9310,22 +9421,20 @@ onUnmounted(() => {
     font-size: 9.5px;
   }
 
-  .co-logs-trigger {
-    width: 40px;
-    padding: 0;
-    justify-content: center;
-  }
-
-  .co-logs-trigger-label {
-    display: none;
-  }
-}
-
-@container co-navbar (max-width: 820px) {
   .co-web-mode-badge {
     display: none;
   }
 
+  .co-nav-pill-item {
+    padding: 0 13px;
+  }
+
+  .co-nav-right {
+    gap: 6px;
+  }
+}
+
+@container co-navbar (max-width: 960px) {
   .co-nav-pill-item {
     width: 38px;
     padding: 0;
@@ -9343,6 +9452,33 @@ onUnmounted(() => {
     position: absolute;
     top: 6px;
     right: 6px;
+  }
+}
+
+@container co-navbar (max-width: 860px) {
+  .co-brand-version:has(.co-nav-update-pill) {
+    padding: 2px 4px;
+    gap: 0;
+  }
+
+  .co-brand-version:has(.co-nav-update-pill) .co-brand-version-text {
+    display: none;
+  }
+
+  .co-brand-version:has(.co-nav-update-pill) .co-nav-update-pill {
+    margin-right: 0;
+  }
+}
+
+@container co-navbar (max-width: 800px) {
+  .co-brand-version.is-static:not(.is-open) {
+    display: none;
+  }
+
+  .co-nav-update-pill {
+    padding: 1px 4px;
+    gap: 3px;
+    font-size: 9px;
   }
 }
 
@@ -9662,14 +9798,23 @@ onUnmounted(() => {
   flex-wrap: wrap;
 }
 
+.co-drive-info {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
 .co-drive-icon {
   color: var(--co-accent);
   flex-shrink: 0;
+  margin-top: 2px;
 }
 
 .co-drive-text {
   flex: 1;
-  min-width: 200px;
+  min-width: 0;
   font-size: 13px;
   color: var(--co-secondary-text);
 }
@@ -9739,6 +9884,9 @@ onUnmounted(() => {
   font-family: var(--co-font-mono);
   font-size: 13px;
   color: var(--co-text);
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .co-instance-detail {
@@ -9820,11 +9968,12 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 18px;
+  flex-wrap: wrap;
+  gap: 10px 18px;
 }
 
 .co-sr-info {
-  flex: 1;
+  flex: 1 1 240px;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -9836,6 +9985,14 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.co-sr-title-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .co-sr-icon {
@@ -9884,6 +10041,7 @@ onUnmounted(() => {
   font-weight: 600;
   line-height: 1.35;
   color: var(--co-text);
+  min-width: 0;
 }
 
 .co-sr-desc {
@@ -9913,7 +10071,9 @@ onUnmounted(() => {
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
-  flex-shrink: 0;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .co-sr-control-input {
@@ -10070,6 +10230,33 @@ onUnmounted(() => {
     flex-direction: column;
     align-items: stretch;
     gap: 10px;
+  }
+
+  .co-sr-info {
+    flex: none;
+  }
+
+  .co-sr-control {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .co-sr-control-input,
+  .co-sr-select-gpu,
+  .co-sr-select-idle {
+    width: 100%;
+  }
+}
+
+@container co-settings (max-width: 680px) {
+  .co-sr-main {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .co-sr-info {
+    flex: none;
   }
 
   .co-sr-control {
@@ -10908,6 +11095,8 @@ onUnmounted(() => {
   font-size: 11px;
   line-height: 18px;
   border-radius: 999px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .co-web-settings-notice {
@@ -10948,6 +11137,10 @@ onUnmounted(() => {
   .co-nav-left {
     flex: 0 1 auto;
     min-width: 0;
+    overflow-x: clip;
+    overflow-y: visible;
+    padding: 4px;
+    margin: -4px;
     gap: 6px;
   }
 
@@ -10972,12 +11165,26 @@ onUnmounted(() => {
     display: none;
   }
 
+  .co-brand-version:has(.co-nav-update-pill) {
+    padding: 2px 7px;
+  }
+
+  .co-brand-version .co-nav-update-pill {
+    display: none;
+  }
+
+  .co-brand-version:has(.co-nav-update-pill) .co-brand-version-text {
+    display: inline;
+  }
+
   .co-web-mode-badge {
     display: inline-flex;
     font-size: 10.5px;
     padding: 0 6px;
     min-height: 19px;
     line-height: 17px;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
 
   /* Primary navigation moves cleanly to the mobile bottom tab bar */
@@ -11114,6 +11321,18 @@ onUnmounted(() => {
     scrollbar-width: none;
     -webkit-overflow-scrolling: touch;
     gap: 5px;
+    padding-right: 8px;
+    box-sizing: border-box;
+    -webkit-mask-image: linear-gradient(
+      to right,
+      #000 calc(100% - 10px),
+      transparent 100%
+    );
+    mask-image: linear-gradient(
+      to right,
+      #000 calc(100% - 10px),
+      transparent 100%
+    );
   }
 
   .co-topbar-left::-webkit-scrollbar {
@@ -11143,6 +11362,7 @@ onUnmounted(() => {
 
   .co-model-chip {
     flex-shrink: 0;
+    min-width: 0;
     max-width: 118px;
     height: 21px;
     padding-inline: 7px !important;
@@ -11272,9 +11492,29 @@ onUnmounted(() => {
     gap: 8px;
   }
 
+  .co-drive-info {
+    flex: none;
+    width: 100%;
+  }
+
   .co-drive-text {
     min-width: 0;
-    width: 100%;
+  }
+
+  .co-instances-card :deep(.ant-card-head-wrapper) {
+    flex-wrap: wrap;
+    gap: 8px 10px;
+  }
+
+  .co-instances-card :deep(.ant-card-head-title) {
+    flex: 1 1 180px;
+    min-width: 0;
+    white-space: normal;
+  }
+
+  .co-instances-card :deep(.ant-card-extra) {
+    margin-inline-start: auto;
+    padding: 0;
   }
 
   .co-instance-row {
@@ -11414,6 +11654,30 @@ onUnmounted(() => {
   }
 }
 
+@media (max-width: 480px) {
+  .co-assign-proxy-input-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .co-assign-proxy-input-row > :first-child {
+    flex: none;
+    width: 100%;
+  }
+}
+
+@container co-settings (max-width: 440px) {
+  .co-assign-proxy-input-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .co-assign-proxy-input-row > :first-child {
+    flex: none;
+    width: 100%;
+  }
+}
+
 @media (max-width: 420px) {
   .co-navbar-inner {
     padding: 0 10px;
@@ -11421,28 +11685,35 @@ onUnmounted(() => {
   }
 
   .co-brand {
-    font-size: 16px;
-    gap: 6px;
+    font-size: 15px;
+    gap: 5px;
+    flex-shrink: 1;
+    min-width: 0;
   }
 
   .co-brand-icon {
-    width: 26px;
-    height: 26px;
+    width: 24px;
+    height: 24px;
+  }
+
+  .co-nav-left:has(.co-brand-version.is-open) .co-brand-text {
+    display: none;
   }
 
   .co-nav-right {
-    gap: 4px;
+    gap: 3px;
   }
 
   .co-nav-circle-btn,
   .co-logs-trigger {
-    width: 32px;
-    height: 32px;
+    width: 30px;
+    height: 30px;
   }
 
   .co-nav-right :deep(.co-locale-trigger) {
-    height: 32px;
-    padding: 0 7px 0 8px;
+    height: 30px;
+    padding: 0 5px 0 6px;
+    gap: 2px;
   }
 }
 

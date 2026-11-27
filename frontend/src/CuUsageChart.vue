@@ -104,6 +104,7 @@ let fetchSeq = 0;
 let minuteTimer: ReturnType<typeof setInterval> | undefined;
 
 const plotContainerRef = ref<HTMLElement | null>(null);
+const dateTriggerRef = ref<{ $el?: HTMLElement } | HTMLElement | null>(null);
 const plotWidth = ref<number>(760);
 const PLOT_HEIGHT = 212;
 let resizeObserver: ResizeObserver | null = null;
@@ -697,6 +698,77 @@ function closePopoverOnBlur() {
   calendarOpen.value = false;
 }
 
+function hasVisibleForegroundOverlay(): boolean {
+  if (typeof document === "undefined" || typeof window === "undefined") {
+    return false;
+  }
+  const overlays = document.querySelectorAll<HTMLElement>(
+    ".ant-modal-wrap, .ant-drawer-open",
+  );
+  for (const el of overlays) {
+    const style = window.getComputedStyle(el);
+    if (
+      style.display !== "none" &&
+      style.visibility !== "hidden" &&
+      el.getBoundingClientRect().height > 0
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function resolveDateTriggerElement(): HTMLElement | null {
+  const raw = dateTriggerRef.value;
+  if (raw instanceof HTMLElement) {
+    return raw;
+  }
+  if (raw && "$el" in raw && raw.$el instanceof HTMLElement) {
+    return raw.$el;
+  }
+  if (typeof document !== "undefined") {
+    return document.querySelector<HTMLElement>(".co-cu-date-trigger");
+  }
+  return null;
+}
+
+function onCalendarWindowKeydown(event: KeyboardEvent) {
+  if (
+    event.key !== "Escape" ||
+    !calendarOpen.value ||
+    event.defaultPrevented ||
+    event.isComposing ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.shiftKey
+  ) {
+    return;
+  }
+  if (hasVisibleForegroundOverlay()) {
+    return;
+  }
+  const activeEl =
+    typeof document !== "undefined" ? document.activeElement : null;
+  const shouldRestoreFocus =
+    activeEl instanceof Element && Boolean(activeEl.closest(".co-cu-calendar"));
+  event.preventDefault();
+  event.stopPropagation();
+  calendarOpen.value = false;
+  if (shouldRestoreFocus) {
+    resolveDateTriggerElement()?.focus();
+  }
+}
+
+watch(calendarOpen, (open) => {
+  if (typeof window === "undefined") return;
+  if (open) {
+    window.addEventListener("keydown", onCalendarWindowKeydown, true);
+  } else {
+    window.removeEventListener("keydown", onCalendarWindowKeydown, true);
+  }
+});
+
 function onVisibilityChange() {
   if (!document.hidden && !props.ipcDisconnected) {
     minuteBucketNowMs.value = Date.now();
@@ -761,6 +833,7 @@ onBeforeUnmount(() => {
   resizeObserver?.disconnect();
   resizeObserver = null;
   window.removeEventListener("blur", closePopoverOnBlur);
+  window.removeEventListener("keydown", onCalendarWindowKeydown, true);
   document.removeEventListener("visibilitychange", onVisibilityChange);
   if (minuteTimer !== undefined) {
     clearInterval(minuteTimer);
@@ -783,10 +856,12 @@ onBeforeUnmount(() => {
   >
     <template #title>
       <div class="co-cu-head-left">
-        <span class="co-cu-title-icon" aria-hidden="true">
-          <PhChartLineUp :size="16" weight="duotone" />
+        <span class="co-cu-title-group">
+          <span class="co-cu-title-icon" aria-hidden="true">
+            <PhChartLineUp :size="16" weight="duotone" />
+          </span>
+          <span class="co-cu-title">{{ t("cuUsage.title") }}</span>
         </span>
-        <span class="co-cu-title">{{ t("cuUsage.title") }}</span>
         <ColabOneSkeleton
           v-if="showInitialSkeleton"
           variant="pill"
@@ -867,7 +942,6 @@ onBeforeUnmount(() => {
                 class="co-cu-calendar"
                 role="dialog"
                 :aria-label="t('cuUsage.pickDateAria')"
-                @keydown.esc.stop="calendarOpen = false"
               >
                 <div class="co-cu-cal-head">
                   <button
@@ -975,6 +1049,7 @@ onBeforeUnmount(() => {
             </template>
 
             <AButton
+              ref="dateTriggerRef"
               size="small"
               class="co-cu-date-trigger"
               :class="{ 'is-day-mode': rangeMode === 'day' }"
@@ -1568,15 +1643,19 @@ onBeforeUnmount(() => {
 }
 
 .co-cu-usage-card :deep(.ant-card-head-wrapper) {
-  gap: 10px;
   flex-wrap: wrap;
+  gap: 6px 10px;
 }
 
 .co-cu-usage-card :deep(.ant-card-head-title) {
+  flex: 1 1 260px;
+  min-width: 0;
+  white-space: normal;
   padding: 10px 0;
 }
 
 .co-cu-usage-card :deep(.ant-card-extra) {
+  margin-inline-start: auto;
   padding: 8px 0;
 }
 
@@ -1597,6 +1676,14 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
+.co-cu-title-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
 .co-cu-title-icon {
   width: 32px;
   height: 32px;
@@ -1614,6 +1701,7 @@ onBeforeUnmount(() => {
   font-weight: 600;
   color: var(--co-text);
   letter-spacing: -0.1px;
+  min-width: 0;
 }
 
 .co-cu-window-tag {
@@ -1631,6 +1719,8 @@ onBeforeUnmount(() => {
   color: var(--co-secondary-text);
   border: 1px solid var(--co-border);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .co-cu-window-tag.is-live {
@@ -2387,6 +2477,32 @@ onBeforeUnmount(() => {
   }
 }
 
+@media (max-width: 680px) {
+  .co-cu-usage-card :deep(.ant-card-head-wrapper) {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    padding: 10px 0;
+  }
+
+  .co-cu-usage-card :deep(.ant-card-head-title) {
+    flex: 0 0 auto;
+    width: 100%;
+    padding: 0;
+  }
+
+  .co-cu-usage-card :deep(.ant-card-extra) {
+    margin-inline-start: 0;
+    padding: 0;
+    width: 100%;
+  }
+
+  .co-cu-head-right {
+    flex-wrap: wrap;
+    max-width: 100%;
+  }
+}
+
 @media (max-width: 640px) {
   .co-cu-usage-card :deep(.ant-card-head) {
     padding: 0 14px;
@@ -2394,11 +2510,6 @@ onBeforeUnmount(() => {
 
   .co-cu-usage-card :deep(.ant-card-body) {
     padding: 14px;
-  }
-
-  .co-cu-head-right {
-    flex-wrap: wrap;
-    max-width: 100%;
   }
 
   .co-cu-toolbar {
@@ -2417,6 +2528,7 @@ onBeforeUnmount(() => {
   }
 
   .co-cu-kpi-cell,
+  .co-cu-kpi-cell:nth-child(odd),
   .co-cu-kpi-cell:nth-child(even) {
     padding: 0 0 10px;
     border-left: 0;

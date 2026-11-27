@@ -2223,12 +2223,15 @@ const stackedRows = computed<StackedRowItem[]>(() => {
 
 .co-monitor :deep(.ant-card-head-wrapper) {
   align-items: flex-start;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 8px 12px;
 }
 
 .co-monitor :deep(.ant-card-head-title) {
   display: flex;
   align-items: center;
+  flex: 1 1 260px;
+  min-width: 0;
   padding: 0;
   white-space: normal;
   line-height: 1.25;
@@ -2297,8 +2300,11 @@ const stackedRows = computed<StackedRowItem[]>(() => {
 .co-rm-heading-primary {
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   min-height: 28px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .co-rm-heading-row h3 {
@@ -2319,6 +2325,8 @@ const stackedRows = computed<StackedRowItem[]>(() => {
   background: var(--co-track);
   border: 1px solid var(--co-border);
   line-height: 1;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .co-rm-live-badge :deep(.ant-badge-status-text) {
@@ -2326,6 +2334,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
   font-weight: 550;
   color: var(--co-muted);
   margin-inline-start: 6px;
+  white-space: nowrap;
 }
 
 .co-rm-live-badge.live {
@@ -2436,6 +2445,8 @@ const stackedRows = computed<StackedRowItem[]>(() => {
   font-size: 12px;
   font-weight: 560;
   line-height: 1;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .co-rm-hw-gpu {
@@ -2834,6 +2845,8 @@ const stackedRows = computed<StackedRowItem[]>(() => {
   background: var(--co-surface);
   border: 1px solid var(--co-rm-disk-border);
   color: var(--co-rm-disk);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 /* Compact 4-Row Stacked Simultaneous Wide Charts */
@@ -3157,7 +3170,7 @@ const stackedRows = computed<StackedRowItem[]>(() => {
   }
 }
 
-@media (max-width: 640px) {
+@media (max-width: 680px) {
   .co-monitor :deep(.ant-card-head) {
     padding: 10px 14px;
   }
@@ -3165,6 +3178,11 @@ const stackedRows = computed<StackedRowItem[]>(() => {
   .co-monitor :deep(.ant-card-head-wrapper) {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .co-monitor :deep(.ant-card-head-title) {
+    flex: 0 0 auto;
+    width: 100%;
   }
 
   .co-monitor :deep(.ant-card-extra) {

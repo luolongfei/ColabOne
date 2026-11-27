@@ -769,3 +769,83 @@ func TestControllerMigrationLiveExternalLLMRoundTripRollbackAndAccountSecurity(t
 		t.Fatal("expected control char in CloudProject to be rejected")
 	}
 }
+
+func TestControllerMigrationAssignMaxAttemptsPolicyUpgradeAndPreservation(t *testing.T) {
+	t.Run("legacy_bundle_upgrades_20_to_default_and_hides_policy_marker", func(t *testing.T) {
+		dstDir := t.TempDir()
+		dst := NewColabOneController(ColabOneControllerConfig{
+			ConfigDir: dstDir,
+			Vault:     NewColabOneMemoryVault(),
+		})
+		defer dst.Close()
+
+		legacyPayload := &migration.ColabOneMigrationPayload{
+			SchemaVersion:   migration.COLABONE_MIGRATION_SCHEMA_VERSION,
+			IncludedModules: []string{migration.ModuleSettings},
+			Settings: &migration.ColabOneMigrationSettingsData{
+				Controller: map[string]any{
+					"assign_max_attempts": 20,
+				},
+			},
+		}
+
+		if _, err := dst.ApplyMigrationPayload(context.Background(), legacyPayload, []string{migration.ModuleSettings}); err != nil {
+			t.Fatalf("ApplyMigrationPayload failed: %v", err)
+		}
+
+		snapSettings := asMap(dst.Snapshot()["settings"])
+		if got, ok := asExactInt(snapSettings["assign_max_attempts"]); !ok || got != COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS {
+			t.Fatalf("expected legacy assign_max_attempts=20 migrated to %d, got %v (ok=%v)", COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS, snapSettings["assign_max_attempts"], ok)
+		}
+		if _, leaked := snapSettings["default_assign_max_attempts_policy"]; leaked {
+			t.Fatalf("default_assign_max_attempts_policy must not be exposed in Snapshot settings: %+v", snapSettings)
+		}
+	})
+
+	t.Run("post_migration_bundle_preserves_explicit_20_across_reload", func(t *testing.T) {
+		dstDir := t.TempDir()
+		dstVault := NewColabOneMemoryVault()
+		dst := NewColabOneController(ColabOneControllerConfig{
+			ConfigDir: dstDir,
+			Vault:     dstVault,
+		})
+		defer dst.Close()
+
+		postMigrationPayload := &migration.ColabOneMigrationPayload{
+			SchemaVersion:   migration.COLABONE_MIGRATION_SCHEMA_VERSION,
+			IncludedModules: []string{migration.ModuleSettings},
+			Settings: &migration.ColabOneMigrationSettingsData{
+				Controller: map[string]any{
+					"assign_max_attempts":                20,
+					"default_assign_max_attempts_policy": COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS_POLICY_VERSION,
+				},
+			},
+		}
+
+		if _, err := dst.ApplyMigrationPayload(context.Background(), postMigrationPayload, []string{migration.ModuleSettings}); err != nil {
+			t.Fatalf("ApplyMigrationPayload failed: %v", err)
+		}
+
+		snapSettings := asMap(dst.Snapshot()["settings"])
+		if got, ok := asExactInt(snapSettings["assign_max_attempts"]); !ok || got != 20 {
+			t.Fatalf("expected explicit post-migration assign_max_attempts=20 preserved immediately, got %v (ok=%v)", snapSettings["assign_max_attempts"], ok)
+		}
+		if _, leaked := snapSettings["default_assign_max_attempts_policy"]; leaked {
+			t.Fatalf("default_assign_max_attempts_policy must not be exposed in Snapshot settings: %+v", snapSettings)
+		}
+
+		reloaded := NewColabOneController(ColabOneControllerConfig{
+			ConfigDir: dstDir,
+			Vault:     dstVault,
+		})
+		defer reloaded.Close()
+
+		reloadedSettings := asMap(reloaded.Snapshot()["settings"])
+		if got, ok := asExactInt(reloadedSettings["assign_max_attempts"]); !ok || got != 20 {
+			t.Fatalf("expected explicit post-migration assign_max_attempts=20 preserved after reload, got %v (ok=%v)", reloadedSettings["assign_max_attempts"], ok)
+		}
+		if _, leaked := reloadedSettings["default_assign_max_attempts_policy"]; leaked {
+			t.Fatalf("default_assign_max_attempts_policy must not be exposed after reload: %+v", reloadedSettings)
+		}
+	})
+}

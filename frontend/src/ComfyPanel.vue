@@ -9356,15 +9356,24 @@ defineExpose({
             </span>
             <span
               v-if="comfyTaskDownloadSummary.etaText"
+              class="co-comfy-meta-dot"
+              aria-hidden="true"
+            >·</span>
+            <span
+              v-if="comfyTaskDownloadSummary.etaText"
               class="co-comfy-mono"
             >
-              · {{ comfyTaskDownloadSummary.etaText }}
+              {{ comfyTaskDownloadSummary.etaText }}
             </span>
+            <span
+              v-if="comfyTaskDownloadSummary.filename"
+              class="co-comfy-meta-dot"
+              aria-hidden="true"
+            >·</span>
             <span
               v-if="comfyTaskDownloadSummary.filename"
               class="co-comfy-task-download-file co-comfy-mono"
             >
-              ·
               {{
                 comfyTaskDownloadSummary.fileCounter
                   ? `[${comfyTaskDownloadSummary.fileCounter}] ${comfyTaskDownloadSummary.filename}`
@@ -9411,14 +9420,16 @@ defineExpose({
           data-testid="comfy-task-auto-release-strip"
         >
           <div class="co-comfy-autorelease-strip-left">
-            <PhPower
-              :size="15"
-              weight="duotone"
-              class="co-comfy-autorelease-icon"
-              aria-hidden="true"
-            />
-            <span class="co-comfy-autorelease-label">
-              {{ t("comfy.autoReleaseSwitchLabel") }}
+            <span class="co-comfy-autorelease-heading">
+              <PhPower
+                :size="15"
+                weight="duotone"
+                class="co-comfy-autorelease-icon"
+                aria-hidden="true"
+              />
+              <span class="co-comfy-autorelease-label">
+                {{ t("comfy.autoReleaseSwitchLabel") }}
+              </span>
             </span>
             <ATag
               v-if="workflowAutoReleaseState === 'syncing'"
@@ -9455,8 +9466,6 @@ defineExpose({
                   : t("comfy.autoReleaseStripHintNeedDrive")
               }}
             </span>
-          </div>
-          <div class="co-comfy-autorelease-strip-right">
             <AButton
               v-if="workflowAutoReleaseDriveDisconnected"
               type="link"
@@ -9466,6 +9475,8 @@ defineExpose({
             >
               {{ t("comfy.autoReleaseReconnectDrive") }}
             </AButton>
+          </div>
+          <div class="co-comfy-autorelease-strip-right">
             <ColabOneTooltip :title="autoReleaseSwitchTooltip">
               <span class="co-comfy-autorelease-switch-wrap">
                 <ASwitch
@@ -9574,15 +9585,24 @@ defineExpose({
               </span>
               <span
                 v-if="comfyTaskDownloadSummary.etaText"
+                class="co-comfy-meta-dot"
+                aria-hidden="true"
+              >·</span>
+              <span
+                v-if="comfyTaskDownloadSummary.etaText"
                 class="co-comfy-mono"
               >
-                · {{ comfyTaskDownloadSummary.etaText }}
+                {{ comfyTaskDownloadSummary.etaText }}
               </span>
+              <span
+                v-if="comfyTaskDownloadSummary.filename"
+                class="co-comfy-meta-dot"
+                aria-hidden="true"
+              >·</span>
               <span
                 v-if="comfyTaskDownloadSummary.filename"
                 class="co-comfy-task-download-file co-comfy-mono"
               >
-                ·
                 {{
                   comfyTaskDownloadSummary.fileCounter
                     ? `[${comfyTaskDownloadSummary.fileCounter}] ${comfyTaskDownloadSummary.filename}`
@@ -10616,6 +10636,7 @@ defineExpose({
                     />
                     <div class="co-comfy-canvas-secondary-row">
                       <ColabOneSkeleton
+                        v-if="colabOneRuntimeCapabilities.can_open_native_canvas_window"
                         width="100%"
                         :height="32"
                         variant="button"
@@ -10920,7 +10941,11 @@ defineExpose({
                 <template
                   v-for="(part, idx) in formatDigitalHumanEngineSpecParts(engineWf)"
                   :key="idx"
-                ><template v-if="idx > 0"> · </template><span
+                ><span
+                    v-if="idx > 0"
+                    class="co-comfy-engine-spec-dot"
+                    aria-hidden="true"
+                  >·</span><span
                     :class="{ 'co-comfy-engine-spec-vram': part.isVram }"
                   >{{ part.text }}</span></template>
                 <span
@@ -11287,91 +11312,10 @@ defineExpose({
       </div>
 
       <template #footer>
-        <div v-if="selectedWorkflow" class="co-comfy-param-drawer-footer">
-          <div class="co-comfy-param-drawer-footer-left">
-            <AButton
-              class="co-comfy-drawer-close-btn"
-              @click="closeParamDrawer"
-            >
-              {{ t("common.close") }}
-            </AButton>
-            <APopover
-              v-if="!isShareMode"
-              v-model:open="mobileAutoReleasePopoverOpen"
-              trigger="click"
-              placement="topLeft"
-              :z-index="1030"
-              overlay-class-name="co-comfy-mobile-autorelease-popover"
-            >
-              <template #content>
-                <div
-                  class="co-comfy-mobile-ar-sheet"
-                  data-testid="comfy-drawer-auto-release-mobile-sheet"
-                >
-                  <div class="co-comfy-mobile-ar-head">
-                    <div class="co-comfy-mobile-ar-title">
-                      <PhPower
-                        :size="15"
-                        weight="duotone"
-                        class="co-comfy-autorelease-icon"
-                        :class="{ 'is-armed': workflowAutoReleaseEnabled }"
-                        aria-hidden="true"
-                      />
-                      <span>{{ t("comfy.autoReleaseSwitchShort") }}</span>
-                    </div>
-                    <ASwitch
-                      size="small"
-                      :checked="workflowAutoReleaseEnabled"
-                      :loading="workflowAutoReleaseBusy"
-                      :disabled="!gpuReady || workflowAutoReleaseLocked"
-                      data-testid="comfy-drawer-auto-release-mobile-switch"
-                      @change="onWorkflowAutoReleaseToggle"
-                    />
-                  </div>
-                  <p class="co-comfy-mobile-ar-desc">
-                    {{ autoReleaseSwitchTooltip }}
-                  </p>
-                </div>
-              </template>
-              <AButton
-                class="co-comfy-drawer-autorelease-mobile-btn"
-                :class="{
-                  'is-armed': workflowAutoReleaseEnabled,
-                  'is-disabled': !gpuReady || workflowAutoReleaseLocked,
-                }"
-                :aria-label="t('comfy.autoReleaseSwitchShort')"
-                :aria-expanded="mobileAutoReleasePopoverOpen"
-                :aria-pressed="workflowAutoReleaseEnabled"
-                data-testid="comfy-drawer-auto-release-mobile-trigger"
-              >
-                <PhPower
-                  :size="16"
-                  :weight="workflowAutoReleaseEnabled ? 'bold' : 'duotone'"
-                  class="co-comfy-autorelease-icon"
-                  aria-hidden="true"
-                />
-                <span
-                  v-if="workflowAutoReleaseEnabled"
-                  class="co-comfy-mobile-ar-dot"
-                  aria-hidden="true"
-                />
-              </AButton>
-            </APopover>
-            <AButton
-              v-if="comfyRunTask || comfyTask"
-              danger
-              class="co-comfy-drawer-cancel-btn"
-              :loading="Boolean(comfyTask && cancellingTaskId === comfyTask.id)"
-              :disabled="cancellingTaskId !== null"
-              @click="cancelActiveTask"
-            >
-              {{ t("comfy.cancelTask") }}
-            </AButton>
-          </div>
-          <div class="co-comfy-param-drawer-footer-right">
-            <Transition name="co-draft-status-fade">
+        <div v-if="selectedWorkflow" class="co-comfy-param-drawer-footer-shell">
+          <Transition name="co-draft-status-fade">
+            <div v-if="draftStatusLabel" class="co-comfy-draft-status-bar">
               <span
-                v-if="draftStatusLabel"
                 class="co-comfy-draft-status"
                 :class="`is-${draftStatus}`"
                 role="status"
@@ -11379,71 +11323,160 @@ defineExpose({
               >
                 {{ draftStatusLabel }}
               </span>
-            </Transition>
-            <ColabOneTooltip v-if="!isShareMode" :title="autoReleaseSwitchTooltip">
-              <div
-                class="co-comfy-drawer-autorelease-pill"
-                :class="{
-                  'is-armed': workflowAutoReleaseEnabled,
-                  'is-disabled': !gpuReady || workflowAutoReleaseLocked,
-                }"
-                data-testid="comfy-drawer-auto-release"
+            </div>
+          </Transition>
+          <div class="co-comfy-param-drawer-footer">
+            <div
+              class="co-comfy-param-drawer-footer-left"
+              :class="{
+                'is-mobile-empty': isShareMode && !(comfyRunTask || comfyTask),
+              }"
+            >
+              <AButton
+                class="co-comfy-drawer-close-btn"
+                @click="closeParamDrawer"
               >
-                <PhPower
-                  :size="14"
-                  weight="duotone"
-                  class="co-comfy-autorelease-icon"
-                  aria-hidden="true"
-                />
-                <span class="co-comfy-drawer-autorelease-text">
-                  {{ t("comfy.autoReleaseSwitchShort") }}
-                </span>
-                <ASwitch
-                  size="small"
-                  :checked="workflowAutoReleaseEnabled"
-                  :loading="workflowAutoReleaseBusy"
-                  :disabled="!gpuReady || workflowAutoReleaseLocked"
-                  data-testid="comfy-drawer-auto-release-switch"
-                  @change="onWorkflowAutoReleaseToggle"
-                />
-              </div>
-            </ColabOneTooltip>
-            <div class="co-comfy-drawer-run-wrap">
-              <ColabOneTooltip :title="runButtonDisabledTooltip">
+                {{ t("common.close") }}
+              </AButton>
+              <APopover
+                v-if="!isShareMode"
+                v-model:open="mobileAutoReleasePopoverOpen"
+                trigger="click"
+                placement="topLeft"
+                :z-index="1030"
+                overlay-class-name="co-comfy-mobile-autorelease-popover"
+              >
+                <template #content>
+                  <div
+                    class="co-comfy-mobile-ar-sheet"
+                    data-testid="comfy-drawer-auto-release-mobile-sheet"
+                  >
+                    <div class="co-comfy-mobile-ar-head">
+                      <div class="co-comfy-mobile-ar-title">
+                        <PhPower
+                          :size="15"
+                          weight="duotone"
+                          class="co-comfy-autorelease-icon"
+                          :class="{ 'is-armed': workflowAutoReleaseEnabled }"
+                          aria-hidden="true"
+                        />
+                        <span>{{ t("comfy.autoReleaseSwitchShort") }}</span>
+                      </div>
+                      <ASwitch
+                        size="small"
+                        :checked="workflowAutoReleaseEnabled"
+                        :loading="workflowAutoReleaseBusy"
+                        :disabled="!gpuReady || workflowAutoReleaseLocked"
+                        data-testid="comfy-drawer-auto-release-mobile-switch"
+                        @change="onWorkflowAutoReleaseToggle"
+                      />
+                    </div>
+                    <p class="co-comfy-mobile-ar-desc">
+                      {{ autoReleaseSwitchTooltip }}
+                    </p>
+                  </div>
+                </template>
                 <AButton
-                  type="primary"
-                  class="co-comfy-drawer-run-btn"
-                  :loading="submittingRun || comfyStarting"
-                  :disabled="
-                    !gpuReady ||
-                    (isShareMode && Boolean(props.shareBusyOther)) ||
-                    comfyStarting ||
-                    submittingRun ||
-                    hasUploadingField ||
-                    engineActionBlocked
-                  "
-                  @click="runWorkflow"
+                  class="co-comfy-drawer-autorelease-mobile-btn"
+                  :class="{
+                    'is-armed': workflowAutoReleaseEnabled,
+                    'is-disabled': !gpuReady || workflowAutoReleaseLocked,
+                  }"
+                  :aria-label="t('comfy.autoReleaseSwitchShort')"
+                  :aria-expanded="mobileAutoReleasePopoverOpen"
+                  :aria-pressed="workflowAutoReleaseEnabled"
+                  data-testid="comfy-drawer-auto-release-mobile-trigger"
                 >
-                  <template #icon>
-                    <PhSparkle
-                      v-if="comfyRunning || !workflowNeedsComfyServer"
-                      :size="15"
-                    />
-                    <PhPlay v-else :size="14" weight="fill" />
-                  </template>
-                  {{
-                    !gpuReady
-                      ? t("comfy.runWorkflow")
-                      : comfyStarting
-                        ? t("comfy.preparingBtn")
-                        : workflowNeedsComfyServer && !comfyRunning
-                          ? t("comfy.startComfyFirst")
-                          : submittingRun
-                            ? t("common.submitting")
-                            : t("comfy.runWorkflow")
-                  }}
+                  <PhPower
+                    :size="16"
+                    :weight="workflowAutoReleaseEnabled ? 'bold' : 'duotone'"
+                    class="co-comfy-autorelease-icon"
+                    aria-hidden="true"
+                  />
+                  <span
+                    v-if="workflowAutoReleaseEnabled"
+                    class="co-comfy-mobile-ar-dot"
+                    aria-hidden="true"
+                  />
                 </AButton>
+              </APopover>
+              <AButton
+                v-if="comfyRunTask || comfyTask"
+                danger
+                class="co-comfy-drawer-cancel-btn"
+                :loading="Boolean(comfyTask && cancellingTaskId === comfyTask.id)"
+                :disabled="cancellingTaskId !== null"
+                @click="cancelActiveTask"
+              >
+                {{ t("comfy.cancelTask") }}
+              </AButton>
+            </div>
+            <div class="co-comfy-param-drawer-footer-right">
+              <ColabOneTooltip v-if="!isShareMode" :title="autoReleaseSwitchTooltip">
+                <div
+                  class="co-comfy-drawer-autorelease-pill"
+                  :class="{
+                    'is-armed': workflowAutoReleaseEnabled,
+                    'is-disabled': !gpuReady || workflowAutoReleaseLocked,
+                  }"
+                  data-testid="comfy-drawer-auto-release"
+                >
+                  <PhPower
+                    :size="14"
+                    weight="duotone"
+                    class="co-comfy-autorelease-icon"
+                    aria-hidden="true"
+                  />
+                  <span class="co-comfy-drawer-autorelease-text">
+                    {{ t("comfy.autoReleaseSwitchShort") }}
+                  </span>
+                  <ASwitch
+                    size="small"
+                    :checked="workflowAutoReleaseEnabled"
+                    :loading="workflowAutoReleaseBusy"
+                    :disabled="!gpuReady || workflowAutoReleaseLocked"
+                    data-testid="comfy-drawer-auto-release-switch"
+                    @change="onWorkflowAutoReleaseToggle"
+                  />
+                </div>
               </ColabOneTooltip>
+              <div class="co-comfy-drawer-run-wrap">
+                <ColabOneTooltip :title="runButtonDisabledTooltip">
+                  <AButton
+                    type="primary"
+                    class="co-comfy-drawer-run-btn"
+                    :loading="submittingRun || comfyStarting"
+                    :disabled="
+                      !gpuReady ||
+                      (isShareMode && Boolean(props.shareBusyOther)) ||
+                      comfyStarting ||
+                      submittingRun ||
+                      hasUploadingField ||
+                      engineActionBlocked
+                    "
+                    @click="runWorkflow"
+                  >
+                    <template #icon>
+                      <PhSparkle
+                        v-if="comfyRunning || !workflowNeedsComfyServer"
+                        :size="15"
+                      />
+                      <PhPlay v-else :size="14" weight="fill" />
+                    </template>
+                    {{
+                      !gpuReady
+                        ? t("comfy.runWorkflow")
+                        : comfyStarting
+                          ? t("comfy.preparingBtn")
+                          : workflowNeedsComfyServer && !comfyRunning
+                            ? t("comfy.startComfyFirst")
+                            : submittingRun
+                              ? t("common.submitting")
+                              : t("comfy.runWorkflow")
+                    }}
+                  </AButton>
+                </ColabOneTooltip>
+              </div>
             </div>
           </div>
         </div>
@@ -13246,6 +13279,7 @@ defineExpose({
       :mask-closable="!importing"
       :keyboard="!importing"
       :z-index="1050"
+      wrap-class-name="co-comfy-import-modal-wrap"
       @cancel="closeImportModal"
     >
       <div class="co-comfy-import-body">
@@ -13529,7 +13563,8 @@ defineExpose({
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 6px 10px;
   font-size: 13px;
 }
 
@@ -13537,6 +13572,7 @@ defineExpose({
   display: inline-flex;
   align-items: center;
   gap: 7px;
+  flex: 1 1 260px;
   min-width: 0;
   flex-wrap: wrap;
 }
@@ -13582,15 +13618,27 @@ defineExpose({
 .co-comfy-task-download-meta {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 4px;
+  flex-wrap: nowrap;
+  gap: 4px 6px;
+  min-width: 0;
   font-size: 12px;
   line-height: 1.4;
   color: var(--co-secondary-text);
 }
 
+.co-comfy-task-download-meta > :not(.co-comfy-task-download-file) {
+  flex-shrink: 0;
+}
+
+.co-comfy-meta-dot {
+  color: var(--co-muted);
+  user-select: none;
+}
+
 .co-comfy-task-download-file {
   color: var(--co-muted);
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -14072,8 +14120,8 @@ defineExpose({
 }
 
 :global(.ant-drawer.co-comfy-outputs-drawer-root .ant-drawer-header-title) {
-  flex: 1 0 180px;
-  min-width: 160px;
+  flex: 1 0 230px;
+  min-width: 210px;
 }
 
 :global(.co-comfy-param-drawer-root .ant-drawer-title),
@@ -14087,7 +14135,12 @@ defineExpose({
   flex: 0 1 auto;
 }
 
-:global(.co-comfy-param-drawer-root .ant-drawer-footer) {
+:global(.ant-drawer.co-comfy-param-drawer-root .ant-drawer-wrapper-body:has(> .ant-drawer-footer) .ant-drawer-body) {
+  padding-bottom: 42px !important;
+}
+
+:global(.ant-drawer.co-comfy-param-drawer-root .ant-drawer-footer) {
+  position: relative;
   border-top: 1px solid var(--co-border-secondary);
   background: var(--co-elevated);
 }
@@ -14138,10 +14191,16 @@ defineExpose({
 .co-comfy-drawer-title :deep(.ant-tag) {
   flex-shrink: 0;
   white-space: nowrap;
+  word-break: keep-all;
+  overflow-wrap: normal;
+  padding-top: 0;
+  padding-bottom: 0;
+  line-height: 18px;
 }
 
 .co-comfy-reset-btn {
   color: var(--co-muted);
+  white-space: nowrap;
 }
 
 .co-comfy-reset-btn:hover {
@@ -14377,12 +14436,34 @@ defineExpose({
 }
 
 .co-comfy-engine-option-spec {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 5px;
   margin-top: auto;
   padding-top: 2px;
   font-size: 11.5px;
   line-height: 1.4;
   color: var(--co-muted);
   overflow-wrap: anywhere;
+}
+
+.co-comfy-engine-option-spec > span {
+  white-space: nowrap;
+}
+
+.co-comfy-engine-spec-dot {
+  user-select: none;
+}
+
+@container (max-width: 560px) {
+  .co-comfy-engine-option-spec {
+    gap: 2px 10px;
+  }
+
+  .co-comfy-engine-spec-dot {
+    display: none;
+  }
 }
 
 .co-comfy-engine-option.is-selected .co-comfy-engine-option-spec {
@@ -14654,18 +14735,39 @@ defineExpose({
   margin-top: 6px;
 }
 
+.co-comfy-param-drawer-footer-shell {
+  width: 100%;
+}
+
+.co-comfy-draft-status-bar {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: calc(100% + 8px);
+  z-index: 4;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
 .co-comfy-param-drawer-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
   flex-wrap: wrap;
+}
+
+.co-comfy-param-drawer-footer :deep(.ant-btn:not(.ant-btn-icon-only):not(.ant-btn-link):not(.ant-btn-text)) {
+  padding-inline: 11px;
 }
 
 .co-comfy-param-drawer-footer-left {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex-shrink: 0;
 }
 
@@ -14676,7 +14778,7 @@ defineExpose({
 .co-comfy-param-drawer-footer-right {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   margin-left: auto;
   min-width: 0;
   flex-wrap: wrap;
@@ -14693,8 +14795,8 @@ defineExpose({
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
+  gap: 10px;
+  flex-wrap: nowrap;
   margin-top: 2px;
   padding: 8px 12px;
   border-radius: 7px;
@@ -14716,12 +14818,24 @@ defineExpose({
 }
 
 .co-comfy-autorelease-strip-left {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px 8px;
   flex-wrap: wrap;
+  flex: 1 1 0;
   min-width: 0;
   font-size: 12.5px;
+}
+
+.co-comfy-autorelease-strip-left :deep(.ant-tag) {
+  margin-inline-end: 0;
+}
+
+.co-comfy-autorelease-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
 }
 
 .co-comfy-autorelease-strip-right {
@@ -14761,8 +14875,8 @@ defineExpose({
 .co-comfy-drawer-autorelease-pill {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  padding: 4px 10px;
+  gap: 6px;
+  padding: 3px 8px;
   border-radius: 8px;
   border: 1px solid var(--co-border-secondary);
   background: var(--co-subtle);
@@ -14835,10 +14949,15 @@ defineExpose({
   display: inline-block;
   font-size: 12px;
   font-weight: 500;
-  line-height: 1.4;
+  line-height: 1.35;
   color: var(--co-muted);
+  background: var(--co-elevated);
+  border: 1px solid var(--co-border);
+  border-radius: var(--co-radius-pill);
+  padding: 2px 10px;
+  box-shadow: var(--co-card-shadow);
   white-space: nowrap;
-  max-width: 200px;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   user-select: none;
@@ -14873,7 +14992,8 @@ defineExpose({
 }
 
 .co-comfy-drawer-run-btn {
-  min-width: 148px;
+  min-width: 112px;
+  padding-inline: 12px !important;
 }
 
 .co-comfy-mobile-ar-sheet {
@@ -15867,6 +15987,7 @@ defineExpose({
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  min-width: 0;
   padding: 9px 14px;
   border-radius: 12px;
   background: var(--co-subtle);
@@ -15874,11 +15995,21 @@ defineExpose({
 }
 
 .co-comfy-host-box code {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 13px;
   color: var(--co-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.co-comfy-host-box :deep(.ant-tag) {
+  flex-shrink: 0;
+  white-space: nowrap;
+  word-break: keep-all;
+  overflow-wrap: normal;
+  margin-inline-end: 0;
 }
 
 .co-comfy-canvas-launch-actions {
@@ -15890,7 +16021,8 @@ defineExpose({
 
 .co-comfy-canvas-secondary-row {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
   gap: 8px;
 }
 
@@ -15925,6 +16057,24 @@ defineExpose({
 }
 
 /* Import Modal */
+:global(.co-comfy-import-modal-wrap .ant-modal-content) {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 24px);
+}
+
+:global(.co-comfy-import-modal-wrap .ant-modal-header),
+:global(.co-comfy-import-modal-wrap .ant-modal-footer) {
+  flex-shrink: 0;
+}
+
+:global(.co-comfy-import-modal-wrap .ant-modal-body) {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .co-comfy-import-body {
   display: flex;
   flex-direction: column;
@@ -15988,6 +16138,10 @@ defineExpose({
   color: var(--co-muted);
 }
 
+.co-comfy-import-dropzone :deep(.ant-btn) {
+  flex-shrink: 0;
+}
+
 .co-comfy-json-input {
   font-family: var(--co-font-mono);
   font-size: 13px;
@@ -15996,9 +16150,26 @@ defineExpose({
 
 @media (max-width: 860px) {
   .co-comfy-canvas-grid,
-  .co-comfy-canvas-secondary-row,
   .co-comfy-canvas-metrics {
     grid-template-columns: 1fr;
+  }
+
+  .co-comfy-canvas-secondary-row {
+    grid-auto-flow: row;
+    grid-template-columns: 1fr;
+  }
+
+  .co-comfy-task-download-meta {
+    flex-wrap: wrap;
+    gap: 4px 10px;
+  }
+
+  .co-comfy-meta-dot {
+    display: none;
+  }
+
+  .co-comfy-task-download-file {
+    flex: 1 0 100%;
   }
 
   .co-comfy-engine-actions {
@@ -16008,6 +16179,62 @@ defineExpose({
 }
 
 @media (max-width: 680px) {
+  .co-comfy-task-head-main {
+    flex: 1 1 100%;
+  }
+
+  .co-comfy-task-metrics {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .co-comfy-tabs :deep(.ant-tabs-nav .ant-tabs-tab) {
+    padding: 5px 9px !important;
+    font-size: 12.5px;
+  }
+
+  .co-comfy-tab-label {
+    gap: 5px;
+  }
+
+  .co-comfy-import-dropzone {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .co-comfy-import-drop-copy {
+    width: 100%;
+  }
+
+  .co-comfy-import-dropzone :deep(.ant-btn) {
+    width: 100%;
+  }
+
+  :global(.co-comfy-import-modal-wrap #comfy-import-json) {
+    max-height: 150px;
+  }
+
+  :global(.ant-drawer.co-comfy-param-drawer-root .ant-drawer-header) {
+    gap: 6px;
+  }
+
+  :global(.ant-drawer.co-comfy-param-drawer-root .ant-drawer-header-title) {
+    flex: 1 1 0;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  :global(.ant-drawer.co-comfy-param-drawer-root .ant-drawer-extra) {
+    flex: 0 0 auto;
+    max-width: none;
+  }
+
+  .co-comfy-reset-btn {
+    padding-inline: 8px !important;
+    font-size: 12px;
+  }
+
   :global(.ant-drawer.co-comfy-outputs-drawer-root .ant-drawer-header) {
     flex-wrap: wrap;
     row-gap: 8px;
@@ -16028,6 +16255,10 @@ defineExpose({
     justify-content: flex-start;
   }
 
+  .co-comfy-draft-status-bar {
+    justify-content: flex-start;
+  }
+
   .co-comfy-param-drawer-footer {
     flex-wrap: nowrap;
     gap: 8px;
@@ -16035,13 +16266,16 @@ defineExpose({
   }
 
   .co-comfy-drawer-close-btn,
-  .co-comfy-draft-status,
   .co-comfy-drawer-autorelease-pill {
     display: none !important;
   }
 
   .co-comfy-param-drawer-footer-left {
     gap: 8px;
+  }
+
+  .co-comfy-param-drawer-footer-left.is-mobile-empty {
+    display: none;
   }
 
   .co-comfy-drawer-autorelease-mobile-btn {
@@ -16132,8 +16366,30 @@ defineExpose({
 }
 
 @media (max-width: 560px) {
+  .co-comfy-engine-option-spec {
+    gap: 2px 10px;
+  }
+
+  .co-comfy-engine-spec-dot {
+    display: none;
+  }
+
   .co-comfy-advanced-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 420px) {
+  :global(.ant-drawer.co-comfy-param-drawer-root .ant-drawer-close) {
+    margin-inline-end: 8px;
+  }
+
+  .co-comfy-drawer-title {
+    gap: 5px;
+  }
+
+  .co-comfy-reset-btn {
+    padding-inline: 6px !important;
   }
 }
 </style>

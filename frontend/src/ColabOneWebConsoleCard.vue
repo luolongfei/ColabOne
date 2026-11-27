@@ -326,12 +326,14 @@ defineExpose({
     <div class="co-sr-main">
       <div class="co-sr-info">
         <div class="co-sr-title-line">
-          <span class="co-sr-icon is-blue" aria-hidden="true">
-            <PhGlobe :size="14" weight="duotone" />
+          <span class="co-sr-title-group">
+            <span class="co-sr-icon is-blue" aria-hidden="true">
+              <PhGlobe :size="14" weight="duotone" />
+            </span>
+            <h3 id="web-console-heading" class="co-sr-title">
+              {{ t("webConsole.title") }}
+            </h3>
           </span>
-          <h3 id="web-console-heading" class="co-sr-title">
-            {{ t("webConsole.title") }}
-          </h3>
           <ColabOneSkeleton
             v-if="props.loading"
             :width="64"
@@ -871,6 +873,14 @@ defineExpose({
   flex-wrap: wrap;
 }
 
+.co-sr-title-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
 .co-sr-icon {
   width: 22px;
   height: 22px;
@@ -967,6 +977,7 @@ defineExpose({
   padding: 0 6px;
   height: 24px;
   font-size: 12px;
+  flex-shrink: 0;
 }
 
 .co-webconsole-quick-actions {
@@ -1120,13 +1131,18 @@ defineExpose({
   border-radius: 8px;
   background: var(--co-surface);
   border: 1px solid var(--co-border-secondary);
+  min-width: 0;
 }
 
 .co-webconsole-code-line code {
+  flex: 1 1 0;
+  min-width: 0;
   font-family: var(--co-font-mono);
   font-size: 12px;
   color: var(--co-text);
-  word-break: break-all;
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: thin;
 }
 
 .co-webconsole-dash-link {
@@ -1176,6 +1192,230 @@ defineExpose({
   .co-webconsole-passcode-row {
     flex-direction: column;
     align-items: stretch;
+  }
+}
+
+@container co-settings (max-width: 680px) {
+  .co-sr-main {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .co-sr-control {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .co-webconsole-config-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .co-webconsole-passcode-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+@media (max-width: 520px) {
+  .co-webconsole-address-list {
+    gap: 0;
+  }
+
+  .co-webconsole-address-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 4px 8px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--co-border-secondary);
+  }
+
+  .co-webconsole-address-row:first-child {
+    padding-top: 0;
+  }
+
+  .co-webconsole-address-row:last-child {
+    padding-bottom: 0;
+    border-bottom: 0;
+  }
+
+  .co-webconsole-address-label {
+    grid-column: 1;
+    grid-row: 1;
+    min-width: 0;
+  }
+
+  .co-webconsole-address-row .co-webconsole-copy-btn {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+  }
+
+  .co-webconsole-address-value {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 4px 8px;
+    overflow-x: auto;
+    white-space: nowrap;
+    word-break: normal;
+    scrollbar-width: thin;
+  }
+
+  .co-webconsole-address-value :deep(.co-privacy-mask) {
+    max-width: none;
+  }
+}
+
+@container co-settings (max-width: 520px) {
+  .co-webconsole-address-list {
+    gap: 0;
+  }
+
+  .co-webconsole-address-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 4px 8px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--co-border-secondary);
+  }
+
+  .co-webconsole-address-row:first-child {
+    padding-top: 0;
+  }
+
+  .co-webconsole-address-row:last-child {
+    padding-bottom: 0;
+    border-bottom: 0;
+  }
+
+  .co-webconsole-address-label {
+    grid-column: 1;
+    grid-row: 1;
+    min-width: 0;
+  }
+
+  .co-webconsole-address-row .co-webconsole-copy-btn {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+  }
+
+  .co-webconsole-address-value {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 4px 8px;
+    overflow-x: auto;
+    white-space: nowrap;
+    word-break: normal;
+    scrollbar-width: thin;
+  }
+
+  .co-webconsole-address-value :deep(.co-privacy-mask) {
+    max-width: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .co-webconsole-field-bind :deep(.ant-segmented) {
+    width: 100%;
+    border-radius: 14px !important;
+    overflow: visible;
+  }
+
+  .co-webconsole-field-bind :deep(.ant-segmented-group) {
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .co-webconsole-field-bind :deep(.ant-segmented-item) {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    border-radius: 10px !important;
+  }
+
+  .co-webconsole-field-bind
+    :deep(.ant-segmented-item:has(> .ant-segmented-item-input:checked)) {
+    background: var(--co-subpill-active-bg) !important;
+    color: var(--co-subpill-active-text) !important;
+    font-weight: 600;
+    box-shadow:
+      0 0 0 1px var(--co-subpill-active-border),
+      var(--co-subpill-active-shadow) !important;
+  }
+
+  .co-webconsole-field-bind
+    :deep(
+      .ant-segmented-item:has(> .ant-segmented-item-input:checked)
+        .ant-segmented-item-label
+    ) {
+    color: var(--co-subpill-active-text) !important;
+  }
+
+  .co-webconsole-field-bind
+    :deep(.ant-segmented-item:has(> .ant-segmented-item-input:focus-visible)) {
+    outline: 2px solid var(--co-focus);
+    outline-offset: -2px;
+  }
+
+  .co-webconsole-field-bind :deep(.ant-segmented-thumb) {
+    display: none !important;
+    transition: none !important;
+  }
+}
+
+@container co-settings (max-width: 480px) {
+  .co-webconsole-field-bind :deep(.ant-segmented) {
+    width: 100%;
+    border-radius: 14px !important;
+    overflow: visible;
+  }
+
+  .co-webconsole-field-bind :deep(.ant-segmented-group) {
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .co-webconsole-field-bind :deep(.ant-segmented-item) {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    border-radius: 10px !important;
+  }
+
+  .co-webconsole-field-bind
+    :deep(.ant-segmented-item:has(> .ant-segmented-item-input:checked)) {
+    background: var(--co-subpill-active-bg) !important;
+    color: var(--co-subpill-active-text) !important;
+    font-weight: 600;
+    box-shadow:
+      0 0 0 1px var(--co-subpill-active-border),
+      var(--co-subpill-active-shadow) !important;
+  }
+
+  .co-webconsole-field-bind
+    :deep(
+      .ant-segmented-item:has(> .ant-segmented-item-input:checked)
+        .ant-segmented-item-label
+    ) {
+    color: var(--co-subpill-active-text) !important;
+  }
+
+  .co-webconsole-field-bind
+    :deep(.ant-segmented-item:has(> .ant-segmented-item-input:focus-visible)) {
+    outline: 2px solid var(--co-focus);
+    outline-offset: -2px;
+  }
+
+  .co-webconsole-field-bind :deep(.ant-segmented-thumb) {
+    display: none !important;
+    transition: none !important;
   }
 }
 </style>

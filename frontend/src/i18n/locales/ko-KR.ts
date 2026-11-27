@@ -1737,7 +1737,7 @@ export const koKRMessages: ColabOneMessages = {
   "settings.assignMaxAttemptsAria": "GPU 할당 최대 시도 횟수",
   "settings.assignMaxAttemptsUnit": "회",
   "settings.assignMaxAttemptsDesc":
-    "GPU 혼잡 시 자동 재시도를 포함한 총 할당 시도 횟수 상한입니다(1–100회, 기본 20회). 재시도 간격은 지수 백오프(2s, 4s, 8s, 16s, 32s)로 증가하며 이후 32초로 고정됩니다. 1로 설정하면 자동 재시도를 사용하지 않습니다.",
+    "GPU 혼잡 시 자동 재시도를 포함한 총 할당 시도 횟수 상한입니다(1–100회, 기본 30회). 재시도 간격은 지수 백오프(2s, 4s, 8s, 16s, 32s)로 증가하며 이후 32초로 고정됩니다. 1로 설정하면 자동 재시도를 사용하지 않습니다.",
   "settings.idleProtectionTitle": "유휴 자동 해제 보호",
   "settings.idleProtectionDesc":
     "{policy} 동안 활동이나 작업이 없으면 원격 리소스를 자동 해제합니다. 조작 시 타이머가 초기화되며 모델 다운로드·로드·API 추론·ComfyUI 실행 중에는 자동으로 일시 정지됩니다.",

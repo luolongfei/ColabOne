@@ -1740,7 +1740,7 @@ export const jaJPMessages: ColabOneMessages = {
   "settings.assignMaxAttemptsAria": "GPU 割り当ての最大試行回数",
   "settings.assignMaxAttemptsUnit": "回",
   "settings.assignMaxAttemptsDesc":
-    "GPU が混雑している際の自動リトライを含む合計試行回数の上限（1〜100 回、既定 20 回）。リトライ間隔は指数バックオフ（2s、4s、8s、16s、32s）で増加し、以降は 32 秒固定になります。1 に設定すると自動リトライを行いません。",
+    "GPU が混雑している際の自動リトライを含む合計試行回数の上限（1〜100 回、既定 30 回）。リトライ間隔は指数バックオフ（2s、4s、8s、16s、32s）で増加し、以降は 32 秒固定になります。1 に設定すると自動リトライを行いません。",
   "settings.idleProtectionTitle": "アイドル自動解放保護",
   "settings.idleProtectionDesc":
     "{policy} 以上操作・タスクがないとリモートリソースを自動解放します。操作するとタイマーはリセットされ、モデル取得・読込・API 推論・ComfyUI 実行中は自動一時停止します。",

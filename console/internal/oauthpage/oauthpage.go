@@ -198,7 +198,7 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 28px 20px;
+  padding: max(28px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(28px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
   background-color: var(--co-canvas);
   color: var(--co-text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
@@ -312,18 +312,23 @@ body.is-error { --co-ambient: var(--co-error-glow); }
 }
 .co-title {
   margin: 0 0 10px;
+  max-width: 100%;
   font-size: 22px;
   font-weight: 650;
   line-height: 1.3;
   letter-spacing: -0.025em;
+  overflow-wrap: break-word;
   color: var(--co-text);
 }
 .co-desc {
   margin: 0 0 20px;
-  max-width: 348px;
+  width: 100%;
+  max-width: min(348px, 100%);
   font-size: 14.5px;
   line-height: 1.65;
   text-wrap: balance;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   color: var(--co-secondary);
 }
 .co-pill {
@@ -340,6 +345,10 @@ body.is-error { --co-ambient: var(--co-error-glow); }
   font-weight: 500;
   color: var(--co-secondary);
 }
+.co-pill.is-status {
+  border-radius: 14px;
+  padding: 7px 14px;
+}
 .is-success .co-pill-icon { color: var(--co-success-text); }
 .is-error .co-pill-icon { color: var(--co-error-text); }
 .co-pill-icon {
@@ -348,13 +357,26 @@ body.is-error { --co-ambient: var(--co-error-glow); }
   flex-shrink: 0;
 }
 .co-pill-text {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.co-pill.is-status .co-pill-text {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: break-word;
+  text-align: left;
+  line-height: 1.4;
+}
 .co-btn {
   width: 100%;
-  height: 44px;
+  min-height: 44px;
+  padding: 10px 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 0;
   border-radius: 12px;
   background: var(--co-btn-bg);
@@ -362,6 +384,7 @@ body.is-error { --co-ambient: var(--co-error-glow); }
   font: inherit;
   font-size: 14.5px;
   font-weight: 600;
+  line-height: 1.25;
   letter-spacing: -0.01em;
   cursor: pointer;
   transition: background-color 0.16s ease, transform 0.12s ease, opacity 0.16s ease;
@@ -378,11 +401,9 @@ body.is-error { --co-ambient: var(--co-error-glow); }
   font-size: 12.5px;
   line-height: 1.5;
   color: var(--co-muted);
-  opacity: 0.82;
   transition: opacity 0.2s ease, color 0.2s ease;
 }
 .co-hint.is-emphasized {
-  opacity: 1;
   color: var(--co-secondary);
 }
 .co-kbd {
@@ -397,12 +418,12 @@ body.is-error { --co-ambient: var(--co-error-glow); }
   font-weight: 600;
   color: var(--co-text);
   vertical-align: baseline;
+  white-space: nowrap;
 }
 .co-footer {
   font-size: 12px;
   color: var(--co-muted);
   letter-spacing: 0.01em;
-  opacity: 0.78;
 }
 @keyframes co-rise {
   from { opacity: 0; transform: translateY(10px); }
@@ -485,11 +506,13 @@ func RenderColabOneOAuthPage(locale string, ok bool, message, email string) stri
 	iconURI := colabOneIconDataURI()
 
 	var rawTitle, rawHeading, rawBadge, rawButton, stateClass, statusSVG, pillIcon string
+	pillClass := "co-pill is-status"
 	if ok {
 		rawTitle = copySet.pageTitleOK
 		rawHeading = copySet.headingOK
 		if trimmedEmail := strings.TrimSpace(email); trimmedEmail != "" {
 			rawBadge = trimmedEmail
+			pillClass = "co-pill"
 		} else {
 			rawBadge = copySet.badgeOK
 		}
@@ -521,7 +544,7 @@ func RenderColabOneOAuthPage(locale string, ok bool, message, email string) stri
 
 	b.WriteString("<!doctype html>\n<html lang=\"")
 	b.WriteString(lang)
-	b.WriteString("\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<meta name=\"color-scheme\" content=\"light dark\">\n<title>")
+	b.WriteString("\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">\n<meta name=\"color-scheme\" content=\"light dark\">\n<title>")
 	b.WriteString(pageTitle)
 	b.WriteString("</title>\n<link rel=\"icon\" type=\"image/svg+xml\" href=\"")
 	b.WriteString(iconURI)
@@ -535,7 +558,9 @@ func RenderColabOneOAuthPage(locale string, ok bool, message, email string) stri
 	b.WriteString(heading)
 	b.WriteString("</h1>\n      <p class=\"co-desc\">")
 	b.WriteString(bodyText)
-	b.WriteString("</p>\n      <div class=\"co-pill\">\n        ")
+	b.WriteString("</p>\n      <div class=\"")
+	b.WriteString(pillClass)
+	b.WriteString("\">\n        ")
 	b.WriteString(pillIcon)
 	b.WriteString("\n        <span class=\"co-pill-text\">")
 	b.WriteString(badgeText)

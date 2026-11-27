@@ -1696,7 +1696,7 @@ export const zhHKMessages: ColabOneMessages = {
   "settings.assignMaxAttemptsAria": "GPU 分配最大嘗試次數",
   "settings.assignMaxAttemptsUnit": "次",
   "settings.assignMaxAttemptsDesc":
-    "算力緊張或請求繁忙時自動排隊重試的總嘗試次數上限（1–100 次，預設 20 次）。每次重試按指數退避（2s、4s、8s、16s、32s），達到 32 秒後後續間隔固定為 32 秒；設為 1 次則不自動重試。",
+    "算力緊張或請求繁忙時自動排隊重試的總嘗試次數上限（1–100 次，預設 30 次）。每次重試按指數退避（2s、4s、8s、16s、32s），達到 32 秒後後續間隔固定為 32 秒；設為 1 次則不自動重試。",
   "settings.idleProtectionTitle": "閒置自動釋放保護",
   "settings.idleProtectionDesc":
     "超過 {policy} 無操作或任務時自動釋放遠端資源；繼續操作會重設倒數，模型下載與載入、對外 API 推理及 ComfyUI 執行期間自動暫停倒數。",

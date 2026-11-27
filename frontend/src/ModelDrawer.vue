@@ -823,9 +823,57 @@ function onHubInstalled(mode: "save" | "download" | "load") {
   );
 }
 
+const hasVisiblePopupOverlay = (): boolean => {
+  if (typeof document === "undefined") return false;
+  if (document.querySelector(".ant-select-open")) return true;
+  const overlays = document.querySelectorAll<HTMLElement>(
+    ".ant-select-dropdown:not(.ant-select-dropdown-hidden), .ant-popover:not(.ant-popover-hidden), .ant-popconfirm:not(.ant-popover-hidden), .ant-dropdown:not(.ant-dropdown-hidden)",
+  );
+  for (const el of overlays) {
+    if (/\bant-[\w-]+-leave(?:-active|-to)?\b/.test(el.className)) {
+      continue;
+    }
+    const style = window.getComputedStyle(el);
+    if (
+      style.display !== "none" &&
+      style.visibility !== "hidden" &&
+      style.pointerEvents !== "none" &&
+      el.getBoundingClientRect().height > 0
+    ) {
+      return true;
+    }
+  }
+  return false;
+};
+
+const hasVisibleForegroundModal = (): boolean => {
+  if (typeof document === "undefined") return false;
+  for (const el of document.querySelectorAll<HTMLElement>(".ant-modal-wrap")) {
+    const style = window.getComputedStyle(el);
+    if (
+      style.display !== "none" &&
+      style.visibility !== "hidden" &&
+      style.pointerEvents !== "none" &&
+      el.getBoundingClientRect().height > 0
+    ) {
+      return true;
+    }
+  }
+  return false;
+};
+
 function handleDrawerKeydown(e: KeyboardEvent) {
   if (!props.open) return;
   if (e.key === "Escape") {
+    if (e.defaultPrevented || e.isComposing) {
+      return;
+    }
+    if (hasVisiblePopupOverlay()) {
+      return;
+    }
+    if (!deleteTarget.value && hasVisibleForegroundModal()) {
+      return;
+    }
     e.stopImmediatePropagation();
     if (deleteTarget.value) {
       deleteTarget.value = null;
@@ -841,7 +889,7 @@ function handleDrawerKeydown(e: KeyboardEvent) {
 
 onMounted(() => {
   window.addEventListener("resize", onWindowResize);
-  window.addEventListener("keydown", handleDrawerKeydown);
+  window.addEventListener("keydown", handleDrawerKeydown, true);
 });
 
 function goDevice() {
@@ -856,7 +904,7 @@ function goComfyui() {
 
 onUnmounted(() => {
   window.removeEventListener("resize", onWindowResize);
-  window.removeEventListener("keydown", handleDrawerKeydown);
+  window.removeEventListener("keydown", handleDrawerKeydown, true);
 });
 </script>
 
@@ -906,10 +954,12 @@ onUnmounted(() => {
 
       <div v-else-if="activeVramModel" class="co-active-bar co-vram-console">
         <div class="co-active-bar-info">
-          <ABadge status="processing" color="#52c41a" />
-          <strong class="co-active-bar-name">
-            {{ t("models.activeModelBanner", { name: activeVramModel.name }) }}
-          </strong>
+          <span class="co-active-bar-title">
+            <ABadge status="processing" color="#52c41a" />
+            <strong class="co-active-bar-name">
+              {{ t("models.activeModelBanner", { name: activeVramModel.name }) }}
+            </strong>
+          </span>
           <span class="co-active-bar-spec co-tabular">
             {{ t("api.contextAndTemp", { ctx: activeContextK, temp: activeTemp }) }}
           </span>
@@ -1215,7 +1265,7 @@ onUnmounted(() => {
                     </template>
                   </span>
                   <template v-if="modelFitForTarget(model)">
-                    <span>·</span>
+                    <span class="co-sep-dot">·</span>
                     <span>
                       {{
                         t("models.estimatedVram", {
@@ -1227,7 +1277,7 @@ onUnmounted(() => {
                     </span>
                   </template>
                   <template v-if="model.description">
-                    <span>·</span>
+                    <span class="co-sep-dot">·</span>
                     <span class="co-model-desc">{{ tb(model.description) }}</span>
                   </template>
                 </div>
@@ -1534,7 +1584,7 @@ onUnmounted(() => {
                 <div class="co-model-sub">
                   <span>{{ bm.repo }}</span>
                   <template v-if="customRepoNote(bm.note)">
-                    <span>·</span>
+                    <span class="co-sep-dot">·</span>
                     <span>{{ customRepoNote(bm.note) }}</span>
                   </template>
                 </div>
@@ -1726,7 +1776,20 @@ onUnmounted(() => {
   flex: 1 1 200px;
 }
 
+.co-active-bar-title {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.co-active-bar-title :deep(.ant-badge) {
+  flex-shrink: 0;
+}
+
 .co-active-bar-name {
+  min-width: 0;
   font-size: 14px;
   font-weight: 600;
   color: var(--co-text);
@@ -1991,11 +2054,15 @@ onUnmounted(() => {
   overflow-wrap: anywhere;
 }
 
-.co-model-fit-pill {
+.co-model-title-row .co-model-remote-pill,
+.co-model-title-row .co-model-fit-pill {
   margin-inline-end: 0;
   font-size: 11px;
   line-height: 1.4;
-  padding: 0 6px;
+  padding: 1px 7px;
+  min-height: 20px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .co-model-sub {
@@ -2085,6 +2152,46 @@ onUnmounted(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.co-empty-panel :deep(.ant-empty),
+.co-empty-panel :deep(.ant-empty-footer) {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.co-empty-panel :deep(.ant-empty-description) {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.co-empty-panel :deep(.ant-space) {
+  max-width: 100%;
+  justify-content: center;
+}
+
+.co-empty-panel :deep(.ant-space-item) {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.co-empty-panel :deep(.ant-btn) {
+  max-width: 100%;
+  height: auto;
+  min-height: 30px;
+  padding-block: 5px;
+  white-space: normal;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.co-empty-panel :deep(.ant-btn > span) {
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 /* Delete Modal */
@@ -2099,6 +2206,7 @@ onUnmounted(() => {
   margin: 0;
   font-size: 14px;
   line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 
 .co-modal-footer {
@@ -2125,6 +2233,14 @@ onUnmounted(() => {
 }
 
 @media (max-width: 640px) {
+  .co-sep-dot {
+    display: none;
+  }
+
+  .co-model-sub {
+    column-gap: 10px;
+  }
+
   .co-active-bar {
     flex-direction: column;
     align-items: stretch;
@@ -2148,9 +2264,7 @@ onUnmounted(() => {
   .co-model-row {
     padding: 12px;
   }
-}
 
-@media (max-width: 560px) {
   .co-model-row-main {
     flex-wrap: wrap;
   }
@@ -2160,7 +2274,9 @@ onUnmounted(() => {
     flex-wrap: wrap;
     justify-content: flex-end;
   }
+}
 
+@media (max-width: 560px) {
   .co-only-runnable-check {
     white-space: normal;
   }
@@ -2170,5 +2286,27 @@ onUnmounted(() => {
 <style>
 .co-gpu-target-dropdown {
   min-width: min(320px, calc(100vw - 24px)) !important;
+}
+
+@media (max-width: 560px) {
+  body .ant-select-dropdown.co-gpu-target-dropdown .ant-select-item-option-content {
+    white-space: normal;
+  }
+
+  body .ant-select-dropdown.co-gpu-target-dropdown .co-gpu-opt-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+
+  body .ant-select-dropdown.co-gpu-target-dropdown .co-gpu-opt-main {
+    max-width: 100%;
+  }
+
+  body .ant-select-dropdown.co-gpu-target-dropdown .co-gpu-opt-sub {
+    max-width: 100%;
+    white-space: normal;
+    line-height: 1.35;
+  }
 }
 </style>

@@ -1751,7 +1751,7 @@ export const enUSMessages: ColabOneMessages = {
   "settings.assignMaxAttemptsAria": "Maximum GPU allocation attempts",
   "settings.assignMaxAttemptsUnit": "attempts",
   "settings.assignMaxAttemptsDesc":
-    "Maximum total allocation attempts when Colab GPUs are busy (1–100, default 20). Retries use exponential backoff (2s, 4s, 8s, 16s, 32s), staying at 32s thereafter; set to 1 to disable automatic retries.",
+    "Maximum total allocation attempts when Colab GPUs are busy (1–100, default 30). Retries use exponential backoff (2s, 4s, 8s, 16s, 32s), staying at 32s thereafter; set to 1 to disable automatic retries.",
   "settings.idleProtectionTitle": "Idle Auto-Release Protection",
   "settings.idleProtectionDesc":
     "Automatically releases remote resources after {policy} of inactivity. Any interaction resets the timer; downloads, loading, API inference, and ComfyUI tasks pause it automatically.",

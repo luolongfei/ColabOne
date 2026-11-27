@@ -351,7 +351,7 @@ const colabOneWebLoginCSS = `
   --co-ambient: rgba(37, 99, 235, 0.09);
   --co-error-bg: rgba(239, 68, 68, 0.09);
   --co-error-border: rgba(239, 68, 68, 0.24);
-  --co-error-text: #dc2626;
+  --co-error-text: #b91c1c;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -453,6 +453,7 @@ body::before {
 .co-pill {
   display: inline-flex;
   align-items: center;
+  max-width: 100%;
   padding: 5px 12px;
   margin-bottom: 22px;
   border-radius: 999px;
@@ -460,6 +461,7 @@ body::before {
   border: 1px solid var(--co-pill-border);
   font-size: 12px;
   font-weight: 500;
+  overflow-wrap: break-word;
   color: var(--co-secondary);
 }
 .co-lock-badge {
@@ -481,17 +483,20 @@ body::before {
 }
 .co-title {
   margin: 0 0 8px;
+  max-width: 100%;
   font-size: 21px;
   font-weight: 650;
   line-height: 1.3;
   letter-spacing: -0.025em;
+  overflow-wrap: break-word;
   color: var(--co-text);
 }
 .co-desc {
   margin: 0 0 22px;
-  max-width: 340px;
+  max-width: min(340px, 100%);
   font-size: 14px;
   line-height: 1.6;
+  overflow-wrap: break-word;
   color: var(--co-secondary);
 }
 .co-alert {
@@ -505,6 +510,8 @@ body::before {
   font-size: 13px;
   line-height: 1.5;
   text-align: left;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .co-alert.is-hidden {
   display: none;
@@ -544,6 +551,10 @@ body::before {
   border-color: var(--co-input-focus);
   box-shadow: 0 0 0 3px var(--co-focus-ring);
 }
+.co-input::-ms-reveal,
+.co-input::-ms-clear {
+  display: none;
+}
 .co-eye-btn {
   position: absolute;
   top: 50%;
@@ -580,7 +591,11 @@ body::before {
 .co-eye-btn.is-visible .co-icon-hide { display: block; }
 .co-btn {
   width: 100%;
-  height: 44px;
+  min-height: 44px;
+  padding: 10px 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 0;
   border-radius: 12px;
   background: var(--co-btn-bg);
@@ -588,6 +603,7 @@ body::before {
   font: inherit;
   font-size: 14.5px;
   font-weight: 600;
+  line-height: 1.25;
   letter-spacing: -0.01em;
   cursor: pointer;
   transition: background-color 0.16s ease, transform 0.12s ease, opacity 0.16s ease;
@@ -603,7 +619,6 @@ body::before {
   font-size: 12px;
   color: var(--co-muted);
   letter-spacing: 0.01em;
-  opacity: 0.8;
 }
 @keyframes co-rise {
   from { opacity: 0; transform: translateY(10px); }
@@ -628,6 +643,7 @@ const colabOneWebLoginJS = `
   var submitBtn = document.getElementById("co-submit-btn");
   var alertBox = document.getElementById("co-alert");
   if (!form || !input || !submitBtn || !alertBox) return;
+  form.noValidate = true;
 
   var msgEmpty = form.getAttribute("data-err-empty") || "";
   var msgNet = form.getAttribute("data-err-net") || "";

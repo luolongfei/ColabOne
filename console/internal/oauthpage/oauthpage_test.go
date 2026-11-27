@@ -120,11 +120,13 @@ func TestRenderColabOneOAuthPageAllLocalesSuccessAndError(t *testing.T) {
 			for _, want := range []string{
 				"<!doctype html>",
 				`<html lang="` + tc.locale + `">`,
+				`viewport-fit=cover`,
 				`<meta name="color-scheme" content="light dark">`,
 				"<title>" + tc.titleOK + "</title>",
 				`<body class="is-success">`,
 				`<h1 class="co-title">` + tc.headingOK + `</h1>`,
 				`<p class="co-desc">ok msg</p>`,
+				`<div class="co-pill is-status">`,
 				`<span class="co-pill-text">` + tc.badgeOK + `</span>`,
 				`<button id="co-close-btn" class="co-btn" type="button">` + tc.closeButton + `</button>`,
 				`<p id="co-hint" class="co-hint">` + tc.shortcutPrefix + `<kbd id="co-kbd" class="co-kbd">Ctrl + W</kbd>` + tc.shortcutSuffix + `</p>`,
@@ -139,6 +141,9 @@ func TestRenderColabOneOAuthPageAllLocalesSuccessAndError(t *testing.T) {
 					t.Errorf("ok HTML for %s missing %q", tc.locale, want)
 				}
 			}
+			if strings.Contains(okHTML, `<div class="co-pill">`) {
+				t.Errorf("ok HTML for %s with empty email unexpectedly rendered single-line co-pill without is-status", tc.locale)
+			}
 			if strings.Contains(okHTML, `<body class="is-error">`) {
 				t.Errorf("ok HTML for %s unexpectedly contains is-error class", tc.locale)
 			}
@@ -146,10 +151,12 @@ func TestRenderColabOneOAuthPageAllLocalesSuccessAndError(t *testing.T) {
 			errHTML := RenderColabOneOAuthPage(tc.locale, false, "err msg", "")
 			for _, want := range []string{
 				`<html lang="` + tc.locale + `">`,
+				`viewport-fit=cover`,
 				"<title>" + tc.titleErr + "</title>",
 				`<body class="is-error">`,
 				`<h1 class="co-title">` + tc.headingErr + `</h1>`,
 				`<p class="co-desc">err msg</p>`,
+				`<div class="co-pill is-status">`,
 				`<span class="co-pill-text">` + tc.badgeErr + `</span>`,
 				`<button id="co-close-btn" class="co-btn" type="button">` + tc.returnButton + `</button>`,
 				`<footer class="co-footer">` + tc.footer + `</footer>`,
@@ -159,6 +166,9 @@ func TestRenderColabOneOAuthPageAllLocalesSuccessAndError(t *testing.T) {
 				if !strings.Contains(errHTML, want) {
 					t.Errorf("error HTML for %s missing %q", tc.locale, want)
 				}
+			}
+			if strings.Contains(errHTML, `<div class="co-pill">`) {
+				t.Errorf("error HTML for %s unexpectedly rendered single-line co-pill without is-status", tc.locale)
 			}
 			if strings.Contains(errHTML, `class="co-check-path"`) {
 				t.Errorf("error HTML for %s unexpectedly contains success check path", tc.locale)
@@ -170,6 +180,12 @@ func TestRenderColabOneOAuthPageAllLocalesSuccessAndError(t *testing.T) {
 func TestRenderColabOneOAuthPageEmailBadgeBehavior(t *testing.T) {
 	t.Run("success with trimmed email replaces default badge", func(t *testing.T) {
 		page := RenderColabOneOAuthPage("en-US", true, "ok", "  demo@example.com  ")
+		if !strings.Contains(page, `<div class="co-pill">`) {
+			t.Fatalf("expected class=\"co-pill\" when email is present")
+		}
+		if strings.Contains(page, `<div class="co-pill is-status">`) {
+			t.Fatalf("unexpected is-status modifier when email is present")
+		}
 		if !strings.Contains(page, `<span class="co-pill-text">demo@example.com</span>`) {
 			t.Fatalf("expected trimmed email in pill badge")
 		}
@@ -180,6 +196,12 @@ func TestRenderColabOneOAuthPageEmailBadgeBehavior(t *testing.T) {
 
 	t.Run("success with whitespace-only email uses default ok badge", func(t *testing.T) {
 		page := RenderColabOneOAuthPage("en-US", true, "ok", "   \t\n  ")
+		if !strings.Contains(page, `<div class="co-pill is-status">`) {
+			t.Fatalf("expected class=\"co-pill is-status\" when email is whitespace-only")
+		}
+		if strings.Contains(page, `<div class="co-pill">`) {
+			t.Fatalf("unexpected bare co-pill class when email is whitespace-only")
+		}
 		if !strings.Contains(page, `<span class="co-pill-text">Credentials saved securely on this device</span>`) {
 			t.Fatalf("expected default ok badge when email is whitespace-only")
 		}
@@ -187,6 +209,12 @@ func TestRenderColabOneOAuthPageEmailBadgeBehavior(t *testing.T) {
 
 	t.Run("error state ignores supplied email and uses default err badge", func(t *testing.T) {
 		page := RenderColabOneOAuthPage("en-US", false, "failed", "demo@example.com")
+		if !strings.Contains(page, `<div class="co-pill is-status">`) {
+			t.Fatalf("expected class=\"co-pill is-status\" on error state")
+		}
+		if strings.Contains(page, `<div class="co-pill">`) {
+			t.Fatalf("unexpected bare co-pill class on error state")
+		}
 		if !strings.Contains(page, `<span class="co-pill-text">No credentials were saved</span>`) {
 			t.Fatalf("expected default error badge on failure")
 		}

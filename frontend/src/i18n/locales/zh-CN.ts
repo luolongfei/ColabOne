@@ -1698,7 +1698,7 @@ export const zhCNMessages = {
   "settings.assignMaxAttemptsAria": "GPU 分配最大尝试次数",
   "settings.assignMaxAttemptsUnit": "次",
   "settings.assignMaxAttemptsDesc":
-    "算力紧张或请求繁忙时自动排队重试的总尝试次数上限（1–100 次，默认 20 次）。每次重试按指数退避（2s、4s、8s、16s、32s），达到 32 秒后后续间隔固定为 32 秒；设为 1 次则不自动重试。",
+    "算力紧张或请求繁忙时自动排队重试的总尝试次数上限（1–100 次，默认 30 次）。每次重试按指数退避（2s、4s、8s、16s、32s），达到 32 秒后后续间隔固定为 32 秒；设为 1 次则不自动重试。",
   "settings.idleProtectionTitle": "空闲自动释放保护",
   "settings.idleProtectionDesc":
     "超过 {policy} 无操作或任务时自动释放远端资源；继续操作会重置倒计时，模型下载与装载、对外 API 推理及 ComfyUI 运行期间自动暂停倒计时。",

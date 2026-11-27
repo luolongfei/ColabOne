@@ -3691,16 +3691,18 @@ onUnmounted(() => {
             data-testid="live-companion-strip"
           >
             <div class="co-live-companion-strip-info">
-              <PhDeviceMobile :size="15" weight="fill" />
-              <strong>
-                {{
-                  t("live.companionStatusConnected", {
-                    name: companionStatus.device_label
-                      ? tb(companionStatus.device_label)
-                      : t("live.companionConnectedBtn"),
-                  })
-                }}
-              </strong>
+              <span class="co-live-companion-strip-title">
+                <PhDeviceMobile :size="15" weight="fill" />
+                <strong>
+                  {{
+                    t("live.companionStatusConnected", {
+                      name: companionStatus.device_label
+                        ? tb(companionStatus.device_label)
+                        : t("live.companionConnectedBtn"),
+                    })
+                  }}
+                </strong>
+              </span>
               <ATag
                 :color="companionStatus.mic_active ? 'success' : 'default'"
                 class="co-live-companion-pill"
@@ -4037,6 +4039,7 @@ onUnmounted(() => {
               type="button"
               class="co-live-action-btn"
               :class="{ 'is-active': activeActionId === act.id }"
+              :title="act.label || act.name || act.id"
               :disabled="
                 !isConnected ||
                 (act.kind === 'personalive_drive' && !personaliveEnabled)
@@ -4084,6 +4087,11 @@ onUnmounted(() => {
                       type="button"
                       class="co-live-action-btn co-live-driving-trigger"
                       :class="{ 'is-active': activeActionId === motion.id }"
+                      :title="
+                        personaliveEnabled
+                          ? motion.label || motion.id
+                          : undefined
+                      "
                       :disabled="!isConnected || !personaliveEnabled"
                       @click="triggerDrivingMotion(motion)"
                     >
@@ -4407,7 +4415,11 @@ onUnmounted(() => {
               alt=""
               class="co-live-pack-thumb"
             />
-            <AButton @click="packPortraitInputRef?.click()">
+            <AButton
+              class="co-live-pack-pick-btn"
+              :title="buildPackPortraitName || t('live.buildPackPickPortrait')"
+              @click="packPortraitInputRef?.click()"
+            >
               <template #icon><PhUploadSimple :size="15" /></template>
               {{ buildPackPortraitName || t("live.buildPackPickPortrait") }}
             </AButton>
@@ -4489,6 +4501,7 @@ onUnmounted(() => {
       :title="t('live.companionModalTitle')"
       :footer="null"
       :width="480"
+      :centered="true"
       :z-index="1050"
       destroy-on-close
     >
@@ -4867,6 +4880,24 @@ onUnmounted(() => {
   flex-wrap: wrap;
   font-size: 12.5px;
   color: var(--co-text);
+  min-width: 0;
+}
+
+.co-live-companion-strip-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.co-live-companion-strip-title strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.co-live-companion-strip-title svg {
+  flex-shrink: 0;
 }
 
 .co-live-companion-pill {
@@ -4907,6 +4938,8 @@ onUnmounted(() => {
 }
 
 .co-live-companion-domain-v {
+  min-width: 0;
+  max-width: 100%;
   font-size: 12px;
   color: var(--co-text);
   overflow: hidden;
@@ -5106,6 +5139,7 @@ onUnmounted(() => {
 .co-live-placeholder-emblem {
   width: 72px;
   height: 72px;
+  flex-shrink: 0;
   border-radius: 9999px;
   display: flex;
   align-items: center;
@@ -5118,6 +5152,7 @@ onUnmounted(() => {
 .co-live-placeholder-avatar {
   width: 132px;
   height: 132px;
+  flex-shrink: 0;
   border-radius: 20px;
   object-fit: cover;
   border: 2px solid rgba(255, 255, 255, 0.24);
@@ -5325,6 +5360,8 @@ onUnmounted(() => {
   color: #e2e8f0;
   width: 22px;
   height: 22px;
+  padding: 0;
+  flex-shrink: 0;
   border-radius: 9999px;
   display: inline-flex;
   align-items: center;
@@ -5515,14 +5552,20 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 6px 8px;
 }
 
 .co-live-side-title {
   display: inline-flex;
   align-items: center;
   gap: 7px;
+  min-width: 0;
   color: var(--co-text);
+}
+
+.co-live-side-title svg {
+  flex-shrink: 0;
 }
 
 .co-live-side-title h3 {
@@ -5530,6 +5573,20 @@ onUnmounted(() => {
   font-size: 14px;
   font-weight: 650;
   color: var(--co-text);
+}
+
+.co-live-side-head :deep(.ant-tag) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-inline-end: 0;
+  white-space: nowrap;
+  flex-shrink: 0;
+  border-radius: var(--co-radius-pill);
+}
+
+.co-live-side-head :deep(.ant-tag svg) {
+  flex-shrink: 0;
 }
 
 .co-live-avatar-select-row {
@@ -5786,6 +5843,7 @@ onUnmounted(() => {
 .co-live-form-grid-2 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: end;
   gap: 10px;
 }
 
@@ -5819,20 +5877,126 @@ onUnmounted(() => {
 .co-live-pack-picker {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
+  min-width: 0;
 }
 
 .co-live-pack-thumb {
   width: 56px;
   height: 56px;
+  flex-shrink: 0;
   border-radius: 10px;
   object-fit: cover;
   border: 1px solid var(--co-border);
 }
 
+.co-live-pack-pick-btn {
+  flex: 1 1 160px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.co-live-pack-pick-btn :deep(.ant-btn-icon) {
+  flex-shrink: 0;
+}
+
+.co-live-pack-pick-btn :deep(> span:not(.ant-btn-icon)) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (max-width: 680px) {
   .co-live-stage {
-    min-height: 280px;
+    min-height: 356px;
+  }
+
+  .co-live-stage-top-bar {
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    gap: 6px;
+  }
+
+  .co-live-hud {
+    border-radius: 12px;
+    gap: 4px 10px;
+    padding: 6px 10px;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+
+  .co-live-hud-sep {
+    display: none;
+  }
+
+  .co-live-stage-placeholder {
+    box-sizing: border-box;
+    padding: 108px 16px 20px;
+    gap: 8px;
+    justify-content: safe center;
+  }
+
+  .co-live-placeholder-avatar {
+    width: 96px;
+    height: 96px;
+    border-radius: 16px;
+  }
+
+  .co-live-placeholder-emblem {
+    width: 56px;
+    height: 56px;
+  }
+
+  .co-live-llm-segment.ant-segmented {
+    overflow: hidden;
+  }
+
+  .co-live-llm-segment.ant-segmented :deep(.ant-segmented-group) {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .co-live-llm-segment.ant-segmented :deep(.ant-segmented-item) {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .co-live-llm-segment.ant-segmented :deep(.ant-segmented-item-label) {
+    display: block;
+    padding-inline: 8px;
+    font-size: 12px;
+    line-height: 26px;
+    text-align: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .co-live-start-download-meta {
+    gap: 4px 10px;
+  }
+
+  .co-live-start-dot {
+    display: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .co-live-action-wall {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .co-live-form-grid-2 {
+    grid-template-columns: 1fr;
+  }
+
+  .co-live-companion-domain-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
   }
 }
 </style>

@@ -9,7 +9,8 @@
     "Yu Gothic UI", "Malgun Gothic", sans-serif;
   --co-font-mono:
     ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Mono", Consolas,
-    "Liberation Mono", "DejaVu Sans Mono", monospace, "Sarasa UI SC";
+    "Liberation Mono", "DejaVu Sans Mono", "Roboto Mono", "Droid Sans Mono",
+    "Noto Sans Mono", "Ubuntu Mono", "Sarasa UI SC", monospace;
   font-family: var(--co-font-sans);
   font-size: 14px;
   line-height: 1.5;
@@ -34,7 +35,7 @@
 :root[lang="en-US"] {
   --co-font-sans:
     -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", "Helvetica Neue",
-    Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+    Arial, "PingFang SC", "Microsoft YaHei", "Sarasa UI SC", sans-serif;
 }
 
 :root[lang="zh-TW"] {
@@ -703,6 +704,11 @@ body .ant-select-dropdown .ant-select-item-option-disabled {
   border-radius: var(--co-radius-md);
 }
 
+.ant-alert .ant-alert-content {
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
 .ant-alert-info {
   background: var(--co-selected);
   border-color: rgba(59, 130, 246, 0.24);
@@ -786,7 +792,93 @@ body .ant-select-dropdown .ant-select-item-option-disabled {
 }
 
 .ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-wrap {
-  overflow: visible;
+  overflow: hidden;
+  max-width: 100%;
+  padding: 2px;
+  margin: -2px;
+}
+
+.ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-wrap::before,
+.ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-wrap::after {
+  display: none !important;
+}
+
+.ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-wrap.ant-tabs-nav-wrap-ping-right:not(.ant-tabs-nav-wrap-ping-left) {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 0%,
+    #000 calc(100% - 24px),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    #000 0%,
+    #000 calc(100% - 24px),
+    transparent 100%
+  );
+}
+
+.ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-wrap.ant-tabs-nav-wrap-ping-left:not(.ant-tabs-nav-wrap-ping-right) {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0%,
+    #000 24px,
+    #000 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent 0%,
+    #000 24px,
+    #000 100%
+  );
+}
+
+.ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-wrap.ant-tabs-nav-wrap-ping-left.ant-tabs-nav-wrap-ping-right {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0%,
+    #000 24px,
+    #000 calc(100% - 24px),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent 0%,
+    #000 24px,
+    #000 calc(100% - 24px),
+    transparent 100%
+  );
+}
+
+.ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-operations:not(.ant-tabs-nav-operations-hidden) {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  margin-inline-start: 6px;
+}
+
+.ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-operations .ant-tabs-nav-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  height: 34px;
+  padding: 0 8px;
+  border-radius: var(--co-radius-pill);
+  border: 1px solid var(--co-border-secondary);
+  background: var(--co-subpill-track);
+  color: var(--co-secondary-text);
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-operations .ant-tabs-nav-more:hover {
+  background: var(--co-hover);
+  border-color: var(--co-border);
+  color: var(--co-text);
 }
 
 .ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-list {
@@ -853,12 +945,14 @@ body .ant-select-dropdown .ant-select-item-option-disabled {
   font-weight: 600;
 }
 
-/* ColabOne pill tags — rounded-full status badges */
+/* ColabOne pill tags — single-line rounded-full status badges by default */
 .ant-tag {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  justify-content: safe center;
   gap: 5px;
+  flex-shrink: 0;
   min-height: 22px;
   max-width: 100%;
   box-sizing: border-box;
@@ -868,7 +962,51 @@ body .ant-select-dropdown .ant-select-item-option-disabled {
   font-size: 12px;
   font-weight: 500;
   line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-variant-numeric: tabular-nums;
+}
+
+/* Bare-text tags switch to inline-block so CSS text-overflow: ellipsis applies;
+ * align-content: center keeps trimmed en-US and shorter-line-height labels vertically centered. */
+.ant-tag:where(:not(.co-tag-wrap):not(:has(> *))) {
+  display: inline-block;
+  align-content: center;
+  line-height: 1.2;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.ant-tag > span:not(.ant-badge) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Explicit opt-in utility for intentionally multi-line tags */
+.ant-tag.co-tag-wrap {
+  justify-content: flex-start;
+  height: auto;
+  min-height: 22px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+  border-radius: 11px;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: normal;
+  text-align: left;
+  text-box-trim: none;
+}
+
+.ant-tag.co-tag-wrap > span:not(.ant-badge) {
+  white-space: normal;
+  overflow-wrap: break-word;
+  text-overflow: clip;
+  text-box-trim: none;
+  padding-block: 0;
+  margin-block: 0;
 }
 
 /* Guard drawers & modals against long badges/tags overflowing container bounds */
@@ -893,29 +1031,6 @@ body .ant-select-dropdown .ant-select-item-option-disabled {
 .ant-modal .ant-space-item {
   min-width: 0;
   max-width: 100%;
-}
-
-.ant-drawer .ant-tag:where(:not(.co-comfy-filename-pill)),
-.ant-modal .ant-tag,
-.co-log-drawer .ant-tag {
-  max-width: 100%;
-  height: auto;
-  min-height: 22px;
-  padding-top: 2px;
-  padding-bottom: 2px;
-  border-radius: 11px;
-  line-height: 1.35;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-  text-align: left;
-}
-
-.ant-drawer .ant-tag:where(:not(.co-comfy-filename-pill)) > span:not(.ant-badge),
-.ant-modal .ant-tag > span:not(.ant-badge),
-.co-log-drawer .ant-tag > span:not(.ant-badge) {
-  min-width: 0;
-  overflow-wrap: anywhere;
 }
 
 .ant-tag > .ant-badge {
@@ -984,14 +1099,22 @@ body .ant-select-dropdown .ant-select-item-option-disabled {
 
 /* Trim asymmetric Latin font metrics (notably Windows Segoe UI) inside compact pills/badges
  * so icons, status dots, and text share the exact optical centerline without shifting CJK em-boxes. */
-:root[lang="en-US"] .ant-tag,
-:root[lang="en-US"] .ant-tag > span:not(.ant-badge),
+:root[lang="en-US"] .ant-tag:not(.co-tag-wrap),
 :root[lang="en-US"] .ant-badge.ant-badge-status .ant-badge-status-text,
 :root[lang="en-US"] .co-idle-timer-inner > span,
 :root[lang="en-US"] .co-billing-metric,
 :root[lang="en-US"] .co-billing-metric > span {
   text-box-trim: trim-both;
   text-box-edge: cap alphabetic;
+}
+
+/* Inner tag spans carry overflow: hidden for ellipsis, so pair text-box-trim with
+ * vertical clip-padding bleed to keep descenders (g, j, p, q, y, _) unclipped. */
+:root[lang="en-US"] .ant-tag:not(.co-tag-wrap) > span:not(.ant-badge) {
+  text-box-trim: trim-both;
+  text-box-edge: cap alphabetic;
+  padding-block: 3px;
+  margin-block: -3px;
 }
 
 /* Switches */

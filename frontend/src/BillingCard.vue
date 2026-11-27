@@ -392,14 +392,16 @@ function onIdleMinutesChange(event: Event) {
   >
     <template #title>
       <div class="co-bc-head-left">
-        <span
-          class="co-bc-title-icon"
-          :class="{ active: overview.active }"
-          aria-hidden="true"
-        >
-          <PhCoins :size="15" weight="duotone" />
+        <span class="co-bc-title-group">
+          <span
+            class="co-bc-title-icon"
+            :class="{ active: overview.active }"
+            aria-hidden="true"
+          >
+            <PhCoins :size="15" weight="duotone" />
+          </span>
+          <span class="co-bc-title">{{ t("billing.cardTitle") }}</span>
         </span>
-        <span class="co-bc-title">{{ t("billing.cardTitle") }}</span>
         <ColabOneSkeleton
           v-if="skeleton.status"
           variant="pill"
@@ -997,14 +999,19 @@ function onIdleMinutesChange(event: Event) {
 }
 
 .co-billing-card :deep(.ant-card-head-wrapper) {
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 6px 10px;
 }
 
 .co-billing-card :deep(.ant-card-head-title) {
+  flex: 1 1 260px;
+  min-width: 0;
+  white-space: normal;
   padding: 10px 0;
 }
 
 .co-billing-card :deep(.ant-card-extra) {
+  margin-inline-start: auto;
   padding: 8px 0;
 }
 
@@ -1017,6 +1024,14 @@ function onIdleMinutesChange(event: Event) {
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
+  min-width: 0;
+}
+
+.co-bc-title-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: nowrap;
   min-width: 0;
 }
 
@@ -1043,6 +1058,7 @@ function onIdleMinutesChange(event: Event) {
   font-weight: 600;
   color: var(--co-text);
   letter-spacing: -0.1px;
+  min-width: 0;
 }
 
 .co-bc-status-tag {
@@ -1059,6 +1075,8 @@ function onIdleMinutesChange(event: Event) {
   background: var(--co-track);
   color: var(--co-secondary-text);
   border: 1px solid var(--co-border);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .co-bc-status-tag.billing {
@@ -1092,6 +1110,8 @@ function onIdleMinutesChange(event: Event) {
   background: var(--co-warning-bg);
   border: 1px solid var(--co-warning-border);
   color: var(--co-warning-text);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .co-bc-head-right {
@@ -1467,6 +1487,8 @@ function onIdleMinutesChange(event: Event) {
   background: var(--co-danger-bg);
   color: var(--co-danger-text);
   border-color: var(--co-danger-border);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .co-idle-note {
@@ -1569,6 +1591,17 @@ function onIdleMinutesChange(event: Event) {
   .co-metric-cell:nth-child(even) {
     padding-left: 18px;
     border-left: 1px solid var(--co-border);
+  }
+}
+
+@media (max-width: 680px) {
+  .co-billing-card :deep(.ant-card-head-wrapper) {
+    padding: 10px 0;
+  }
+
+  .co-billing-card :deep(.ant-card-head-title),
+  .co-billing-card :deep(.ant-card-extra) {
+    padding: 0;
   }
 }
 

@@ -1103,7 +1103,19 @@ function handleOpenReleasePage(url?: string) {
   display: flex;
   flex-direction: column;
   max-width: calc(100vw - 24px);
+  max-height: calc(
+    100vh - 80px - var(--co-safe-top, 0px) - var(--co-safe-bottom, 0px)
+  );
+  max-height: calc(
+    100dvh - 80px - var(--co-safe-top, 0px) - var(--co-safe-bottom, 0px)
+  );
+  overflow-y: auto;
+  overscroll-behavior: contain;
   color: var(--co-text);
+}
+
+.co-update-panel > * {
+  flex-shrink: 0;
 }
 
 .co-update-panel.is-compact {

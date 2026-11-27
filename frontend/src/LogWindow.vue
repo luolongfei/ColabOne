@@ -288,7 +288,8 @@ onUnmounted(() => {
 <style scoped>
 .co-log-window-root {
   width: 100vw;
-  height: 100vh;
+  height: 100%;
+  height: 100dvh;
   overflow: hidden;
   display: flex;
   flex-direction: column;

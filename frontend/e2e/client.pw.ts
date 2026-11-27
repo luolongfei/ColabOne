@@ -168,7 +168,7 @@ async function mock(page: any, ready = false, path = "/") {
           idle_countdown_seconds: 60,
           auto_drive: true,
           download_threads: 16,
-          assign_max_attempts: 20,
+          assign_max_attempts: 30,
         },
       };
       const calls: any[] = [];
@@ -8840,7 +8840,7 @@ test("privacy mask allows unrestricted pasting and editing across all domain and
   await page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"));
 });
 
-test("settings page customizes GPU allocation max attempts with 20 default and 1-100 clamping", async ({
+test("settings page customizes GPU allocation max attempts with 30 default and 1-100 clamping", async ({
   page,
 }) => {
   await mock(page, true);
@@ -8848,7 +8848,7 @@ test("settings page customizes GPU allocation max attempts with 20 default and 1
 
   const attemptsInput = page.locator("#settings-assign-max-attempts");
   await expect(attemptsInput).toBeVisible();
-  await expect(attemptsInput).toHaveValue("20");
+  await expect(attemptsInput).toHaveValue("30");
 
   // Nearest-edge scroll (e.g. keyboard focus / Tab) must keep lower Settings inputs clear of the floating save bar
   await attemptsInput.evaluate((el) =>

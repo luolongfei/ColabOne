@@ -1149,6 +1149,8 @@ func TestAllocateDefaultBackoffScheduleAndCancelInterrupt(t *testing.T) {
 		32 * time.Second, 32 * time.Second, 32 * time.Second, 32 * time.Second, 32 * time.Second,
 		32 * time.Second, 32 * time.Second, 32 * time.Second, 32 * time.Second, 32 * time.Second,
 		32 * time.Second, 32 * time.Second, 32 * time.Second, 32 * time.Second, 32 * time.Second,
+		32 * time.Second, 32 * time.Second, 32 * time.Second, 32 * time.Second, 32 * time.Second,
+		32 * time.Second, 32 * time.Second, 32 * time.Second, 32 * time.Second, 32 * time.Second,
 	}
 	if len(wantDelays) != COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS-1 {
 		t.Fatalf("unexpected expected delay count: %d", len(wantDelays))
@@ -1200,15 +1202,15 @@ func TestAllocateDefaultBackoffScheduleAndCancelInterrupt(t *testing.T) {
 	if !reflect.DeepEqual(waited, []int{2, 4, 8}) {
 		t.Fatalf("expected waited=[2 4 8], got %v", waited)
 	}
-	wantStages := []string{"正在分配 G4（第 2/20 次）", "正在分配 G4（第 3/20 次）"}
+	wantStages := []string{"正在分配 G4（第 2/30 次）", "正在分配 G4（第 3/30 次）"}
 	if !reflect.DeepEqual(stages, wantStages) {
 		t.Fatalf("stages mismatch: got=%v want=%v", stages, wantStages)
 	}
 	wantTimeline := []string{
 		"wait:2",
-		"stage:正在分配 G4（第 2/20 次）",
+		"stage:正在分配 G4（第 2/30 次）",
 		"wait:4",
-		"stage:正在分配 G4（第 3/20 次）",
+		"stage:正在分配 G4（第 3/30 次）",
 		"wait:8",
 	}
 	if !reflect.DeepEqual(timeline, wantTimeline) {
@@ -1216,7 +1218,7 @@ func TestAllocateDefaultBackoffScheduleAndCancelInterrupt(t *testing.T) {
 	}
 	hasNetLog := false
 	for _, m := range logs {
-		if strings.Contains(m, "耗时") && strings.Contains(m, "网络异常") && strings.Contains(m, "第 2/20 次") {
+		if strings.Contains(m, "耗时") && strings.Contains(m, "网络异常") && strings.Contains(m, "第 2/30 次") {
 			hasNetLog = true
 		}
 	}

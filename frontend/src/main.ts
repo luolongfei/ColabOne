@@ -76,9 +76,11 @@ function colabOneMountRecoveryNotice(err: unknown) {
   wrap.setAttribute("role", "alert");
   wrap.style.height = "100%";
   wrap.style.display = "flex";
+  wrap.style.flexDirection = "column";
   wrap.style.alignItems = "center";
-  wrap.style.justifyContent = "center";
-  wrap.style.padding = "24px";
+  wrap.style.overflowY = "auto";
+  wrap.style.padding =
+    "max(24px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left))";
   wrap.style.boxSizing = "border-box";
   wrap.style.background = "var(--co-canvas, #fafbfc)";
   wrap.style.color = "var(--co-text, #111827)";
@@ -86,6 +88,8 @@ function colabOneMountRecoveryNotice(err: unknown) {
   const card = document.createElement("div");
   card.style.maxWidth = "420px";
   card.style.width = "100%";
+  card.style.margin = "auto";
+  card.style.boxSizing = "border-box";
   card.style.padding = "24px";
   card.style.borderRadius = "var(--co-radius-md, 12px)";
   card.style.background = "var(--co-surface, #ffffff)";

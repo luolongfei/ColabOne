@@ -247,7 +247,7 @@ onUnmounted(() => {
             <ATag
               v-if="activeElapsed"
               :bordered="false"
-              class="co-log-live-elapsed co-mono"
+              class="co-log-live-elapsed co-tabular"
               data-testid="log-drawer-elapsed"
             >
               <PhClock :size="12" aria-hidden="true" />
@@ -433,7 +433,8 @@ onUnmounted(() => {
   width: min(var(--co-log-drawer-width, 420px), 46vw);
   min-width: 300px;
   max-width: 640px;
-  height: 100vh;
+  height: 100%;
+  height: 100dvh;
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
@@ -447,7 +448,8 @@ onUnmounted(() => {
   width: 100vw;
   min-width: 0;
   max-width: none;
-  height: 100vh;
+  height: 100%;
+  height: 100dvh;
   flex: 1 1 auto;
   border-left: none;
   background: var(--co-canvas);
@@ -625,6 +627,11 @@ onUnmounted(() => {
   border-color: var(--co-danger-border);
 }
 
+.co-log-entry.error :deep(.ant-tag-error) {
+  background: var(--co-surface);
+  border-color: var(--co-danger-border);
+}
+
 .co-log-entry-meta {
   display: flex;
   align-items: center;
@@ -679,7 +686,9 @@ onUnmounted(() => {
 }
 
 .co-log-drawer.is-standalone .co-log-drawer-footer {
-  padding: 0 18px;
+  height: auto;
+  min-height: 48px;
+  padding: 8px 18px calc(8px + var(--co-safe-bottom, 0px));
 }
 
 .co-log-mobile-bar {

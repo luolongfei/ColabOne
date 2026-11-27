@@ -493,7 +493,7 @@ async function openRepoHome() {
                         })
                   }}</template>
               </span>
-              <span>·</span>
+              <span class="co-sep-dot">·</span>
               <span>
                 {{ t("models.pickerEstVramLabel") }} ~{{
                   formatColabOneGb(opt.fit.estimatedVramGb)
@@ -501,7 +501,7 @@ async function openRepoHome() {
                   / {{ targetGpu.vramGb }} GB</template
                 >
               </span>
-              <span>·</span>
+              <span class="co-sep-dot">·</span>
               <span>
                 {{
                   opt.file.shards > 1
@@ -543,44 +543,53 @@ async function openRepoHome() {
               ? t("models.pickerTotalVersionsSingle", { count: plan.totalCount })
               : t("models.pickerTotalVersions", { count: plan.totalCount })
           }}</span>
-          <span>·</span>
+          <span class="co-sep-dot">·</span>
           <span>
             {{ t("models.pickerEvalBy", { gpu: targetGpu.shortLabel }) }}
           </span>
-          <template v-if="targetGpu.vramMib > 0">
-            <span>·</span>
-            <span
-              v-if="plan.fullVramCount > 0"
-              class="co-vp-fit-ok"
-            >
-              {{ t("models.pickerFullVramCount", { count: plan.fullVramCount }) }}
-            </span>
-            <template v-if="plan.fullVramCount > 0 && plan.hybridCount > 0">
-              <span>/</span>
-            </template>
-            <span
-              v-if="plan.hybridCount > 0"
-              class="co-vp-fit-hybrid"
-            >
-              {{ t("models.pickerHybridCount", { count: plan.hybridCount }) }}
-            </span>
-            <template
-              v-if="
-                (plan.fullVramCount > 0 || plan.hybridCount > 0) &&
-                plan.diskExceedsVmCount > 0
-              "
-            >
-              <span>/</span>
-            </template>
-            <span
-              v-if="plan.diskExceedsVmCount > 0"
-              class="co-vp-fit-disk-warn"
-            >
-              {{
-                t("models.pickerDiskExceedsCount", {
-                  count: plan.diskExceedsVmCount,
-                })
-              }}
+          <template
+            v-if="
+              targetGpu.vramMib > 0 &&
+              (plan.fullVramCount > 0 ||
+                plan.hybridCount > 0 ||
+                plan.diskExceedsVmCount > 0)
+            "
+          >
+            <span class="co-sep-dot">·</span>
+            <span class="co-vp-fit-summary">
+              <span
+                v-if="plan.fullVramCount > 0"
+                class="co-vp-fit-ok"
+              >
+                {{ t("models.pickerFullVramCount", { count: plan.fullVramCount }) }}
+              </span>
+              <template v-if="plan.fullVramCount > 0 && plan.hybridCount > 0">
+                <span>/</span>
+              </template>
+              <span
+                v-if="plan.hybridCount > 0"
+                class="co-vp-fit-hybrid"
+              >
+                {{ t("models.pickerHybridCount", { count: plan.hybridCount }) }}
+              </span>
+              <template
+                v-if="
+                  (plan.fullVramCount > 0 || plan.hybridCount > 0) &&
+                  plan.diskExceedsVmCount > 0
+                "
+              >
+                <span>/</span>
+              </template>
+              <span
+                v-if="plan.diskExceedsVmCount > 0"
+                class="co-vp-fit-disk-warn"
+              >
+                {{
+                  t("models.pickerDiskExceedsCount", {
+                    count: plan.diskExceedsVmCount,
+                  })
+                }}
+              </span>
             </span>
           </template>
         </div>
@@ -785,7 +794,7 @@ async function openRepoHome() {
                       })
                 }}</template>
             </span>
-            <span>·</span>
+            <span class="co-sep-dot">·</span>
             <span class="co-vc-vram">
               {{ t("models.pickerEstVramLabel") }}
               <strong>~{{ formatColabOneGb(opt.fit.estimatedVramGb) }}</strong>
@@ -802,7 +811,7 @@ async function openRepoHome() {
                 </template>
               </template>
             </span>
-            <span>·</span>
+            <span class="co-sep-dot">·</span>
             <span>
               {{
                 opt.file.shards > 1
@@ -912,7 +921,7 @@ async function openRepoHome() {
                     })
               }}</template>
           </span>
-          <span>·</span>
+          <span class="co-sep-dot">·</span>
           <span>
             {{
               selectedOption.file.shards > 1
@@ -922,7 +931,7 @@ async function openRepoHome() {
                 : t("models.pickerSingleFileTotal")
             }}
           </span>
-          <span>·</span>
+          <span class="co-sep-dot">·</span>
           <span class="co-tabular">
             {{
               t("models.estimatedVram", {
@@ -1131,6 +1140,13 @@ async function openRepoHome() {
   font-weight: 600;
 }
 
+.co-vp-fit-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
 .co-vp-fit-ok {
   color: var(--co-success-text);
   font-weight: 500;
@@ -1175,13 +1191,6 @@ async function openRepoHome() {
   color: var(--co-danger, #cf1322);
 }
 
-.co-vc-disk-tag {
-  margin-inline-end: 0;
-  font-size: 11px;
-  line-height: 1.4;
-  padding: 0 6px;
-}
-
 .co-vp-hybrid-banner {
   display: flex;
   flex-direction: column;
@@ -1192,6 +1201,37 @@ async function openRepoHome() {
   background: var(--co-subtle);
   font-size: 12px;
   color: var(--co-text);
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.co-vp-hybrid-banner :deep(.ant-space),
+.co-vp-disk-banner :deep(.ant-space) {
+  max-width: 100%;
+}
+
+.co-vp-hybrid-banner :deep(.ant-space-item),
+.co-vp-disk-banner :deep(.ant-space-item) {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.co-vp-hybrid-banner :deep(.ant-btn),
+.co-vp-disk-banner :deep(.ant-btn) {
+  max-width: 100%;
+  height: auto;
+  min-height: 30px;
+  padding-block: 5px;
+  white-space: normal;
+  text-align: left;
+  line-height: 1.35;
+}
+
+.co-vp-hybrid-banner :deep(.ant-btn > span),
+.co-vp-disk-banner :deep(.ant-btn > span) {
+  max-width: 100%;
+  overflow-wrap: break-word;
 }
 
 .co-vp-hybrid-banner-text {
@@ -1265,6 +1305,22 @@ async function openRepoHome() {
   opacity: 1;
 }
 
+.co-version-card.is-selected :deep(.ant-tag-blue),
+.co-version-card.is-selected :deep(.ant-tag-blue.ant-tag-borderless),
+.co-version-card.is-selected :deep(.ant-tag-processing),
+.co-version-card.is-selected :deep(.ant-tag-processing.ant-tag-borderless) {
+  background: var(--co-surface);
+  border-color: rgba(59, 130, 246, 0.28);
+}
+
+:root[data-theme="dark"] .co-version-card.is-selected :deep(.ant-tag-blue),
+:root[data-theme="dark"] .co-version-card.is-selected :deep(.ant-tag-blue.ant-tag-borderless),
+:root[data-theme="dark"] .co-version-card.is-selected :deep(.ant-tag-processing),
+:root[data-theme="dark"] .co-version-card.is-selected :deep(.ant-tag-processing.ant-tag-borderless) {
+  background: rgba(59, 130, 246, 0.24);
+  border-color: rgba(96, 165, 250, 0.42);
+}
+
 .co-version-card.is-disabled {
   opacity: 0.5;
   background: var(--co-subtle);
@@ -1315,14 +1371,19 @@ async function openRepoHome() {
   color: var(--co-text);
 }
 
-.co-vc-quant,
-.co-vc-rec-tag,
-.co-vc-fit-tag,
-.co-vc-saved-tag {
+.co-vc-top .co-vc-quant,
+.co-vc-top .co-vc-rec-tag,
+.co-vc-top .co-vc-fit-tag,
+.co-vc-top .co-vc-disk-tag,
+.co-vc-top .co-vc-saved-tag,
+.co-summary-meta :deep(.ant-tag) {
   margin-inline-end: 0;
   font-size: 11px;
   line-height: 1.4;
-  padding: 0 6px;
+  padding: 1px 7px;
+  min-height: 20px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .co-vc-rec-tag {
@@ -1392,6 +1453,18 @@ async function openRepoHome() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+@media (max-width: 640px) {
+  .co-sep-dot {
+    display: none;
+  }
+
+  .co-vc-metrics,
+  .co-vp-header-meta,
+  .co-summary-meta {
+    column-gap: 10px;
+  }
 }
 
 @media (max-width: 560px) {

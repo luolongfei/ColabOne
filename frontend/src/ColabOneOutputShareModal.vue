@@ -579,9 +579,11 @@ function onModalKeydown(event: KeyboardEvent) {
   if (!props.open || event.key !== "Escape") return;
   if (openConfirmKey.value) {
     event.preventDefault();
+    event.stopImmediatePropagation();
     openConfirmKey.value = "";
   } else if (addMoreOpen.value) {
     event.preventDefault();
+    event.stopImmediatePropagation();
     addMoreOpen.value = false;
   }
 }
@@ -1845,13 +1847,25 @@ onBeforeUnmount(() => {
 .co-os-section-title-group {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  min-width: 0;
+}
+
+.co-os-section-title-group .co-os-field-label {
+  white-space: nowrap;
 }
 
 .co-os-summary-tag {
   margin-inline-end: 0;
   font-size: 11.5px;
   line-height: 18px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-radius: var(--co-radius-pill);
 }
 
 .co-os-empty-selection {
@@ -1923,9 +1937,11 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 6px;
   min-width: 0;
+  overflow: hidden;
 }
 
 .co-os-group-name {
+  min-width: 0;
   font-size: 13px;
   font-weight: 600;
   color: var(--co-text);
@@ -2176,11 +2192,18 @@ onBeforeUnmount(() => {
 
 .co-os-ttl-wrap {
   width: 100%;
-  overflow-x: auto;
 }
 
 .co-os-ttl-segmented {
   width: 100%;
+}
+
+.co-os-ttl-segmented.ant-segmented :deep(.ant-segmented-item) {
+  flex: 1 1 auto;
+}
+
+.co-os-ttl-segmented.ant-segmented :deep(.ant-segmented-item-label) {
+  padding-inline: 10px;
 }
 
 .co-os-switches-box {
@@ -2391,8 +2414,98 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 560px) {
+  .co-os-group-head:has(.co-os-expand-btn) {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  .co-os-group-head:has(.co-os-expand-btn) .co-os-group-info {
+    flex: 1 1 calc(100% - 56px);
+    min-width: 0;
+  }
+
+  .co-os-group-head:has(.co-os-expand-btn) .co-os-group-actions {
+    width: 100%;
+    justify-content: space-between;
+    padding-top: 4px;
+    border-top: 1px dashed var(--co-border-secondary);
+  }
+
+  .co-os-group-head:has(.co-os-expand-btn) .co-os-remove-btn {
+    margin-left: auto;
+  }
+
   .co-os-fields-grid {
     grid-template-columns: 1fr;
+  }
+
+  .co-os-ttl-wrap {
+    overflow: visible;
+  }
+
+  .co-os-ttl-segmented.ant-segmented {
+    border-radius: 14px !important;
+    width: 100%;
+    overflow: visible;
+  }
+
+  .co-os-ttl-segmented.ant-segmented :deep(.ant-segmented-group) {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    justify-items: stretch;
+    gap: 4px;
+    width: 100%;
+  }
+
+  .co-os-ttl-segmented.ant-segmented :deep(.ant-segmented-item) {
+    flex: none;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow: hidden;
+    box-sizing: border-box;
+    border-radius: 10px !important;
+  }
+
+  .co-os-ttl-segmented.ant-segmented
+    :deep(.ant-segmented-item:has(> .ant-segmented-item-input:checked)) {
+    background: var(--co-subpill-active-bg) !important;
+    color: var(--co-subpill-active-text) !important;
+    font-weight: 600;
+    box-shadow:
+      0 0 0 1px var(--co-subpill-active-border),
+      var(--co-subpill-active-shadow) !important;
+  }
+
+  .co-os-ttl-segmented.ant-segmented
+    :deep(
+      .ant-segmented-item:has(> .ant-segmented-item-input:checked)
+        .ant-segmented-item-label
+    ) {
+    color: var(--co-subpill-active-text) !important;
+  }
+
+  .co-os-ttl-segmented.ant-segmented
+    :deep(.ant-segmented-item:has(> .ant-segmented-item-input:focus-visible)) {
+    outline: 2px solid var(--co-focus);
+    outline-offset: -2px;
+  }
+
+  .co-os-ttl-segmented.ant-segmented :deep(.ant-segmented-thumb) {
+    display: none !important;
+    transition: none !important;
+  }
+
+  .co-os-ttl-segmented.ant-segmented :deep(.ant-segmented-item-label) {
+    display: block;
+    min-height: 28px;
+    line-height: 28px;
+    padding-inline: 6px;
+    font-size: 12px;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .co-os-pwd-input-row {
@@ -2402,6 +2515,21 @@ onBeforeUnmount(() => {
 
   .co-os-create-another-btn {
     margin-left: 0;
+  }
+
+  .co-os-meta-strip {
+    gap: 4px 12px;
+  }
+
+  .co-os-meta-dot {
+    display: none;
+  }
+}
+
+@media (max-width: 400px) {
+  .co-os-ttl-segmented.ant-segmented :deep(.ant-segmented-item-label) {
+    padding-inline: 4px;
+    font-size: 11.5px;
   }
 }
 </style>

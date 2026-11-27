@@ -429,6 +429,7 @@ func (c *ColabOneController) loadSettings() {
 				"idle_policy",
 				"rclone_drive_policy",
 				"default_gpu_policy",
+				"default_assign_max_attempts_policy",
 				"locale",
 			}
 			for _, k := range allowed {
@@ -514,6 +515,17 @@ func (c *ColabOneController) loadSettings() {
 		c.settings["default_gpu_policy"] = COLABONE_DEFAULT_GPU_POLICY_VERSION
 	} else {
 		c.settings["default_gpu_policy"] = COLABONE_DEFAULT_GPU_POLICY_VERSION
+	}
+
+	// Migrate legacy 20-attempt default to 30 once upgraded while preserving explicit non-20 selections.
+	defaultAssignAttemptsPolicy, ok := asExactInt(c.settings["default_assign_max_attempts_policy"])
+	if !ok || defaultAssignAttemptsPolicy < COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS_POLICY_VERSION {
+		if v, ok := asExactInt(c.settings["assign_max_attempts"]); ok && v == 20 {
+			c.settings["assign_max_attempts"] = COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS
+		}
+		c.settings["default_assign_max_attempts_policy"] = COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS_POLICY_VERSION
+	} else {
+		c.settings["default_assign_max_attempts_policy"] = defaultAssignAttemptsPolicy
 	}
 }
 
