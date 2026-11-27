@@ -2811,14 +2811,18 @@ test("ComfyUI built-in digital human unified entry shows beginner essentials fir
   ).toBeVisible();
 
   const cards = page.locator(".co-comfy-workflow-list .co-comfy-workflow-item");
-  await expect(cards).toHaveCount(1);
-  await expect(page.locator(".co-comfy-count-tag")).toContainText("1 个工作流");
-  await expect(page.locator(".co-comfy-tab-badge")).toContainText("1");
+  await expect(cards).toHaveCount(2);
+  await expect(page.locator(".co-comfy-count-tag")).toContainText("2 个工作流");
+  await expect(page.locator(".co-comfy-tab-badge")).toContainText("2");
 
   const digitalHumanCard = cards.first();
   await expect(digitalHumanCard).toHaveAttribute(
     "data-workflow-entry-key",
     "colabone-digital-human-group",
+  );
+  await expect(cards.nth(1)).toHaveAttribute(
+    "data-workflow-entry-key",
+    "fashion-tryon-h3",
   );
   await expect(
     digitalHumanCard.locator(".co-comfy-wf-card-title"),
@@ -2951,9 +2955,9 @@ test("ComfyUI built-in digital human unified entry translates cleanly to Japanes
   ).toBeVisible();
 
   const cards = page.locator(".co-comfy-workflow-list .co-comfy-workflow-item");
-  await expect(cards).toHaveCount(1);
+  await expect(cards).toHaveCount(2);
   await expect(page.locator(".co-comfy-count-tag")).toContainText(
-    "1 件のワークフロー",
+    "2 件のワークフロー",
   );
 
   const digitalHumanCard = cards.first();
@@ -3089,13 +3093,13 @@ test("ComfyUI built-in digital human unified entry translates cleanly to Japanes
   await expect(paramDrawer).not.toContainText("仅非商用");
   await expect(paramDrawer).not.toContainText("面壁智能开源");
 
-  // Switch to en-US to verify English singular workflow count ("1 workflow") and clean engine labels.
+  // Switch to en-US to verify English plural workflow count ("2 workflows") and clean engine labels.
   await page.keyboard.press("Escape");
   await expect(paramDrawer).toBeHidden();
   await page.getByTestId("topbar-locale-trigger").click();
   await page.locator('.co-locale-menu-item[data-locale="en-US"]').click();
   await expect(page.locator("html")).toHaveAttribute("lang", "en-US");
-  await expect(page.locator(".co-comfy-count-tag")).toHaveText("1 workflow");
+  await expect(page.locator(".co-comfy-count-tag")).toHaveText("2 workflows");
   await expect(
     digitalHumanCard.locator(".co-comfy-wf-card-title"),
   ).toHaveText("Talking Digital Human");
@@ -3534,12 +3538,12 @@ test("ComfyUI unified digital human card preserves common inputs across engine s
     page.getByRole("heading", { name: "ComfyUI 工作流引擎", exact: true }),
   ).toBeVisible();
 
-  // 1. Single unified card shows count 1 in the 2-column grid (half-grid width, never stretched full-width).
+  // 1. Built-in catalog collapses the 2 digital human engines into 1 unified card alongside AI Fashion Try-On (count 2 in 2-column grid, half-grid width).
   const workflowList = page.locator(".co-comfy-workflow-list");
   const cards = workflowList.locator(".co-comfy-workflow-item");
-  await expect(cards).toHaveCount(1);
-  await expect(page.locator(".co-comfy-count-tag")).toContainText("1 个工作流");
-  await expect(page.locator(".co-comfy-tab-badge")).toContainText("1");
+  await expect(cards).toHaveCount(2);
+  await expect(page.locator(".co-comfy-count-tag")).toContainText("2 个工作流");
+  await expect(page.locator(".co-comfy-tab-badge")).toContainText("2");
 
   const unifiedCard = cards.first();
   await expect(unifiedCard).toHaveAttribute(
@@ -3808,11 +3812,11 @@ test("ComfyUI fresh-VM longcat_avatar_native runs directly while ComfyUI is stop
     "未启动",
   );
 
-  // Workflow list uses role="list" / role="listitem" and deduplicates combined card license tokens.
+  // Workflow list uses role="list" / role="listitem" and deduplicates combined card license tokens (2 cards: unified digital human + fashion try-on).
   const workflowList = page.locator('.co-comfy-workflow-list[role="list"]');
   await expect(workflowList).toBeVisible();
   const cards = workflowList.locator('.co-comfy-workflow-item[role="listitem"]');
-  await expect(cards).toHaveCount(1);
+  await expect(cards).toHaveCount(2);
 
   const unifiedCard = cards.first();
   const cardSpecs = unifiedCard.locator(".co-comfy-wf-spec-text");
