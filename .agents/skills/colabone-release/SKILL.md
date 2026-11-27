@@ -21,10 +21,13 @@ description: >-
 - 必须先完成受版本控制的版本清单更新与提交，再创建**附注标签**；`.github/workflows/release.yml` 会读取附注标签的标题和正文作为 GitHub Release 说明
 - 在 WSL2/Linux 非交互式 shell 中执行检查与脚本前，先将 `$HOME/.local/bin` 放到 `PATH` 最前、将 `$HOME/.local/sysroot/usr/lib/x86_64-linux-gnu` 放到 `LD_LIBRARY_PATH` 最前，并重定向标准输入（`< /dev/null`）；不要在 Linux shell 中调用 Windows 的 `/mnt/c/.../node.exe` 或 `npx.cmd`
 
-## 新发布与继续发布
+## 新发布、失败修复与继续发布
 
-- **新版本发布**：先在 `main` 上完成代码提交、本地离线检查（含 Playwright UI 回归）与双平台 `ci.yml` 预检，确认 `windows-latest` 与 `macos-latest` 全绿后，再递增版本清单、创建附注标签并推送发布；避免把正式 `v*` 标签当作首次双平台测试导致浪费版本号
-- **继续已有发布**：复用原标签与提交 SHA，不递增版本，不重新运行准备脚本、不重复提交、不强制覆盖或移动已推送的标签
+- **同版本号直至发布成功原则（零空版本 / 零不可用版本）**：
+  - 发布过程中无论在本地检查、双平台 `ci.yml` 预检还是正式 `release.yml` 构建与验收阶段遇到失败，都**绝不因为线上检测或构建失败就将版本号 `+1` 另发新版本**；必须持续定位并修复问题，直到当前目标版本号成功构建、发布并通过全部验收为止，确保每一个发出的版本都不是空版本且完整可用
+  - **新版本发布**：先在 `main` 上完成代码提交、本地离线检查（含 Playwright UI 回归）与双平台 `ci.yml` 预检，确认 `windows-latest` 与 `macos-latest` 全绿后，再递增版本清单、创建附注标签并推送发布，从源头减少已打标签后的构建失败
+  - **已推标签构建失败时的同版本重发**：若已推送的 `vX.Y.Z` 标签在 `release.yml` 中仍因源码、测试或构建缺陷失败，先在 `main` 上持续修复问题（保持三处版本清单仍为目标版本 `X.Y.Z`，不要递增至下一版本号）并重新通过本地检查与双平台 `ci.yml` 预检；随后删除该版本残留的失败、草稿或不完整 GitHub Release（如已创建）以及远端和本地的旧 `vX.Y.Z` 标签，在修复后的提交上重新创建附注标签 `vX.Y.Z` 并推送，直至同一版本 `vX.Y.Z` 完整发布可用
+- **继续已有发布（非源码故障）**：仅因外部网络/runner 抖动中断时，复用原标签与提交 SHA，不递增版本，不重新运行准备脚本、不重复提交
 - 推送标签前、推送标签后以及查询或恢复已有发布时，先读取 [references/github-actions.md](references/github-actions.md)
 - 发布前使用只读请求检查 GitHub Actions 访问能力；Git 可推送不代表 Actions API 可读写，不要通过重跑探测写权限
 - 优先使用已认证且可用的 `gh`；无 `gh` 或命令不适用时，使用 `scripts/github_actions.py`（仅依赖 Python 标准库，复用现有凭据，无需临时编写 API 脚本）
@@ -92,7 +95,7 @@ description: >-
    - 持续跟踪运行与各任务状态（`Validate release metadata`、`check (windows-latest)`、`check (macos-latest)`、`Publish GitHub Release`）
    - 若任务失败，读取对应尝试的失败日志并先定位根因：
      - 若属外部环境/网络抖动等非源码原因且已确认恢复，允许对已授权的同标签同 SHA 自动执行一次 `rerun-failed`；同因再次失败则停止重跑并报告阻塞
-     - 若属源码或测试缺陷，不能靠重跑旧标签解决，应先在 `main` 上修复并通过双平台 `ci.yml` 预检后，再按新版本流程发布下一版本（严禁删除或强制移动已推送标签）
+     - 若属源码、测试或构建缺陷，不能靠直接重跑旧提交解决，也**绝不因为线上检测失败就将版本号 `+1` 另发新版本**：持续在 `main` 上修复问题（保持版本清单仍锁定为当前目标版本 `X.Y.Z`），通过本地检查与双平台 `ci.yml` 预检后，删除该版本残留的失败、草稿或不完整 GitHub Release（如有）以及远端和本地的旧 `vX.Y.Z` 标签（`git push origin :refs/tags/vX.Y.Z`、`git tag -d vX.Y.Z`），重新对修复后的提交创建附注标签 `vX.Y.Z` 并推送重发同一个版本，直至该版本全部检查通过且产物完整可用
    - 工作流完成后，使用 `gh release view "v$VERSION"` 或 `scripts/github_actions.py release --tag "v$VERSION"` 核实 GitHub Release 已创建且非草稿、预发布标记正确、中英双语发布说明（上方中文、下方英文）已完整写入，且 7 个必选附件齐全且非空：
      - `ColabOne-<version>-windows-x64-setup.exe`
      - `ColabOne-<version>-macos-arm64.dmg`

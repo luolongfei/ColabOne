@@ -206,8 +206,15 @@ class SkillPackageTests(unittest.TestCase):
             "dispatch --workflow ci.yml",
             "preflight-status",
             "--require-green",
+            "同版本号直至发布成功原则",
+            "git push origin :refs/tags/vX.Y.Z",
         ):
             self.assertIn(token, skill_md)
+        actions_doc = (SKILL_DIR / "references/github-actions.md").read_text(encoding="utf-8")
+        self.assertIn("同一个目标版本", actions_doc)
+        self.assertIn("git push origin :refs/tags/vX.Y.Z", actions_doc)
+        self.assertNotIn("严禁删除或强制移动已推送的发布标签", actions_doc)
+        self.assertNotIn("严禁删除或强制移动已推送标签", skill_md)
         self.assertNotIn("## 中文", skill_md)
         self.assertNotIn("## English", skill_md)
         self.assertLess(skill_md.index("## 新增功能"), skill_md.index("## New Features"))
