@@ -45,19 +45,59 @@ import {
   validateColabOneWebExternalURL,
   type ColabOneWebCapabilities,
 } from "./colabOneWebConsole";
+import {
+  COLABONE_SHARE_AUTH_REQUIRED_EVENT,
+  COLABONE_SHARE_CLIENT_HEADER,
+  COLABONE_SHARE_CLIENT_VALUE,
+  colabOneWorkflowShareCapabilities,
+  colabOneWorkflowShareCommandRaw,
+  colabOneWorkflowShareDownloadOutput,
+  colabOneWorkflowShareId,
+  colabOneWorkflowShareMode,
+  colabOneWorkflowShareOutputPreviewURL,
+  colabOneWorkflowShareSessionExpired,
+  colabOneWorkflowShareSnapshotRaw,
+  createColabOneDefaultWorkflowShareListState,
+  fetchColabOneWorkflowShareCapabilities,
+  isColabOneWorkflowShareActive,
+  isColabOneWorkflowSharePath,
+  normalizeColabOneWorkflowShareListState,
+  normalizeColabOneWorkflowShareSummary,
+  resetColabOneWorkflowShareSnapshotCache,
+  type ColabOneWorkflowShareCapabilities,
+  type ColabOneWorkflowShareCreateRequest,
+  type ColabOneWorkflowShareListState,
+  type ColabOneWorkflowShareStatus,
+  type ColabOneWorkflowShareSummary,
+  type ColabOneWorkflowShareTTLMode,
+} from "./colabOneWorkflowShare";
 import type { ColabOneSnapshot } from "./types";
 
 export {
+  COLABONE_SHARE_AUTH_REQUIRED_EVENT,
+  COLABONE_SHARE_CLIENT_HEADER,
+  COLABONE_SHARE_CLIENT_VALUE,
   COLABONE_WEB_AUTH_REQUIRED_EVENT,
   colabOneRuntimeCapabilities,
   colabOneWebLogout,
   colabOneWebOpenDeferredTab,
   colabOneWebSessionExpired,
+  colabOneWorkflowShareCapabilities,
+  colabOneWorkflowShareId,
+  colabOneWorkflowShareMode,
+  colabOneWorkflowShareSessionExpired,
   createColabOneDefaultWebConsoleState,
+  createColabOneDefaultWorkflowShareListState,
   fetchColabOneWebCapabilities,
+  fetchColabOneWorkflowShareCapabilities,
   isColabOneDesktopRuntime,
   isColabOneWebRuntime,
+  isColabOneWorkflowShareActive,
+  isColabOneWorkflowSharePath,
   normalizeColabOneWebConsoleState,
+  normalizeColabOneWorkflowShareListState,
+  normalizeColabOneWorkflowShareSummary,
+  resetColabOneWorkflowShareSnapshotCache,
   validateColabOneWebExternalURL,
 };
 
@@ -85,6 +125,12 @@ export type {
   ColabOneWebConsoleState,
   ColabOneWebConsoleTicket,
   ColabOneWebConsoleUpdateRequest,
+  ColabOneWorkflowShareCapabilities,
+  ColabOneWorkflowShareCreateRequest,
+  ColabOneWorkflowShareListState,
+  ColabOneWorkflowShareStatus,
+  ColabOneWorkflowShareSummary,
+  ColabOneWorkflowShareTTLMode,
 };
 
 export type ColabOneCloseBehavior = "ask" | "quit" | "background";
@@ -92,6 +138,9 @@ export type ColabOneCloseAction = "quit" | "background";
 
 export async function colabOneSnapshotRaw(): Promise<string> {
   if (!isColabOneDesktopRuntime()) {
+    if (isColabOneWorkflowShareActive()) {
+      return colabOneWorkflowShareSnapshotRaw();
+    }
     return colabOneWebSnapshotRaw();
   }
   return ColabOneDesktop.snapshot();
@@ -106,6 +155,11 @@ export async function colabOneCommand<T = any>(
   payload: Record<string, unknown> = {},
 ): Promise<T> {
   if (!isColabOneDesktopRuntime()) {
+    if (isColabOneWorkflowShareActive()) {
+      return JSON.parse(
+        await colabOneWorkflowShareCommandRaw(action, payload),
+      ) as T;
+    }
     return JSON.parse(await colabOneWebCommandRaw(action, payload)) as T;
   }
   return JSON.parse(await ColabOneDesktop.command({ action, payload })) as T;
@@ -141,6 +195,9 @@ export async function colabOneWriteClipboard(value: string): Promise<void> {
 
 export async function colabOneExportWorkflowOutput(id: string): Promise<string> {
   if (!isColabOneDesktopRuntime()) {
+    if (isColabOneWorkflowShareActive()) {
+      return colabOneWorkflowShareDownloadOutput(id);
+    }
     return colabOneWebDownloadOutput(id);
   }
   return ColabOneDesktop.exportWorkflowOutput(id);
@@ -154,6 +211,9 @@ export async function colabOneOutputPreviewURL(
     throw new DOMException("Aborted", "AbortError");
   }
   if (!isColabOneDesktopRuntime()) {
+    if (isColabOneWorkflowShareActive()) {
+      return colabOneWorkflowShareOutputPreviewURL(id, signal);
+    }
     return colabOneWebOutputPreviewURL(id, signal);
   }
   return ColabOneDesktop.outputPreviewURL(id);
@@ -478,13 +538,8 @@ export async function colabOneGetWebConsoleState(): Promise<ColabOneWebConsoleSt
   if (!isColabOneDesktopRuntime()) {
     return createColabOneDefaultWebConsoleState();
   }
-  try {
-    const res = await ColabOneDesktop.getWebConsoleState();
-    return normalizeColabOneWebConsoleState(res);
-  } catch {
-    // Non-desktop or offline mock runtime.
-  }
-  return createColabOneDefaultWebConsoleState();
+  const res = await ColabOneDesktop.getWebConsoleState();
+  return normalizeColabOneWebConsoleState(res);
 }
 
 const DESKTOP_ONLY_WEB_ERROR = "该桌面专属操作仅支持在宿主机客户端执行";
@@ -542,6 +597,64 @@ export function colabOneOnWebConsoleState(
   try {
     const unsubscribe = events.colaboneWebConsole.on((st) =>
       listener(normalizeColabOneWebConsoleState(st)),
+    );
+    return typeof unsubscribe === "function" ? unsubscribe : () => {};
+  } catch {
+    return () => {};
+  }
+}
+
+export async function colabOneGetWorkflowSharesState(): Promise<ColabOneWorkflowShareListState> {
+  if (!isColabOneDesktopRuntime()) {
+    return createColabOneDefaultWorkflowShareListState();
+  }
+  const res = await ColabOneDesktop.getWorkflowSharesState();
+  return normalizeColabOneWorkflowShareListState(res);
+}
+
+export async function colabOneCreateWorkflowShare(
+  req: ColabOneWorkflowShareCreateRequest,
+): Promise<ColabOneWorkflowShareSummary> {
+  if (!isColabOneDesktopRuntime()) {
+    throw new Error(DESKTOP_ONLY_WEB_ERROR);
+  }
+  const res = await ColabOneDesktop.createWorkflowShare(req);
+  const normalized = normalizeColabOneWorkflowShareSummary(res);
+  if (!normalized) {
+    throw new Error("创建工作流分享返回数据无效");
+  }
+  return normalized;
+}
+
+export async function colabOneRevokeWorkflowShare(
+  shareID: string,
+): Promise<ColabOneWorkflowShareListState> {
+  if (!isColabOneDesktopRuntime()) {
+    throw new Error(DESKTOP_ONLY_WEB_ERROR);
+  }
+  const res = await ColabOneDesktop.revokeWorkflowShare(shareID);
+  return normalizeColabOneWorkflowShareListState(res);
+}
+
+export async function colabOneDeleteWorkflowShare(
+  shareID: string,
+): Promise<ColabOneWorkflowShareListState> {
+  if (!isColabOneDesktopRuntime()) {
+    throw new Error(DESKTOP_ONLY_WEB_ERROR);
+  }
+  const res = await ColabOneDesktop.deleteWorkflowShare(shareID);
+  return normalizeColabOneWorkflowShareListState(res);
+}
+
+export function colabOneOnWorkflowSharesState(
+  listener: (state: ColabOneWorkflowShareListState) => void,
+): () => void {
+  if (!hasMyGoEventBridge()) {
+    return () => {};
+  }
+  try {
+    const unsubscribe = events.colaboneWorkflowShares.on((st) =>
+      listener(normalizeColabOneWorkflowShareListState(st)),
     );
     return typeof unsubscribe === "function" ? unsubscribe : () => {};
   } catch {

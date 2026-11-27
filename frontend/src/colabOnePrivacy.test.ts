@@ -133,6 +133,59 @@ describe("ColabOne privacy text and URL segmentation", () => {
     ]);
   });
 
+  it("always masks workflow share keys and sensitive query tokens even on loopback and example hosts", () => {
+    const shareToken = "co_wf_a1b2c3d4.nonce987654.tag123456";
+
+    // Public placeholder host with ?k=co_wf_...
+    const exampleShareUrl = `https://share.example.com/share?k=${shareToken}`;
+    const exampleSegs = segmentColabOneUrlText(exampleShareUrl);
+    const exampleRendered = exampleSegs.map((s) => s.text).join("");
+    expect(exampleSegs.some((s) => s.masked && s.original === shareToken)).toBe(true);
+    expect(exampleRendered).toContain("https://share.example.com/share?k=");
+    expect(exampleRendered).not.toContain(shareToken);
+    expect(exampleRendered).not.toContain("nonce987654");
+    expect(exampleRendered).not.toContain("tag123456");
+
+    // Loopback 127.0.0.1 with ?k=co_wf_...
+    const loopbackShareUrl = `http://127.0.0.1:3232/share?k=${shareToken}`;
+    const loopbackSegs = segmentColabOneUrlText(loopbackShareUrl);
+    const loopbackRendered = loopbackSegs.map((s) => s.text).join("");
+    expect(loopbackSegs.some((s) => s.masked && s.original === shareToken)).toBe(true);
+    expect(loopbackRendered).toContain("http://127.0.0.1:3232/share?k=");
+    expect(loopbackRendered).not.toContain(shareToken);
+
+    // Private host + share key masks both host and share token
+    const privateShareUrl = `https://share.acme.dev/share?k=${shareToken}&tab=run`;
+    const privateSegs = segmentColabOneUrlText(privateShareUrl);
+    const privateRendered = privateSegs.map((s) => s.text).join("");
+    expect(privateSegs.some((s) => s.masked && s.original === "share.acme.dev")).toBe(true);
+    expect(privateSegs.some((s) => s.masked && s.original === shareToken)).toBe(true);
+    expect(privateRendered).not.toContain("share.acme.dev");
+    expect(privateRendered).not.toContain(shareToken);
+    expect(privateRendered).toContain("&tab=run");
+
+    // Loopback/localhost ?ticket= and ?token= query params are masked
+    const ticketUrl = "http://localhost:3232/_colabone_web/login?ticket=tkt_secret_9876&next=/";
+    const ticketRendered = segmentColabOneUrlText(ticketUrl).map((s) => s.text).join("");
+    expect(ticketRendered).toContain("http://localhost:3232/_colabone_web/login?ticket=");
+    expect(ticketRendered).toContain("&next=/");
+    expect(ticketRendered).not.toContain("tkt_secret_9876");
+
+    const tokenUrl = "http://127.0.0.1:3232/_colabone_auth?token=tok_canvas_5566";
+    const tokenRendered = segmentColabOneUrlText(tokenUrl).map((s) => s.text).join("");
+    expect(tokenRendered).toContain("http://127.0.0.1:3232/_colabone_auth?token=");
+    expect(tokenRendered).not.toContain("tok_canvas_5566");
+
+    // Plain-text masking also covers both URLs and standalone co_wf_ tokens
+    const logLine = `Opened ${exampleShareUrl} and ${loopbackShareUrl} (raw ${shareToken})`;
+    const maskedLog = colabOneMaskPlainText(logLine);
+    expect(maskedLog).not.toContain(shareToken);
+    expect(maskedLog).not.toContain("nonce987654");
+    expect(maskedLog).not.toContain("tag123456");
+    expect(maskedLog).toContain("https://share.example.com/share?k=");
+    expect(maskedLog).toContain("http://127.0.0.1:3232/share?k=");
+  });
+
   it("masks emails, custom domains, proxy URLs, IPs, GCP quota project IDs, and tokens while leaving CU balances and public docs untouched", () => {
     const snap = createColabOneSnapshot();
     snap.account.email = "alex.chen@gmail.com";

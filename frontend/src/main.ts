@@ -3,6 +3,11 @@ import "ant-design-vue/dist/reset.css";
 import "./style.css";
 import "./mobile.css";
 import { installColabOneWindowFocusGuard } from "./colabOneFocusGuard";
+import { isColabOneDesktopRuntime } from "./colabOneWebConsole";
+import {
+  colabOneWorkflowShareMode,
+  isColabOneWorkflowSharePath,
+} from "./colabOneWorkflowShare";
 
 const windowFocusGuard = installColabOneWindowFocusGuard();
 
@@ -32,8 +37,15 @@ window.addEventListener(
 );
 
 const view = new URLSearchParams(window.location.search).get("view");
-const loadRoot =
-  view === "logs"
+const isWorkflowShareRoute =
+  !isColabOneDesktopRuntime() &&
+  isColabOneWorkflowSharePath(window.location.pathname);
+if (isWorkflowShareRoute) {
+  colabOneWorkflowShareMode.value = true;
+}
+const loadRoot = isWorkflowShareRoute
+  ? () => import("./ColabOneWorkflowShareApp.vue")
+  : view === "logs"
     ? () => import("./LogWindow.vue")
     : () => import("./App.vue");
 

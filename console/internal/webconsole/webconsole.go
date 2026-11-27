@@ -178,16 +178,18 @@ type ColabOneWebCapabilities struct {
 
 // ColabOneWebConsoleOptions configures a ColabOneWebConsole instance.
 type ColabOneWebConsoleOptions struct {
-	ConfigDir        string
-	Vault            VaultStore
-	CallBridge       BridgeCaller
-	ServeOutputMedia func(ctx context.Context, rw http.ResponseWriter, r *http.Request, id string)
-	FrontendFS       FrontendFSFunc
-	AppVersion       string
-	GetLocale        LocaleFunc
-	OnLog            LogFunc
-	OnStateChange    func(ColabOneWebConsoleState)
-	Now              func() time.Time
+	ConfigDir              string
+	Vault                  VaultStore
+	CallBridge             BridgeCaller
+	ServeOutputMedia       func(ctx context.Context, rw http.ResponseWriter, r *http.Request, id string)
+	ServeShareOutputMedia  func(ctx context.Context, rw http.ResponseWriter, r *http.Request, id string)
+	FrontendFS             FrontendFSFunc
+	AppVersion             string
+	GetLocale              LocaleFunc
+	OnLog                  LogFunc
+	OnStateChange          func(ColabOneWebConsoleState)
+	OnWorkflowSharesChange func(ColabOneWorkflowShareListState)
+	Now                    func() time.Time
 }
 
 type colabOneWebSession struct {
@@ -231,9 +233,10 @@ type colabOneWebMediaChunk struct {
 type ColabOneWebConsole struct {
 	opts ColabOneWebConsoleOptions
 
-	opMu      sync.Mutex // serializes StartIfEnabled, Update, Passcode, SetPasscode, Close
-	persistMu sync.Mutex // serializes persisted session snapshots written to Vault
-	mu        sync.RWMutex
+	opMu           sync.Mutex // serializes StartIfEnabled, Update, Passcode, SetPasscode, Close
+	persistMu      sync.Mutex // serializes persisted session snapshots written to Vault
+	sharePersistMu sync.Mutex // serializes workflow-shares.json and VaultWorkflowShareSessionsKey writes
+	mu             sync.RWMutex
 
 	cfg           ColabOneWebConsoleConfig
 	running       bool
@@ -250,6 +253,16 @@ type ColabOneWebConsole struct {
 	tickets             map[[32]byte]colabOneWebTicket
 	loginFailures       map[string][]time.Time
 	globalLoginFailures []time.Time
+
+	shareHMACKey           []byte
+	workflowShares         map[string]colabOneWorkflowShareRecord
+	shareSessions          map[[32]byte]colabOneWorkflowShareSession
+	shareOutputOwners      map[string]colabOneShareOutputOwner
+	shareTasks             map[string]colabOneShareTrackedTask
+	shareInputs            map[string]colabOneShareInputOwner
+	sharePreviewOwners     map[string]map[string]time.Time
+	shareKeyFailures       map[string][]time.Time
+	globalShareKeyFailures []time.Time
 
 	handler http.Handler
 
@@ -335,15 +348,23 @@ func NewColabOneWebConsole(opts ColabOneWebConsoleOptions) *ColabOneWebConsole {
 		opts.Now = time.Now
 	}
 	w := &ColabOneWebConsole{
-		opts:             opts,
-		cfg:              defaultWebConsoleConfig(),
-		sessions:         make(map[[32]byte]colabOneWebSession),
-		tickets:          make(map[[32]byte]colabOneWebTicket),
-		loginFailures:    make(map[string][]time.Time),
-		listInterfaceIPs: defaultListInterfaceIPs,
+		opts:              opts,
+		cfg:               defaultWebConsoleConfig(),
+		sessions:          make(map[[32]byte]colabOneWebSession),
+		tickets:           make(map[[32]byte]colabOneWebTicket),
+		loginFailures:     make(map[string][]time.Time),
+		workflowShares:    make(map[string]colabOneWorkflowShareRecord),
+		shareSessions:     make(map[[32]byte]colabOneWorkflowShareSession),
+		shareOutputOwners: make(map[string]colabOneShareOutputOwner),
+		shareTasks:         make(map[string]colabOneShareTrackedTask),
+		shareInputs:        make(map[string]colabOneShareInputOwner),
+		sharePreviewOwners: make(map[string]map[string]time.Time),
+		shareKeyFailures:   make(map[string][]time.Time),
+		listInterfaceIPs:  defaultListInterfaceIPs,
 	}
 	w.handler = http.HandlerFunc(w.serveHTTP)
 	w.loadConfig()
+	w.loadWorkflowShares()
 	if opts.Vault != nil {
 		var stored string
 		if found, err := opts.Vault.GetJSON(VaultPasscodeKey, &stored); err == nil && found && strings.TrimSpace(stored) != "" {
@@ -353,6 +374,8 @@ func NewColabOneWebConsole(opts ColabOneWebConsoleOptions) *ColabOneWebConsole {
 				w.loadPersistedSessions(stored)
 			}
 		}
+		w.loadWorkflowShareHMACKey()
+		w.loadPersistedWorkflowShareSessions()
 	}
 	return w
 }
@@ -525,6 +548,9 @@ func (w *ColabOneWebConsole) StartIfEnabled() error {
 	state, changed, err := w.startIfEnabledLocked()
 	if changed {
 		w.emitStateChange(state)
+		if err == nil && w.hasWorkflowShares() {
+			w.emitWorkflowSharesChange(w.WorkflowSharesState())
+		}
 	}
 	return err
 }
@@ -549,6 +575,13 @@ func (w *ColabOneWebConsole) startIfEnabledLocked() (ColabOneWebConsoleState, bo
 		w.mu.Unlock()
 		w.logActivity(fmt.Sprintf("网页控制台启动失败：%s", err.Error()), "error")
 		return w.State(), true, err
+	}
+	w.mu.RLock()
+	needShareSessionLoad := len(w.shareSessions) == 0 && len(w.workflowShares) > 0
+	w.mu.RUnlock()
+	if needShareSessionLoad {
+		w.loadWorkflowShareHMACKey()
+		w.loadPersistedWorkflowShareSessions()
 	}
 
 	listeners, addr, err := listenTCP(cfg.BindMode, cfg.Port)
@@ -583,6 +616,9 @@ func (w *ColabOneWebConsole) Update(req ColabOneWebConsoleUpdateRequest) (ColabO
 	state, changed, err := w.updateOpLocked(req)
 	if changed {
 		w.emitStateChange(state)
+		if err == nil && w.hasWorkflowShares() {
+			w.emitWorkflowSharesChange(w.WorkflowSharesState())
+		}
 	}
 	return state, err
 }
@@ -662,6 +698,13 @@ func (w *ColabOneWebConsole) updateOpLocked(req ColabOneWebConsoleUpdateRequest)
 	// nextCfg.Enabled == true: ensure a passcode exists before serving traffic.
 	if _, _, err := w.ensurePasscodeOpLocked(); err != nil {
 		return w.State(), false, err
+	}
+	w.mu.RLock()
+	needShareSessionLoad := len(w.shareSessions) == 0 && len(w.workflowShares) > 0
+	w.mu.RUnlock()
+	if needShareSessionLoad {
+		w.loadWorkflowShareHMACKey()
+		w.loadPersistedWorkflowShareSessions()
 	}
 
 	// Case 2: Turning on from stopped state.
@@ -1019,9 +1062,11 @@ func (w *ColabOneWebConsole) RevokeSessions() ColabOneWebConsoleState {
 // browsers remain authenticated across desktop app restarts.
 func (w *ColabOneWebConsole) Close() {
 	w.opMu.Lock()
-	// Hold persistMu while marking closed so any straggling handler cannot
-	// overwrite VaultSessionsKey or emit UI callbacks while Close() waits on shutdown.
+	// Hold persistMu and sharePersistMu while marking closed so any straggling handler cannot
+	// overwrite VaultSessionsKey, VaultWorkflowShareSessionsKey, workflow-shares.json, or emit
+	// UI callbacks while Close() waits on shutdown.
 	w.persistMu.Lock()
+	w.sharePersistMu.Lock()
 	w.mu.Lock()
 	w.closed = true
 	srv := w.srv
@@ -1033,15 +1078,21 @@ func (w *ColabOneWebConsole) Close() {
 	w.running = false
 	w.listenAddr = ""
 	w.mu.Unlock()
+	w.sharePersistMu.Unlock()
 	w.persistMu.Unlock()
 
 	shutdownHTTPServer(srv, listeners, done)
 
 	w.persistMu.Lock()
+	w.sharePersistMu.Lock()
 	w.mu.Lock()
 	clear(w.sessions)
 	clear(w.tickets)
+	clear(w.shareSessions)
+	clear(w.shareInputs)
+	clear(w.sharePreviewOwners)
 	w.mu.Unlock()
+	w.sharePersistMu.Unlock()
 	w.persistMu.Unlock()
 	w.opMu.Unlock()
 }
@@ -1476,6 +1527,97 @@ func (w *ColabOneWebConsole) serveHTTP(rw http.ResponseWriter, r *http.Request) 
 		http.NotFound(rw, r)
 		return
 
+	case reqPath == workflowShareSwitchRoutePath:
+		if r.Method != http.MethodPost {
+			writeMethodNotAllowed(rw, "POST")
+			return
+		}
+		w.handleWorkflowShareSwitch(rw, r)
+		return
+
+	case reqPath == WorkflowShareRoutePath || strings.HasPrefix(reqPath, WorkflowShareRoutePath+"/"):
+		w.handleWorkflowShareEntry(rw, r)
+		return
+
+	case reqPath == "/api/share/capabilities":
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(rw, "GET")
+			return
+		}
+		shareID, ok := w.authenticateShareRequest(rw, r)
+		if !ok {
+			writeJSONError(rw, http.StatusUnauthorized, "未登录或分享会话已失效")
+			return
+		}
+		w.handleShareCapabilities(rw, shareID)
+		return
+
+	case reqPath == "/api/share/snapshot":
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(rw, "GET")
+			return
+		}
+		shareID, ok := w.authenticateShareRequest(rw, r)
+		if !ok {
+			writeJSONError(rw, http.StatusUnauthorized, "未登录或分享会话已失效")
+			return
+		}
+		w.handleShareSnapshot(rw, r, shareID)
+		return
+
+	case reqPath == "/api/share/command":
+		if r.Method != http.MethodPost {
+			writeMethodNotAllowed(rw, "POST")
+			return
+		}
+		shareID, ok := w.authenticateShareRequest(rw, r)
+		if !ok {
+			writeJSONError(rw, http.StatusUnauthorized, "未登录或分享会话已失效")
+			return
+		}
+		if !w.validateSameOriginShareRequest(r) {
+			writeJSONError(rw, http.StatusForbidden, "跨源请求已被拒绝")
+			return
+		}
+		w.handleShareCommand(rw, r, shareID)
+		return
+
+	case strings.HasPrefix(reqPath, "/api/share/outputs/") && strings.HasSuffix(reqPath, "/download"):
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			writeMethodNotAllowed(rw, "GET, HEAD")
+			return
+		}
+		shareID, ok := w.authenticateShareRequest(rw, r)
+		if !ok {
+			writeHeadAwareJSONError(rw, r, http.StatusUnauthorized, "未登录或分享会话已失效")
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimPrefix(reqPath, "/api/share/outputs/"), "/download")
+		w.handleShareOutputDownload(rw, r, shareID, id)
+		return
+
+	case strings.HasPrefix(reqPath, "/api/share/outputs/") && strings.HasSuffix(reqPath, "/media"):
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			writeMethodNotAllowed(rw, "GET, HEAD")
+			return
+		}
+		shareID, ok := w.authenticateShareRequest(rw, r)
+		if !ok {
+			writeHeadAwareJSONError(rw, r, http.StatusUnauthorized, "未登录或分享会话已失效")
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimPrefix(reqPath, "/api/share/outputs/"), "/media")
+		w.handleShareOutputMedia(rw, r, shareID, id)
+		return
+
+	case reqPath == "/api/share" || strings.HasPrefix(reqPath, "/api/share/"):
+		if _, ok := w.authenticateShareRequest(rw, r); !ok {
+			writeJSONError(rw, http.StatusUnauthorized, "未登录或分享会话已失效")
+			return
+		}
+		writeJSONError(rw, http.StatusNotFound, "接口不存在")
+		return
+
 	case reqPath == "/api/web/capabilities":
 		if r.Method != http.MethodGet {
 			writeMethodNotAllowed(rw, "GET")
@@ -1548,6 +1690,22 @@ func (w *ColabOneWebConsole) serveHTTP(rw http.ResponseWriter, r *http.Request) 
 			return
 		}
 		writeJSONError(rw, http.StatusNotFound, "接口不存在")
+		return
+
+	case strings.HasPrefix(reqPath, "/assets/"):
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			writeMethodNotAllowed(rw, "GET, HEAD")
+			return
+		}
+		authed := w.authenticateRequest(nil, r)
+		if !authed {
+			_, authed = w.authenticateShareRequest(nil, r)
+		}
+		if !authed {
+			writeJSONError(rw, http.StatusUnauthorized, "未登录或会话已过期")
+			return
+		}
+		w.handleFrontendStaticAssetOnly(rw, r)
 		return
 	}
 
@@ -1747,12 +1905,20 @@ func (w *ColabOneWebConsole) isHTTPSRequest(r *http.Request) bool {
 	if !isLoopbackRemoteAddr(r) {
 		return false
 	}
-	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
-		first := strings.TrimSpace(strings.Split(proto, ",")[0])
-		if strings.EqualFold(first, "https") {
-			return true
+	if protoVals := r.Header.Values("X-Forwarded-Proto"); len(protoVals) > 0 {
+		for i := len(protoVals) - 1; i >= 0; i-- {
+			parts := strings.Split(protoVals[i], ",")
+			for j := len(parts) - 1; j >= 0; j-- {
+				if last := strings.TrimSpace(parts[j]); last != "" {
+					if strings.EqualFold(last, "https") {
+						return true
+					}
+					goto checkCFVisitor
+				}
+			}
 		}
 	}
+checkCFVisitor:
 	if w.hasPublicOrigin() {
 		if cfVisitor := strings.ToLower(r.Header.Get("CF-Visitor")); strings.Contains(cfVisitor, `"scheme":"https"`) {
 			return true
@@ -1776,7 +1942,14 @@ func normalizePortForScheme(scheme, port string) string {
 }
 
 func (w *ColabOneWebConsole) validateSameOriginRequest(r *http.Request, requireClientHeader bool) bool {
-	if requireClientHeader && r.Header.Get(ClientHeaderName) != ClientHeaderValue {
+	if requireClientHeader {
+		return w.validateSameOriginWithClientHeader(r, ClientHeaderValue)
+	}
+	return w.validateSameOriginWithClientHeader(r, "")
+}
+
+func (w *ColabOneWebConsole) validateSameOriginWithClientHeader(r *http.Request, expectedClientHeader string) bool {
+	if expectedClientHeader != "" && r.Header.Get(ClientHeaderName) != expectedClientHeader {
 		return false
 	}
 
@@ -1884,6 +2057,12 @@ func (w *ColabOneWebConsole) handleLoginSubmit(rw http.ResponseWriter, r *http.R
 	ip := w.clientIPForRateLimit(r)
 	now := w.now()
 
+	token, err := generateBase64Token(32)
+	if err != nil {
+		writeJSONError(rw, http.StatusInternalServerError, copySet.sessionError)
+		return
+	}
+
 	w.mu.Lock()
 	if w.closed {
 		w.mu.Unlock()
@@ -1906,20 +2085,6 @@ func (w *ColabOneWebConsole) handleLoginSubmit(rw http.ResponseWriter, r *http.R
 		w.recordLoginFailureLocked(ip, now)
 		w.mu.Unlock()
 		writeJSONError(rw, http.StatusUnauthorized, copySet.invalidPasscodeError)
-		return
-	}
-	w.mu.Unlock()
-
-	token, err := generateBase64Token(32)
-	if err != nil {
-		writeJSONError(rw, http.StatusInternalServerError, copySet.sessionError)
-		return
-	}
-
-	w.mu.Lock()
-	if w.closed {
-		w.mu.Unlock()
-		writeJSONError(rw, http.StatusServiceUnavailable, copySet.sessionError)
 		return
 	}
 	delete(w.loginFailures, ip)
@@ -1956,7 +2121,7 @@ func isLinkPreviewRequest(r *http.Request) bool {
 	if r == nil {
 		return false
 	}
-	for _, hdr := range []string{"Sec-Purpose", "Purpose", "X-Purpose"} {
+	for _, hdr := range []string{"Sec-Purpose", "Purpose", "X-Purpose", "X-Moz"} {
 		val := strings.ToLower(strings.TrimSpace(r.Header.Get(hdr)))
 		if strings.Contains(val, "prefetch") || strings.Contains(val, "preview") {
 			return true
@@ -1997,39 +2162,70 @@ func (w *ColabOneWebConsole) handleRedeem(rw http.ResponseWriter, r *http.Reques
 	digest := sha256.Sum256([]byte(rawTicket))
 	now := w.now()
 
+	existingCookieVal := ""
+	var existingDigest [32]byte
+	if c, err := r.Cookie(SessionCookieName); err == nil && c.Value != "" {
+		existingCookieVal = c.Value
+		existingDigest = sha256.Sum256([]byte(c.Value))
+	}
+
+	token, tokenErr := generateBase64Token(32)
+
 	w.mu.Lock()
+	if w.closed || !w.running {
+		w.mu.Unlock()
+		w.handleLoginPage(rw, r, http.StatusUnauthorized, "ticket_expired")
+		return
+	}
 	w.pruneExpiredTicketsLocked(now)
 	ticket, exists := w.tickets[digest]
 	valid := exists && now.Before(ticket.expiresAt)
-	if valid && ticket.singleUse {
-		delete(w.tickets, digest)
-	}
-	w.mu.Unlock()
-
 	if !valid {
+		w.mu.Unlock()
 		w.handleLoginPage(rw, r, http.StatusUnauthorized, "ticket_expired")
 		return
 	}
 
-	// If this browser already holds a valid session cookie, redirect directly
-	// without minting a duplicate session entry.
-	if w.authenticateRequest(rw, r) {
-		http.Redirect(rw, r, "/", http.StatusFound)
-		return
+	// Check whether this browser already holds a valid session atomically under the same lock.
+	alreadyAuthed := false
+	needsRefresh := false
+	if existingCookieVal != "" {
+		if s, ok := w.sessions[existingDigest]; ok && now.Before(s.expiresAt) {
+			alreadyAuthed = true
+			s.lastSeen = now
+			s.expiresAt = now.Add(SessionTTL)
+			if now.Sub(s.cookieRefreshedAt) >= sessionRenewalInterval {
+				s.cookieRefreshedAt = now
+				needsRefresh = true
+			}
+			w.sessions[existingDigest] = s
+		}
 	}
 
-	token, err := generateBase64Token(32)
-	if err != nil {
+	if !alreadyAuthed && tokenErr != nil {
+		w.mu.Unlock()
 		_, copySet := resolveWebLoginCopy(w.resolveLocale(r))
 		writeJSONError(rw, http.StatusInternalServerError, copySet.sessionError)
 		return
 	}
-
-	w.mu.Lock()
-	w.storeSessionLocked(token, now)
+	if ticket.singleUse {
+		delete(w.tickets, digest)
+	}
+	if !alreadyAuthed {
+		w.storeSessionLocked(token, now)
+	}
 	w.mu.Unlock()
-	w.persistSessions()
 
+	if alreadyAuthed {
+		if needsRefresh {
+			w.setSessionCookie(rw, r, existingCookieVal, now)
+			w.persistSessions()
+		}
+		http.Redirect(rw, r, "/", http.StatusFound)
+		return
+	}
+
+	w.persistSessions()
 	w.setSessionCookie(rw, r, token, now)
 	w.emitStateChange(w.State())
 	http.Redirect(rw, r, "/", http.StatusFound)
@@ -2092,7 +2288,11 @@ func (w *ColabOneWebConsole) handleSnapshot(rw http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	rawBytes := []byte(raw)
+	raw = w.EnrichHostSnapshotJSON(raw)
+	writeSnapshotBytes(rw, r, []byte(raw))
+}
+
+func writeSnapshotBytes(rw http.ResponseWriter, r *http.Request, rawBytes []byte) {
 	sum := sha256.Sum256(rawBytes)
 	etag := fmt.Sprintf(`"sha256-%x"`, sum)
 
@@ -2289,6 +2489,10 @@ func (w *ColabOneWebConsole) handleCommand(rw http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	if action == "comfyui.run" {
+		w.NotifyHostWorkflowRunStarting()
+	}
+
 	res, err := w.opts.CallBridge(r.Context(), action, req.Payload)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -2297,6 +2501,13 @@ func (w *ColabOneWebConsole) handleCommand(rw http.ResponseWriter, r *http.Reque
 		}
 		writeJSONError(rw, http.StatusBadRequest, err.Error())
 		return
+	}
+	if action == "comfyui.output.delete" {
+		if id, ok := req.Payload["id"].(string); ok && strings.TrimSpace(id) != "" {
+			w.ForgetOutputOwnership(id)
+		}
+	} else if action == "comfyui.run" {
+		w.NotifyHostWorkflowRunStarted()
 	}
 
 	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -2310,6 +2521,10 @@ func (w *ColabOneWebConsole) handleCommand(rw http.ResponseWriter, r *http.Reque
 }
 
 func (w *ColabOneWebConsole) handleOutputDownload(rw http.ResponseWriter, r *http.Request, id string) {
+	w.handleOutputDownloadWithOptions(rw, r, id, false)
+}
+
+func (w *ColabOneWebConsole) handleOutputDownloadWithOptions(rw http.ResponseWriter, r *http.Request, id string, runtimeOnly bool) {
 	if !outputIDRe.MatchString(id) {
 		writeHeadAwareJSONError(rw, r, http.StatusBadRequest, "输出文件 ID 无效")
 		return
@@ -2319,13 +2534,27 @@ func (w *ColabOneWebConsole) handleOutputDownload(rw http.ResponseWriter, r *htt
 		return
 	}
 
-	raw, err := w.opts.CallBridge(r.Context(), "comfyui.output.asset", map[string]any{"id": id, "offset": int64(0)})
+	makeChunkPayload := func(off int64) map[string]any {
+		p := map[string]any{"id": id, "offset": off}
+		if runtimeOnly {
+			p["runtime_only"] = true
+		}
+		return p
+	}
+	formatBridgeErr := func(err error) string {
+		if runtimeOnly {
+			return sanitizeGuestBridgeError(err.Error())
+		}
+		return err.Error()
+	}
+
+	raw, err := w.opts.CallBridge(r.Context(), "comfyui.output.asset", makeChunkPayload(0))
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			writeHeadAwareJSONError(rw, r, http.StatusGatewayTimeout, err.Error())
+			writeHeadAwareJSONError(rw, r, http.StatusGatewayTimeout, formatBridgeErr(err))
 			return
 		}
-		writeHeadAwareJSONError(rw, r, http.StatusBadGateway, err.Error())
+		writeHeadAwareJSONError(rw, r, http.StatusBadGateway, formatBridgeErr(err))
 		return
 	}
 
@@ -2334,11 +2563,15 @@ func (w *ColabOneWebConsole) handleOutputDownload(rw http.ResponseWriter, r *htt
 		writeHeadAwareJSONError(rw, r, http.StatusBadGateway, "输出文件元数据无效")
 		return
 	}
+	if runtimeOnly && strings.EqualFold(strings.TrimSpace(chunk.Source), "drive") {
+		writeHeadAwareJSONError(rw, r, http.StatusForbidden, "该作品已归档至宿主云盘，分享模式下不可访问")
+		return
+	}
 
 	ext := strings.ToLower(strings.TrimSpace(chunk.Extension))
 	mimeType, extOK := allowedOutputMIME[ext]
 	digest := strings.ToLower(strings.TrimSpace(chunk.SHA256))
-	allowEmptyDigest := chunk.Source == "drive" && digest == ""
+	allowEmptyDigest := !runtimeOnly && chunk.Source == "drive" && digest == ""
 	if chunk.Size <= 0 || chunk.Size > maxOutputSizeBytes || !extOK || (!allowEmptyDigest && !sha256HexRe.MatchString(digest)) {
 		writeHeadAwareJSONError(rw, r, http.StatusBadGateway, "输出文件元数据未通过安全校验")
 		return
@@ -2364,6 +2597,14 @@ func (w *ColabOneWebConsole) handleOutputDownload(rw http.ResponseWriter, r *htt
 	flusher, _ := rw.(http.Flusher)
 
 	for {
+		if runtimeOnly && strings.EqualFold(strings.TrimSpace(chunk.Source), "drive") {
+			if !headersWritten {
+				writeJSONError(rw, http.StatusForbidden, "该作品已归档至宿主云盘，分享模式下不可访问")
+			} else {
+				w.logActivity("分享模式输出文件下载检测到非运行时来源，已中止传输", "warn")
+			}
+			return
+		}
 		if chunk.Offset != offset || chunk.Size != totalSize || strings.ToLower(strings.TrimSpace(chunk.SHA256)) != digest {
 			if !headersWritten {
 				writeJSONError(rw, http.StatusBadGateway, "输出文件传输元数据发生变化")
@@ -2413,13 +2654,13 @@ func (w *ColabOneWebConsole) handleOutputDownload(rw http.ResponseWriter, r *htt
 			break
 		}
 
-		nextRaw, callErr := w.opts.CallBridge(r.Context(), "comfyui.output.asset", map[string]any{"id": id, "offset": offset})
+		nextRaw, callErr := w.opts.CallBridge(r.Context(), "comfyui.output.asset", makeChunkPayload(offset))
 		if callErr != nil {
 			if !headersWritten {
 				if errors.Is(callErr, context.DeadlineExceeded) {
-					writeJSONError(rw, http.StatusGatewayTimeout, callErr.Error())
+					writeJSONError(rw, http.StatusGatewayTimeout, formatBridgeErr(callErr))
 				} else {
-					writeJSONError(rw, http.StatusBadGateway, callErr.Error())
+					writeJSONError(rw, http.StatusBadGateway, formatBridgeErr(callErr))
 				}
 			}
 			return
@@ -2464,6 +2705,95 @@ func writeOutputDownloadHeaders(rw http.ResponseWriter, mimeType, filename strin
 	h.Set("Content-Length", strconv.FormatInt(size, 10))
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Cache-Control", "no-store")
+}
+
+func (w *ColabOneWebConsole) serveFrontendIndex(rw http.ResponseWriter, r *http.Request) {
+	var fsys fs.FS
+	if w.opts.FrontendFS != nil {
+		fsys = w.opts.FrontendFS()
+	}
+	if fsys == nil {
+		rw.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		rw.Header().Set("Cache-Control", "no-store")
+		rw.WriteHeader(http.StatusServiceUnavailable)
+		if r.Method != http.MethodHead {
+			_, _ = io.WriteString(rw, "前端静态资源尚未就绪，请稍后再试。")
+		}
+		return
+	}
+
+	f, info, found := openStaticFile(fsys, "index.html")
+	if !found {
+		http.NotFound(rw, r)
+		return
+	}
+	defer f.Close()
+
+	if ct := detectStaticMIME("index.html"); ct != "" {
+		rw.Header().Set("Content-Type", ct)
+	}
+	rw.Header().Set("Cache-Control", "no-cache")
+	if rs, ok := f.(io.ReadSeeker); ok {
+		http.ServeContent(rw, r, info.Name(), info.ModTime(), rs)
+		return
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	rw.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	rw.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		_, _ = rw.Write(data)
+	}
+}
+
+func (w *ColabOneWebConsole) handleFrontendStaticAssetOnly(rw http.ResponseWriter, r *http.Request) {
+	if hasUnsafeStaticPath(r.URL.Path, r.URL.RawPath) {
+		http.NotFound(rw, r)
+		return
+	}
+	var fsys fs.FS
+	if w.opts.FrontendFS != nil {
+		fsys = w.opts.FrontendFS()
+	}
+	if fsys == nil {
+		rw.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		rw.Header().Set("Cache-Control", "no-store")
+		rw.WriteHeader(http.StatusServiceUnavailable)
+		if r.Method != http.MethodHead {
+			_, _ = io.WriteString(rw, "前端静态资源尚未就绪，请稍后再试。")
+		}
+		return
+	}
+	cleanPath := path.Clean("/" + r.URL.Path)
+	rel := strings.TrimPrefix(cleanPath, "/")
+	f, info, found := openStaticFile(fsys, rel)
+	if !found {
+		http.NotFound(rw, r)
+		return
+	}
+	defer f.Close()
+
+	if ct := detectStaticMIME(rel); ct != "" {
+		rw.Header().Set("Content-Type", ct)
+	}
+	rw.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	if rs, ok := f.(io.ReadSeeker); ok {
+		http.ServeContent(rw, r, info.Name(), info.ModTime(), rs)
+		return
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		http.Error(rw, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	rw.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	rw.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		_, _ = rw.Write(data)
+	}
 }
 
 func (w *ColabOneWebConsole) handleFrontendStatic(rw http.ResponseWriter, r *http.Request) {
@@ -2513,7 +2843,7 @@ func (w *ColabOneWebConsole) handleFrontendStatic(rw http.ResponseWriter, r *htt
 		rw.Header().Set("Content-Type", ct)
 	}
 	if !isIndexFallback && strings.HasPrefix(cleanPath, "/assets/") {
-		rw.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		rw.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 	} else {
 		rw.Header().Set("Cache-Control", "no-cache")
 	}
@@ -2738,7 +3068,7 @@ func (w *ColabOneWebConsole) authenticateRequest(rw http.ResponseWriter, r *http
 	}
 	s.lastSeen = now
 	s.expiresAt = now.Add(SessionTTL)
-	needsRefresh := now.Sub(s.cookieRefreshedAt) >= sessionRenewalInterval
+	needsRefresh := rw != nil && now.Sub(s.cookieRefreshedAt) >= sessionRenewalInterval
 	if needsRefresh {
 		s.cookieRefreshedAt = now
 	}
@@ -2746,9 +3076,7 @@ func (w *ColabOneWebConsole) authenticateRequest(rw http.ResponseWriter, r *http
 	w.mu.Unlock()
 
 	if needsRefresh {
-		if rw != nil {
-			w.setSessionCookie(rw, r, c.Value, now)
-		}
+		w.setSessionCookie(rw, r, c.Value, now)
 		w.persistSessions()
 	}
 	return true

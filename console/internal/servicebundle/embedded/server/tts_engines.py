@@ -6906,6 +6906,8 @@ class ColabOneRemoteTtsRunner:
             "mime": "audio/wav",
             "size": len(raw),
             "sha256": sha256,
+            "has_ref_audio": bool(meta.get("has_ref_audio", False)),
+            "has_emotion_ref": bool(meta.get("has_emotion_ref", False)),
         }
         if "voice_prompt" in meta:
             payload["voice_prompt"] = str(meta.get("voice_prompt") or "")
@@ -6950,6 +6952,8 @@ class ColabOneRemoteTtsRunner:
             "mime": "audio/wav",
             "size": len(raw),
             "sha256": sha256,
+            "has_ref_audio": bool(meta.get("has_ref_audio", False)),
+            "has_emotion_ref": bool(meta.get("has_emotion_ref", False)),
             "offset": offset,
             "chunk_size": len(chunk),
             "has_more": (offset + len(chunk)) < len(raw),
@@ -7353,6 +7357,8 @@ class ColabOneRemoteTtsRunner:
         duration_seconds: float,
         voice_prompt: str = "",
         emotion_prompt: str = "",
+        has_ref_audio: bool = False,
+        has_emotion_ref: bool = False,
         include_data: bool = True,
     ) -> dict[str, Any]:
         if not master_wav.is_file() or master_wav.stat().st_size <= 0:
@@ -7376,6 +7382,8 @@ class ColabOneRemoteTtsRunner:
         resolved_engine_id = str(engine["id"])
         clean_vp = str(voice_prompt or "").strip()
         clean_ep = str(emotion_prompt or "").strip()
+        flag_ref_audio = bool(has_ref_audio)
+        flag_emotion_ref = bool(has_emotion_ref)
         meta = {
             "preview_id": target_pid,
             "engine_id": resolved_engine_id,
@@ -7383,6 +7391,8 @@ class ColabOneRemoteTtsRunner:
             "text": resolved_text,
             "voice_prompt": clean_vp,
             "emotion_prompt": clean_ep,
+            "has_ref_audio": flag_ref_audio,
+            "has_emotion_ref": flag_emotion_ref,
             "sample_rate": sr,
             "duration_seconds": dur,
             "mime": "audio/wav",
@@ -7426,6 +7436,8 @@ class ColabOneRemoteTtsRunner:
             "text": resolved_text,
             "voice_prompt": clean_vp,
             "emotion_prompt": clean_ep,
+            "has_ref_audio": flag_ref_audio,
+            "has_emotion_ref": flag_emotion_ref,
             "sample_rate": sr,
             "duration_seconds": dur,
             "mime": "audio/wav",
@@ -7978,6 +7990,8 @@ class ColabOneRemoteTtsRunner:
                     duration_seconds=float(manifest["duration"]),
                     voice_prompt=str(item.get("voice_prompt") or ""),
                     emotion_prompt=str(item.get("emotion_prompt") or ""),
+                    has_ref_audio=False,
+                    has_emotion_ref=False,
                     include_data=False,
                 )
                 batch_any_ready = True
@@ -8156,6 +8170,8 @@ class ColabOneRemoteTtsRunner:
                 duration_seconds=raw_dur,
                 voice_prompt=voice_prompt,
                 emotion_prompt=emotion_prompt,
+                has_ref_audio=(resolved_ref is not None),
+                has_emotion_ref=(resolved_emo is not None),
                 include_data=(not _is_background_prefetch),
             )
         finally:

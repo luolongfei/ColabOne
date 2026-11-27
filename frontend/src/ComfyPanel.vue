@@ -67,6 +67,7 @@ import {
   PhPlay,
   PhPlus,
   PhPower,
+  PhShareNetwork,
   PhShieldCheck,
   PhSlidersHorizontal,
   PhSparkle,
@@ -88,6 +89,7 @@ import {
   colabOneWriteClipboard,
 } from "./api";
 import { formatIdlePolicyLabel } from "./billing";
+import { colabOneWorkflowShareId } from "./colabOneWorkflowShare";
 import {
   formatColabOneDuration,
   resolveColabOneTaskElapsedSeconds,
@@ -168,17 +170,25 @@ const props = defineProps<{
   loading?: boolean;
   clockNow?: number;
   snapshotAt?: number;
+  shareMode?: boolean;
+  shareBusyOther?: boolean;
+  shareDriveExportReady?: boolean;
+  canShareWorkflows?: boolean;
+  activeShareCount?: number;
 }>();
 const emit = defineEmits<{
   device: [];
   settings: [];
   upgrade: [];
   sync: [];
+  openShareModal: [];
   notify: [string, ColabOneToastKind?];
   clearError: [];
   error: [string];
   "drawer-state": [{ open: boolean; width: number; rootSelector: string }];
 }>();
+
+const isShareMode = computed(() => Boolean(props.shareMode));
 
 const activeTab = ref<"studio" | "live" | "canvas">("studio");
 const deleteConfirmWorkflowId = ref("");
@@ -207,6 +217,7 @@ function reportError(err: unknown) {
 }
 
 async function openExternalURL(url: string) {
+  if (isShareMode.value) return;
   try {
     await colabOneOpenURL(url);
   } catch (e) {
@@ -576,6 +587,10 @@ const activeDigitalHumanGroup = computed(() =>
 const preferredDigitalHumanEngineId = ref<string>(
   readColabOnePreferredDigitalHumanEngine(),
 );
+watch(colabOneWorkflowShareId, () => {
+  preferredDigitalHumanEngineId.value =
+    readColabOnePreferredDigitalHumanEngine();
+});
 const digitalHumanGpuContext = computed(() =>
   resolveColabOneDigitalHumanGpuContext(
     props.state.runtime,
@@ -948,11 +963,16 @@ const workflowPreflightItems = computed<WorkflowPreflightItem[]>(() => {
             : `${requiredGb} GB+ GPU`;
       items.push({
         tone: "warning",
-        text: t("comfy.preflightVramInsufficient", {
-          required: requiredGb,
-          available: formatGiBFloor(gpuTotalMib / 1024),
-          gpu: recommendedGpuText,
-        }),
+        text: t(
+          isShareMode.value
+            ? "comfy.preflightVramInsufficientShare"
+            : "comfy.preflightVramInsufficient",
+          {
+            required: requiredGb,
+            available: formatGiBFloor(gpuTotalMib / 1024),
+            gpu: recommendedGpuText,
+          },
+        ),
       });
     }
 
@@ -2220,7 +2240,7 @@ function cancelVoicePreviewPrefetch() {
   activePrefetchJobScopeKey.value = "";
   prefetchPullQueue.length = 0;
   prefetchPendingPreviewIds.clear();
-  if (!gpuReady.value) return;
+  if (!gpuReady.value || isShareMode.value) return;
   void colabOneCommand("comfyui.tts.preview.prefetch.cancel", {}).catch(
     () => {},
   );
@@ -2229,6 +2249,7 @@ function cancelVoicePreviewPrefetch() {
 async function kickoffSiblingVoicePrefetch(activePresetId: string) {
   if (
     disposed ||
+    isShareMode.value ||
     !gpuReady.value ||
     !paramDrawerOpen.value ||
     hasUploadedVoicePreviewRefAudio.value ||
@@ -2832,6 +2853,10 @@ async function triggerVoicePreview() {
   }
 
   if (!gpuReady.value) {
+    return;
+  }
+  if (isShareMode.value && props.shareBusyOther) {
+    voicePreviewError.value = t("workflowShare.guestBusyOtherBannerTitle");
     return;
   }
   if (props.state.operation || hasBlockingNonPreviewTask.value) {
@@ -3902,9 +3927,15 @@ async function restoreWorkflowDraft(
 
 const runButtonDisabledTooltip = computed(() => {
   if (!gpuReady.value) {
+    if (isShareMode.value) {
+      return t("workflowShare.guestOfflineBannerTitle");
+    }
     return gpuStarting.value
       ? t("api.gpuStartingTooltip")
       : t("api.startGpuFirstTooltip");
+  }
+  if (isShareMode.value && props.shareBusyOther) {
+    return t("workflowShare.guestBusyOtherBannerTitle");
   }
   if (hasUploadingField.value) {
     return t("comfy.runBlockedUploading");
@@ -4557,6 +4588,10 @@ watch(
     exportedDriveOutputs.value = {};
     const staleUrls = Object.values(blobUrls.value);
     blobUrls.value = {};
+    if (isShareMode.value) {
+      streamUrls.value = {};
+      bufferingStreams.value = {};
+    }
     revokeBlobUrlsDeferred(staleUrls);
     if (detachedVoicePreviewTaskIds.size > 0) {
       detachedVoicePreviewTaskIds.clear();
@@ -4658,7 +4693,7 @@ function resetFields() {
 
 const MAX_IMAGE_INPUT_BYTES = 16 * 1024 ** 2;
 const MAX_AUDIO_INPUT_BYTES = 64 * 1024 ** 2;
-const IMAGE_EXT_RE = /\.(png|jpe?g|webp)$/i;
+const IMAGE_EXT_RE = /[^/\\]\.(png|jpe?g|webp)$/i;
 const AUDIO_EXT_RE = /\.(wav|mp3|flac|ogg|m4a)$/i;
 
 function readFileAsBase64(file: File): Promise<string> {
@@ -5057,6 +5092,7 @@ const canSubmitImport = computed(
 );
 
 function openImportModal() {
+  if (isShareMode.value) return;
   flushDraftSave();
   paramDrawerOpen.value = false;
   outputsDrawerOpen.value = false;
@@ -5111,6 +5147,7 @@ async function onImportFileDrop(event: DragEvent) {
 }
 
 async function submitImport() {
+  if (isShareMode.value) return;
   if (!canSubmitImport.value || !importValidation.value?.ok) return;
   importing.value = true;
   try {
@@ -5140,6 +5177,7 @@ async function submitImport() {
 }
 
 async function deleteWorkflow(target: WorkflowTemplate) {
+  if (isShareMode.value) return;
   busy.value = true;
   try {
     await colabOneCommand("comfyui.workflow.delete", { id: target.id });
@@ -5198,10 +5236,12 @@ async function startComfy() {
 }
 
 async function freeComfyVram() {
+  if (isShareMode.value) return;
   await actEngine("comfyui.free", {}, "comfy.noticeFreeVram");
 }
 
 async function stopComfy() {
+  if (isShareMode.value) return;
   await actEngine("comfyui.stop", {}, "comfy.noticeStoppingEngine");
 }
 
@@ -5228,7 +5268,8 @@ async function runWorkflow() {
   if (
     submittingRun.value ||
     hasUploadingField.value ||
-    engineActionBlocked.value
+    engineActionBlocked.value ||
+    (isShareMode.value && props.shareBusyOther)
   ) {
     return;
   }
@@ -5394,7 +5435,7 @@ async function runWorkflow() {
       workflow_id: wf.id,
       overrides,
       inputs,
-      ...(workflowAutoReleaseEnabled.value
+      ...(!isShareMode.value && workflowAutoReleaseEnabled.value
         ? { auto_release_after_sync: true }
         : {}),
     });
@@ -5518,6 +5559,9 @@ function isOutputDriveBacked(item: WorkflowOutput): boolean {
 }
 
 function canLoadOutputAsset(item: WorkflowOutput): boolean {
+  if (isShareMode.value) {
+    return Boolean(gpuReady.value && !isOutputDriveBacked(item));
+  }
   return Boolean(
     (gpuReady.value && !isOutputDriveBacked(item)) || item.drive_previewable,
   );
@@ -5633,10 +5677,13 @@ function formatOutputPreviewError(
   err: OutputPreviewError | undefined,
 ): string {
   if (!err) return "";
+  const fallbackKey = isShareMode.value
+    ? "comfy.shareMediaPreviewError"
+    : "comfy.mediaPreviewError";
   if (err.code === "media") {
-    return t("comfy.mediaPreviewError");
+    return t(fallbackKey);
   }
-  return err.detail ? tb(err.detail) : t("comfy.mediaPreviewError");
+  return err.detail ? tb(err.detail) : t(fallbackKey);
 }
 
 function revokeBlobUrlsDeferred(urls: string[]) {
@@ -5839,6 +5886,7 @@ async function loadOutputPreview(item: WorkflowOutput) {
 }
 
 async function syncDriveOutputsFromCloud(opts: { silent?: boolean } = {}) {
+  if (isShareMode.value) return;
   if (syncingDriveOutputs.value || !props.state.setup.colab) return;
   syncingDriveOutputs.value = true;
   try {
@@ -5862,6 +5910,7 @@ async function setWorkflowAutoRelease(
   next: boolean,
   opts: { fromModal?: boolean } = {},
 ) {
+  if (isShareMode.value) return;
   if (workflowAutoReleaseBusy.value || workflowAutoReleaseLocked.value) return;
   if (!gpuReady.value) return;
   if (next && !props.state.setup.drive) {
@@ -6170,6 +6219,7 @@ function openDriveSetupModal(
   purpose: "config" | "export" | "auto_release" = target ? "export" : "config",
   autoArmRelease = false,
 ) {
+  if (isShareMode.value) return;
   driveModalPurpose.value = purpose;
   driveModalTarget.value = target;
   driveModalAutoExport.value = autoExport;
@@ -6183,6 +6233,7 @@ async function runDriveExport(
   item: WorkflowOutput,
   opts: { fromModal: boolean },
 ) {
+  if (isShareMode.value) return;
   if (
     !gpuReady.value ||
     exportingDriveOutputs.value[item.id] ||
@@ -6259,7 +6310,68 @@ async function runDriveExport(
   }
 }
 
+async function saveOutputToHostDrive(item: WorkflowOutput) {
+  if (
+    !isShareMode.value ||
+    !props.shareDriveExportReady ||
+    !gpuReady.value ||
+    isOutputExportedToDrive(item) ||
+    exportingDriveOutputs.value[item.id] ||
+    deletingOutputs.value[item.id]
+  ) {
+    return;
+  }
+  exportingDriveOutputs.value = {
+    ...exportingDriveOutputs.value,
+    [item.id]: true,
+  };
+  const targetRuntimeId = props.state.runtime.id;
+  try {
+    const res = await colabOneCommand("comfyui.output.export_drive", {
+      id: item.id,
+    });
+    if (disposed || props.state.runtime.id !== targetRuntimeId) {
+      return;
+    }
+    const alreadyExists = Boolean(res?.already_exists);
+    const filename =
+      typeof res?.filename === "string" && res.filename.trim()
+        ? res.filename.trim()
+        : item.filename;
+    exportedDriveOutputs.value = {
+      ...exportedDriveOutputs.value,
+      [item.id]: {
+        id: item.id,
+        filename,
+        remoteFolder: "",
+        drivePath: "",
+        alreadyExists,
+        size: typeof res?.size === "number" ? res.size : item.size,
+      },
+    };
+    emit("sync");
+    setNoticeKey(
+      alreadyExists
+        ? "comfy.noticeAlreadyInHostDrive"
+        : "comfy.noticeSavedToHostDrive",
+    );
+  } catch (e) {
+    if (!disposed) {
+      emit("sync");
+      reportError(e);
+    }
+  } finally {
+    const next = { ...exportingDriveOutputs.value };
+    delete next[item.id];
+    exportingDriveOutputs.value = next;
+  }
+}
+
 async function exportOutputToDrive(item: WorkflowOutput) {
+  if (isShareMode.value) {
+    await saveOutputToHostDrive(item);
+    return;
+  }
   if (
     !gpuReady.value ||
     exportingDriveOutputs.value[item.id] ||
@@ -6275,6 +6387,7 @@ async function exportOutputToDrive(item: WorkflowOutput) {
 }
 
 async function connectDriveFromModal() {
+  if (isShareMode.value) return;
   if (connectingDriveInModal.value || props.state.operation) return;
   clearDriveConnectTimer();
   connectingDriveInModal.value = true;
@@ -6319,6 +6432,7 @@ async function connectDriveFromModal() {
 }
 
 async function confirmDriveAuthFromModal() {
+  if (isShareMode.value) return;
   if (confirmingDriveAuthInModal.value) return;
   confirmingDriveAuthInModal.value = true;
   driveModalError.value = "";
@@ -6333,6 +6447,7 @@ async function confirmDriveAuthFromModal() {
 }
 
 async function cancelDriveAuthFromModal() {
+  if (isShareMode.value) return;
   clearDriveConnectTimer();
   connectingDriveInModal.value = false;
   sawDriveConnectOpInModal.value = false;
@@ -6348,6 +6463,7 @@ async function cancelDriveAuthFromModal() {
 }
 
 async function setupHeadlessDriveFromModal() {
+  if (isShareMode.value) return;
   if (checkingHeadlessInModal.value || props.state.operation) return;
   clearHeadlessTimer();
   checkingHeadlessInModal.value = true;
@@ -6377,6 +6493,7 @@ async function setupHeadlessDriveFromModal() {
 }
 
 async function toggleAutoDriveFromModal(next: boolean) {
+  if (isShareMode.value) return;
   if (savingAutoDriveInModal.value) return;
   savingAutoDriveInModal.value = true;
   driveModalError.value = "";
@@ -6391,20 +6508,24 @@ async function toggleAutoDriveFromModal(next: boolean) {
 }
 
 function exportTargetFromModal() {
+  if (isShareMode.value) return;
   if (!driveModalTarget.value) return;
   void runDriveExport(driveModalTarget.value, { fromModal: true });
 }
 
 function armAutoReleaseFromModal() {
+  if (isShareMode.value) return;
   void setWorkflowAutoRelease(true, { fromModal: true });
 }
 
 function triggerUpgradeFromDriveModal() {
+  if (isShareMode.value) return;
   driveModalOpen.value = false;
   emit("upgrade");
 }
 
 function openSettingsFromDriveModal() {
+  if (isShareMode.value) return;
   driveModalOpen.value = false;
   outputsDrawerOpen.value = false;
   emit("settings");
@@ -6435,7 +6556,7 @@ async function exportOutput(item: WorkflowOutput) {
 
 async function deleteOutput(target: WorkflowOutput) {
   if (
-    (!gpuReady.value && !isOutputDriveBacked(target)) ||
+    (!gpuReady.value && (isShareMode.value || !isOutputDriveBacked(target))) ||
     deletingOutputs.value[target.id] ||
     exportingOutputs.value[target.id] ||
     exportingDriveOutputs.value[target.id]
@@ -6579,6 +6700,7 @@ const canvasBadgeStatus = computed(() => {
 const canvasPublicHost = computed(() => extractPublicHost(canvas.value?.url));
 
 async function startCanvas() {
+  if (isShareMode.value) return;
   if (!gpuReady.value) return;
   if (!comfyRunning.value) {
     await startComfy();
@@ -6601,6 +6723,7 @@ async function startCanvas() {
 }
 
 async function saveCanvasSettings() {
+  if (isShareMode.value) return;
   const ok = await actEngine(
     "comfyui.canvas.save",
     {
@@ -6618,6 +6741,7 @@ async function saveCanvasSettings() {
 }
 
 async function loadSavedCanvasToken(): Promise<string> {
+  if (isShareMode.value) return "";
   const res = await colabOneCommand("comfyui.canvas.tunnel_token");
   return typeof res?.token === "string" ? res.token : "";
 }
@@ -6631,10 +6755,12 @@ function onCanvasTokenCopied() {
 }
 
 async function stopCanvas() {
+  if (isShareMode.value) return;
   await actEngine("comfyui.canvas.stop", {}, "comfy.noticeStoppedCanvas");
 }
 
 async function launchCanvas(target: "window" | "browser") {
+  if (isShareMode.value) return;
   try {
     await colabOneOpenComfyCanvas(target);
   } catch (e) {
@@ -6643,6 +6769,7 @@ async function launchCanvas(target: "window" | "browser") {
 }
 
 async function copyCanvasAuthUrl() {
+  if (isShareMode.value) return;
   try {
     const res = await colabOneCommand("comfyui.canvas.url");
     const url =
@@ -6824,11 +6951,20 @@ onUnmounted(() => {
   revokeAllLocalPreviews();
   emit("drawer-state", { open: false, width: 0, rootSelector: "" });
 });
+
+defineExpose({
+  openOutputsDrawer,
+  closeOutputsDrawer,
+  outputsCount: computed(() => outputs.value.length),
+  hasActiveRun: computed(() =>
+    Boolean(comfyRunTask.value || submittingRun.value),
+  ),
+});
 </script>
 
 <template>
-  <div class="co-comfy-page">
-    <div class="co-page-header">
+  <div class="co-comfy-page" :class="{ 'is-share-mode': isShareMode }">
+    <div v-if="!isShareMode" class="co-page-header">
       <div>
         <h1 class="co-page-title">ComfyUI</h1>
         <p class="co-page-subtitle">
@@ -6839,6 +6975,7 @@ onUnmounted(() => {
 
     <!-- Top Engine Status Card -->
     <ACard
+      v-if="!isShareMode"
       class="co-comfy-engine-card"
       role="region"
       :bordered="true"
@@ -7215,8 +7352,321 @@ onUnmounted(() => {
       </AAlert>
     </ACard>
 
+    <!-- Guest Shared Workflow Workspace -->
+    <div v-if="isShareMode" class="co-comfy-share-workspace">
+      <!-- Active Guest Task Progress Card -->
+      <div
+        v-if="comfyTask"
+        class="co-comfy-share-task-card"
+        data-testid="comfy-share-task-card"
+      >
+        <div class="co-comfy-task-banner" role="status">
+          <div class="co-comfy-task-info">
+            <div class="co-comfy-task-head">
+              <div class="co-comfy-task-head-main">
+                <ATag
+                  v-if="comfyTtsPreviewTask"
+                  color="blue"
+                  class="co-comfy-meta-tag"
+                >
+                  {{ t("comfy.taskKindTtsPreview") }}
+                </ATag>
+                <strong>{{
+                  comfyTask.message
+                    ? tb(comfyTask.message)
+                    : comfyTtsPreviewTask
+                      ? t("comfy.taskKindTtsPreview")
+                      : t("comfy.taskRunningFallback")
+                }}</strong>
+              </div>
+              <div class="co-comfy-task-metrics">
+                <span
+                  v-if="comfyTaskElapsedText"
+                  class="co-comfy-task-elapsed co-comfy-mono"
+                  data-testid="comfy-task-elapsed"
+                >
+                  <PhClock :size="13" aria-hidden="true" />
+                  <span>{{
+                    t("task.elapsedLive", { duration: comfyTaskElapsedText })
+                  }}</span>
+                </span>
+                <span class="co-comfy-mono">{{ comfyTaskPercent }}%</span>
+              </div>
+            </div>
+            <div
+              v-if="comfyTaskDownloadSummary"
+              class="co-comfy-task-download-meta"
+            >
+              <span class="co-comfy-mono">
+                {{ comfyTaskDownloadSummary.primary }}
+              </span>
+              <span
+                v-if="comfyTaskDownloadSummary.etaText"
+                class="co-comfy-mono"
+              >
+                · {{ comfyTaskDownloadSummary.etaText }}
+              </span>
+              <span
+                v-if="comfyTaskDownloadSummary.filename"
+                class="co-comfy-task-download-file co-comfy-mono"
+              >
+                ·
+                {{
+                  comfyTaskDownloadSummary.fileCounter
+                    ? `[${comfyTaskDownloadSummary.fileCounter}] ${comfyTaskDownloadSummary.filename}`
+                    : comfyTaskDownloadSummary.filename
+                }}
+              </span>
+            </div>
+            <AProgress
+              :percent="comfyTaskPercent"
+              status="active"
+              :show-info="false"
+              size="small"
+            />
+          </div>
+          <div class="co-comfy-task-actions">
+            <AButton
+              v-if="comfyRunTask"
+              size="small"
+              class="co-comfy-task-outputs-btn"
+              @click="openOutputsDrawer"
+            >
+              <template #icon><PhImage :size="14" /></template>
+              {{ t("comfy.viewOutputsShort") }}
+            </AButton>
+            <AButton
+              size="small"
+              danger
+              :loading="Boolean(comfyTask && cancellingTaskId === comfyTask.id)"
+              :disabled="cancellingTaskId !== null"
+              @click="cancelActiveTask"
+            >
+              {{ t("comfy.cancelTask") }}
+            </AButton>
+          </div>
+        </div>
+      </div>
+
+      <!-- Initial Cold-Start Skeleton -->
+      <div
+        v-if="props.loading && !workflows.length"
+        class="co-comfy-workflow-list"
+        role="status"
+        aria-busy="true"
+      >
+        <span class="co-sr-only">{{ t("common.loading") }}</span>
+        <div
+          v-for="idx in 2"
+          :key="idx"
+          class="co-comfy-workflow-item co-comfy-wf-skeleton"
+        >
+          <div class="co-comfy-wf-card-head">
+            <ColabOneSkeleton
+              :width="40"
+              :height="40"
+              :radius="11"
+              variant="rect"
+              tone="subtle"
+              :delay="(idx - 1) * 70"
+            />
+            <div class="co-comfy-wf-card-heading">
+              <ColabOneSkeleton
+                width="60%"
+                :height="16"
+                variant="text"
+                :delay="(idx - 1) * 70 + 35"
+              />
+              <ColabOneSkeleton
+                :width="42"
+                :height="20"
+                variant="tag"
+                tone="subtle"
+                :delay="(idx - 1) * 70 + 65"
+              />
+            </div>
+          </div>
+          <div class="co-comfy-wf-sk-desc">
+            <ColabOneSkeleton
+              width="92%"
+              :height="13"
+              variant="text"
+              tone="subtle"
+              :delay="(idx - 1) * 70 + 90"
+            />
+            <ColabOneSkeleton
+              width="68%"
+              :height="13"
+              variant="text"
+              tone="subtle"
+              :delay="(idx - 1) * 70 + 115"
+            />
+          </div>
+          <div class="co-comfy-wf-card-footer">
+            <ColabOneSkeleton
+              :width="128"
+              :height="13"
+              variant="text"
+              tone="subtle"
+              :delay="(idx - 1) * 70 + 140"
+            />
+            <ColabOneSkeleton
+              :width="76"
+              :height="14"
+              variant="text"
+              tone="subtle"
+              :delay="(idx - 1) * 70 + 165"
+            />
+          </div>
+        </div>
+      </div>
+
+      <!-- Empty state in share mode -->
+      <ACard
+        v-else-if="!workflows.length"
+        class="co-comfy-card co-comfy-empty-card"
+        data-testid="comfy-share-empty-workflows"
+      >
+        <AEmpty :description="t('workflowShare.guestEmptyWorkflows')">
+          <template #image>
+            <div class="co-comfy-empty-emblem">
+              <PhTreeStructure :size="30" weight="duotone" />
+            </div>
+          </template>
+        </AEmpty>
+      </ACard>
+
+      <!-- Populated Guest Workflow Card Grid -->
+      <div
+        v-else
+        class="co-comfy-workflow-list co-sk-reveal"
+        role="list"
+        :aria-label="t('comfy.selectWorkflowAria')"
+      >
+        <div
+          v-for="entry in studioEntries"
+          :key="entry.key"
+          role="listitem"
+          class="co-comfy-workflow-item"
+          :class="{
+            'is-selected':
+              paramDrawerOpen &&
+              entry.workflows.some((w) => w.id === selectedWorkflowId),
+            'is-disabled': submittingRun || hasUploadingField,
+          }"
+          :data-workflow-entry-key="
+            entry.isGroup ? COLABONE_DIGITAL_HUMAN_GROUP_KEY : entry.key
+          "
+        >
+          <button
+            type="button"
+            class="co-comfy-wf-card-trigger"
+            :disabled="submittingRun || hasUploadingField"
+            :aria-expanded="
+              paramDrawerOpen &&
+              entry.workflows.some((w) => w.id === selectedWorkflowId)
+            "
+            @click="openStudioEntryDrawer(entry)"
+          >
+            <div class="co-comfy-wf-card-head">
+              <div
+                class="co-comfy-wf-emblem"
+                :class="{
+                  'is-pipeline':
+                    entry.primary.pipeline?.kind === 'digital_human',
+                }"
+                aria-hidden="true"
+              >
+                <PhVideoCamera
+                  v-if="entry.primary.pipeline?.kind === 'digital_human'"
+                  :size="20"
+                  weight="duotone"
+                />
+                <PhTreeStructure v-else :size="20" weight="duotone" />
+              </div>
+
+              <div class="co-comfy-wf-card-heading">
+                <strong class="co-comfy-wf-card-title">{{
+                  entry.isGroup
+                    ? t("comfy.digitalHumanUnifiedName")
+                    : tb(entry.primary.name)
+                }}</strong>
+                <ATag
+                  :color="
+                    entry.isGroup || entry.primary.source === 'builtin'
+                      ? 'blue'
+                      : 'default'
+                  "
+                  :bordered="false"
+                  class="co-comfy-source-tag"
+                >
+                  {{
+                    entry.isGroup || entry.primary.source === "builtin"
+                      ? t("comfy.sourceBuiltin")
+                      : t("comfy.sourceCustom")
+                  }}
+                </ATag>
+              </div>
+            </div>
+
+            <p
+              v-if="entry.isGroup || entry.primary.description"
+              class="co-comfy-workflow-desc"
+            >
+              {{
+                entry.isGroup
+                  ? t("comfy.digitalHumanUnifiedDesc")
+                  : tb(entry.primary.description)
+              }}
+            </p>
+
+            <div
+              v-if="entry.primary.pipeline?.kind === 'digital_human'"
+              class="co-comfy-wf-io-strip"
+            >
+              <div class="co-comfy-wf-io-row">
+                {{ t("comfy.ioInputDigitalHuman") }}
+              </div>
+              <div class="co-comfy-wf-io-row">
+                {{ t("comfy.ioOutputDigitalHuman") }}
+              </div>
+            </div>
+
+            <div class="co-comfy-wf-card-footer">
+              <div class="co-comfy-wf-specs">
+                <span class="co-comfy-wf-spec-text">
+                  {{ formatStudioEntrySpecs(entry) }}
+                </span>
+                <ColabOneTooltip
+                  v-if="entry.workflows.some((w) => isWorkflowNonCommercial(w))"
+                  :title="
+                    entry.workflows
+                      .filter((w) => isWorkflowNonCommercial(w))
+                      .map((w) => workflowNonCommercialTooltip(w))
+                      .join(' ') || t('comfy.licenseNonCommercial')
+                  "
+                >
+                  <ATag
+                    color="orange"
+                    :bordered="false"
+                    class="co-comfy-noncommercial-pill"
+                  >
+                    {{ t("comfy.licenseNonCommercial") }}
+                  </ATag>
+                </ColabOneTooltip>
+              </div>
+              <span class="co-comfy-wf-cta" aria-hidden="true">
+                <PhSlidersHorizontal :size="14" />
+                <span>{{ t("comfy.configureAndRun") }}</span>
+              </span>
+            </div>
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- Dual-layer Workspace Tabs -->
-    <div ref="tabsWrapRef" class="co-comfy-tabs-wrap">
+    <div v-else ref="tabsWrapRef" class="co-comfy-tabs-wrap">
       <ATabs
         :active-key="activeTab"
         class="co-comfy-tabs"
@@ -7263,6 +7713,22 @@ onUnmounted(() => {
                 <p>{{ t("comfy.studioDesc") }}</p>
               </div>
               <ASpace :size="10" wrap class="co-comfy-studio-toolbar-actions">
+                <AButton
+                  v-if="props.canShareWorkflows"
+                  class="co-comfy-share-trigger"
+                  :class="{ 'is-active': (props.activeShareCount || 0) > 0 }"
+                  data-testid="comfy-share-workflows-btn"
+                  @click="emit('openShareModal')"
+                >
+                  <template #icon><PhShareNetwork :size="15" /></template>
+                  <span>{{ t("comfy.shareWorkflowBtn") }}</span>
+                  <span
+                    v-if="(props.activeShareCount || 0) > 0"
+                    class="co-comfy-share-count co-comfy-mono"
+                  >
+                    {{ props.activeShareCount }}
+                  </span>
+                </AButton>
                 <AButton
                   class="co-comfy-outputs-trigger"
                   :class="{
@@ -8319,6 +8785,7 @@ onUnmounted(() => {
                 :voice-preview-prefetch-active="voicePreviewPrefetchActive"
                 :voice-preview-prefetch-done="voicePreviewPrefetchDone"
                 :voice-preview-prefetch-total="voicePreviewPrefetchTotal"
+                :share-mode="isShareMode"
                 @update:value="(val) => onFieldValueUpdate(field, val)"
                 @field-blur="onFieldBlur"
                 @media-select="handleMediaFile"
@@ -8422,6 +8889,7 @@ onUnmounted(() => {
                     :voice-preview-prefetch-active="voicePreviewPrefetchActive"
                     :voice-preview-prefetch-done="voicePreviewPrefetchDone"
                     :voice-preview-prefetch-total="voicePreviewPrefetchTotal"
+                    :share-mode="isShareMode"
                     @update:value="(val) => onFieldValueUpdate(field, val)"
                     @field-blur="onFieldBlur"
                     @media-select="handleMediaFile"
@@ -8563,6 +9031,7 @@ onUnmounted(() => {
               {{ t("common.close") }}
             </AButton>
             <APopover
+              v-if="!isShareMode"
               v-model:open="mobileAutoReleasePopoverOpen"
               trigger="click"
               placement="topLeft"
@@ -8646,7 +9115,7 @@ onUnmounted(() => {
                 {{ draftStatusLabel }}
               </span>
             </Transition>
-            <ColabOneTooltip :title="autoReleaseSwitchTooltip">
+            <ColabOneTooltip v-if="!isShareMode" :title="autoReleaseSwitchTooltip">
               <div
                 class="co-comfy-drawer-autorelease-pill"
                 :class="{
@@ -8682,6 +9151,7 @@ onUnmounted(() => {
                   :loading="submittingRun || comfyStarting"
                   :disabled="
                     !gpuReady ||
+                    (isShareMode && Boolean(props.shareBusyOther)) ||
                     comfyStarting ||
                     submittingRun ||
                     hasUploadingField ||
@@ -8757,7 +9227,7 @@ onUnmounted(() => {
       </template>
 
       <template #extra>
-        <ASpace :size="6">
+        <ASpace v-if="!isShareMode" :size="6">
           <ColabOneTooltip
             v-if="!gpuReady && state.setup.colab && driveOutputsCanDirectRead"
             :title="t('comfy.outputsDriveRefreshTooltip')"
@@ -8859,6 +9329,7 @@ onUnmounted(() => {
       >
         <!-- Full-Width Unclipped Storage & Persistence Hint Strip -->
         <div
+          v-if="!isShareMode"
           class="co-comfy-outputs-storage-bar"
           :class="{
             'is-connected':
@@ -8947,6 +9418,7 @@ onUnmounted(() => {
 
         <AAlert
           v-if="
+            !isShareMode &&
             !gpuReady &&
             state.setup.colab &&
             state.drive_outputs_status?.error &&
@@ -9155,7 +9627,7 @@ onUnmounted(() => {
                   }}</span>
                 </ATag>
                 <ATag
-                  v-if="comfyTaskLiveCuText"
+                  v-if="!isShareMode && comfyTaskLiveCuText"
                   class="co-comfy-meta-tag co-comfy-cu-tag"
                   data-testid="comfy-gen-cu"
                 >
@@ -9171,7 +9643,7 @@ onUnmounted(() => {
                   :delay="100"
                 />
                 <ColabOneSkeleton
-                  v-if="!comfyTaskLiveCuText"
+                  v-if="!isShareMode && !comfyTaskLiveCuText"
                   :width="48"
                   :height="18"
                   variant="tag"
@@ -9254,6 +9726,14 @@ onUnmounted(() => {
                 </div>
               </div>
               <div
+                v-else-if="!canLoadOutputAsset(item) && isShareMode"
+                class="co-comfy-share-offline-frame"
+                data-testid="comfy-share-output-offline-frame"
+              >
+                <PhWifiSlash :size="26" weight="duotone" />
+                <span>{{ t("workflowShare.guestOfflineBannerTitle") }}</span>
+              </div>
+              <div
                 v-else-if="!canLoadOutputAsset(item)"
                 class="co-comfy-drive-offline-frame"
                 data-testid="comfy-output-drive-offline-frame"
@@ -9301,9 +9781,14 @@ onUnmounted(() => {
                 />
                 <p>
                   {{
-                    t("comfy.videoPreviewTooLarge", {
-                      size: formatComfyByteSize(item.size),
-                    })
+                    t(
+                      isShareMode
+                        ? "comfy.sharePreviewTooLarge"
+                        : "comfy.videoPreviewTooLarge",
+                      {
+                        size: formatComfyByteSize(item.size),
+                      },
+                    )
                   }}
                 </p>
               </div>
@@ -9329,15 +9814,17 @@ onUnmounted(() => {
                     failedOutputs[item.id]
                       ? t("comfy.retryPreview")
                       : item.kind === "video"
-                        ? isOutputDriveBacked(item) ||
-                          isOutputExportedToDrive(item) ||
-                          item.drive_synced
+                        ? !isShareMode &&
+                          (isOutputDriveBacked(item) ||
+                            isOutputExportedToDrive(item) ||
+                            item.drive_synced)
                           ? t("comfy.previewDriveVideo")
                           : t("comfy.loadVideoPreview")
                         : item.kind === "audio"
-                          ? isOutputDriveBacked(item) ||
-                            isOutputExportedToDrive(item) ||
-                            item.drive_synced
+                          ? !isShareMode &&
+                            (isOutputDriveBacked(item) ||
+                              isOutputExportedToDrive(item) ||
+                              item.drive_synced)
                             ? t("comfy.previewDriveAudio")
                             : t("comfy.loadAudioPreview")
                           : t("comfy.loadImagePreview")
@@ -9424,7 +9911,7 @@ onUnmounted(() => {
                   }}</span>
                 </ATag>
                 <ColabOneTooltip
-                  v-if="formatOutputCUBadge(item)"
+                  v-if="!isShareMode && formatOutputCUBadge(item)"
                   :title="formatOutputCUTooltip(item)"
                 >
                   <ATag
@@ -9438,7 +9925,29 @@ onUnmounted(() => {
                   </ATag>
                 </ColabOneTooltip>
                 <ColabOneTooltip
-                  v-if="isOutputExportedToDrive(item) || item.drive_synced"
+                  v-if="!isShareMode && item.share_id"
+                  :title="
+                    item.share_label
+                      ? t('comfy.outputTagSharedTooltip', {
+                          label: item.share_label,
+                        })
+                      : t('comfy.outputTagSharedTooltipAnonymous')
+                  "
+                >
+                  <ATag
+                    color="purple"
+                    class="co-comfy-meta-tag co-comfy-shared-tag"
+                    data-testid="comfy-output-shared-tag"
+                  >
+                    <PhShareNetwork :size="12" aria-hidden="true" />
+                    <span>{{ t("comfy.outputTagShared") }}</span>
+                  </ATag>
+                </ColabOneTooltip>
+                <ColabOneTooltip
+                  v-if="
+                    !isShareMode &&
+                    (isOutputExportedToDrive(item) || item.drive_synced)
+                  "
                   :title="
                     getOutputDrivePath(item)
                       ? formatColabOneDrivePath(getOutputDrivePath(item))
@@ -9472,7 +9981,9 @@ onUnmounted(() => {
                   <ColabOneTooltip
                     :title="
                       !canLoadOutputAsset(item)
-                        ? t('comfy.exportLocalNeedDriveApiTooltip')
+                        ? isShareMode
+                          ? t('workflowShare.guestOfflineBannerTitle')
+                          : t('comfy.exportLocalNeedDriveApiTooltip')
                         : ''
                     "
                   >
@@ -9491,8 +10002,33 @@ onUnmounted(() => {
                     </AButton>
                   </ColabOneTooltip>
 
+                  <template v-if="isShareMode">
+                    <span
+                      v-if="isOutputExportedToDrive(item)"
+                      class="co-comfy-share-saved-badge"
+                      data-testid="comfy-share-output-saved-host-drive"
+                    >
+                      <PhCloudCheck :size="14" aria-hidden="true" />
+                      <span>{{ t("comfy.savedToHostDriveBtn") }}</span>
+                    </span>
+                    <AButton
+                      v-else-if="props.shareDriveExportReady"
+                      size="small"
+                      class="co-comfy-export-drive-btn"
+                      :loading="!!exportingDriveOutputs[item.id]"
+                      :disabled="!gpuReady || !!deletingOutputs[item.id]"
+                      data-testid="comfy-share-output-save-host-drive"
+                      @click="saveOutputToHostDrive(item)"
+                    >
+                      <template #icon>
+                        <PhCloudArrowUp :size="14" />
+                      </template>
+                      {{ t("comfy.saveToHostDriveBtn") }}
+                    </AButton>
+                  </template>
+
                   <ColabOneTooltip
-                    v-if="!gpuReady || isOutputDriveBacked(item)"
+                    v-else-if="!gpuReady || isOutputDriveBacked(item)"
                     :title="
                       getOutputDrivePath(item)
                         ? formatColabOneDrivePath(getOutputDrivePath(item))
@@ -9557,7 +10093,7 @@ onUnmounted(() => {
                 <APopconfirm
                   :title="t('comfy.deleteOutputTitle')"
                   :description="
-                    isOutputDriveBacked(item) || !gpuReady
+                    !isShareMode && (isOutputDriveBacked(item) || !gpuReady)
                       ? t('comfy.deleteDriveOutputDesc', {
                           name: item.filename,
                         })
@@ -9566,7 +10102,7 @@ onUnmounted(() => {
                   :ok-text="t('common.confirmDelete')"
                   :cancel-text="t('common.cancel')"
                   :disabled="
-                    (!gpuReady && !isOutputDriveBacked(item)) ||
+                    (!gpuReady && (isShareMode || !isOutputDriveBacked(item))) ||
                     !!exportingOutputs[item.id] ||
                     !!exportingDriveOutputs[item.id] ||
                     !!deletingOutputs[item.id]
@@ -9595,7 +10131,8 @@ onUnmounted(() => {
                         class="co-comfy-output-delete-btn"
                         :loading="!!deletingOutputs[item.id]"
                         :disabled="
-                          (!gpuReady && !isOutputDriveBacked(item)) ||
+                          (!gpuReady &&
+                            (isShareMode || !isOutputDriveBacked(item))) ||
                           !!exportingOutputs[item.id] ||
                           !!exportingDriveOutputs[item.id]
                         "
@@ -9617,6 +10154,7 @@ onUnmounted(() => {
 
     <!-- Google Drive Configuration & Export Modal -->
     <ColabOneDriveExportModal
+      v-if="!isShareMode"
       v-model:open="driveModalOpen"
       :state="state"
       :purpose="driveModalPurpose"
@@ -9644,6 +10182,7 @@ onUnmounted(() => {
 
     <!-- Import Workflow Modal -->
     <AModal
+      v-if="!isShareMode"
       v-model:open="importOpen"
       :title="t('comfy.importModalTitle')"
       :width="640"
@@ -9779,6 +10318,44 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.co-comfy-page.is-share-mode {
+  max-width: none;
+  padding: 0;
+  gap: 16px;
+}
+
+.co-comfy-share-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.co-comfy-share-task-card {
+  border-radius: 14px;
+  border: 1px solid var(--co-border-secondary);
+  background: var(--co-surface);
+  padding: 14px 16px;
+  box-shadow: var(--co-card-shadow);
+}
+
+.co-comfy-share-task-card .co-comfy-task-banner {
+  margin-top: 0;
+}
+
+.co-comfy-share-offline-frame {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  text-align: center;
+  color: var(--co-muted);
+  font-size: 12.5px;
 }
 
 .co-visually-hidden {
@@ -10072,6 +10649,36 @@ onUnmounted(() => {
 
 .co-comfy-studio-toolbar-actions {
   flex-shrink: 0;
+}
+
+.co-comfy-share-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.co-comfy-share-trigger.is-active {
+  border-color: rgba(139, 92, 246, 0.42);
+}
+
+.co-comfy-share-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 19px;
+  height: 19px;
+  padding: 0 6px;
+  border-radius: 9999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1;
+  background: rgba(139, 92, 246, 0.14);
+  color: #6d28d9;
+}
+
+:root[data-theme="dark"] .co-comfy-share-count {
+  background: rgba(167, 139, 250, 0.22);
+  color: #c4b5fd;
 }
 
 .co-comfy-outputs-trigger {
@@ -11709,6 +12316,29 @@ onUnmounted(() => {
   gap: 6px;
   min-width: 0;
   flex: 1;
+}
+
+.co-comfy-shared-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.co-comfy-share-saved-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--co-success-text);
+  background: var(--co-success-bg);
+  border: 1px solid var(--co-success-border);
+  user-select: none;
+  white-space: nowrap;
 }
 
 .co-comfy-export-drive-btn.is-exported {

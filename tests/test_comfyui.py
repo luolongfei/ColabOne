@@ -881,12 +881,14 @@ def test_comfy_run_route_uploads_inputs_saves_output_and_snapshot_hides_canvas_t
             "comfyui_longcat_native",
             "comfyui_workflow_auto_release",
             "comfyui_live_studio",
+            "comfyui_share_guard",
         ]
         assert snap["runtime"]["comfyui"]["running"] is True
         assert any(w["id"] == "wf-e2e" for w in snap["workflows"])
         assert len(snap["comfy_outputs"]) == 1
         out = snap["comfy_outputs"][0]
         assert out["sha256"] == hashlib.sha256(generated_png).hexdigest()
+        assert out["task_id"] == task.id
 
         snap_dump = json.dumps(snap)
         assert runtime.comfy.canvas.canvas_token not in snap_dump
@@ -1727,4 +1729,323 @@ def test_comfyui_pg_reap_trash_tombstone_cleanup_and_log_tail_symlink_safety(
         with pytest.raises(ValueError, match="符号链接"):
             _open_secure_log_write(sym_log)
         assert secret.read_text(encoding="utf-8") == "TOP-SECRET"
+
+
+def test_workflow_output_record_and_store_task_id_contract(tmp_path):
+    # 1. Schema accepts optional task_id, defaults to "" for legacy JSON, and rejects >120 chars.
+    legacy_payload = {
+        "id": "a" * 32,
+        "workflow_id": "wf_demo-1",
+        "workflow_name": "Demo",
+        "kind": "image",
+        "filename": "frame_001.png",
+        "extension": "png",
+        "mime": "image/png",
+        "size": 64,
+        "sha256": "b" * 64,
+        "created_at": 100.0,
+        "elapsed": 1.2,
+        "prompt_id": "prompt-1",
+    }
+    legacy_rec = WorkflowOutputRecord.model_validate_json(json.dumps(legacy_payload))
+    assert legacy_rec.task_id == ""
+
+    exact_120 = "t" * 120
+    tagged_rec = WorkflowOutputRecord.model_validate(legacy_payload | {"task_id": exact_120})
+    assert tagged_rec.task_id == exact_120
+
+    with pytest.raises(ValidationError):
+        WorkflowOutputRecord.model_validate(legacy_payload | {"task_id": "t" * 121})
+
+    # 2. Store save_output and save_output_file persist task_id, preserve positional compat,
+    #    truncate overlong task_id to 120 chars, and reload legacy JSON files omitting task_id.
+    store = ColabOneComfyWorkflowStore(tmp_path)
+    png_raw = make_png_bytes("purple")
+
+    # Positional save_output without task_id stays backward compatible.
+    rec_pos = store.save_output(png_raw, "wf-1", "Flow 1", "pos.png", 1.1, "p-pos")
+    assert rec_pos["task_id"] == ""
+
+    # Keyword task_id on save_output is persisted and reloaded.
+    rec_kw = store.save_output(
+        png_raw,
+        "wf-1",
+        "Flow 1",
+        "kw.png",
+        2.2,
+        prompt_id="p-kw",
+        task_id="task-abc-123",
+    )
+    assert rec_kw["task_id"] == "task-abc-123"
+
+    # save_output_file persists task_id and truncates >120 chars cleanly.
+    src_file = tmp_path / "src_clip.mp4"
+    src_file.write_bytes(b"\x00\x00\x00\x18ftypmp42task-tag-test")
+    overlong_task_id = "task-" + ("x" * 140)
+    rec_file = store.save_output_file(
+        src_path=src_file,
+        workflow_id="wf-1",
+        workflow_name="Flow 1",
+        filename="clip.mp4",
+        elapsed=3.4,
+        prompt_id="p-file",
+        task_id=overlong_task_id,
+    )
+    assert rec_file["task_id"] == overlong_task_id[:120]
+
+    # Legacy positional save_output_file(src_path, wf_id, wf_name, filename, elapsed, prompt_id) still works.
+    rec_file_pos = store.save_output_file(
+        src_file, "wf-1", "Flow 1", "clip_pos.mp4", 1.5, "p-file-pos"
+    )
+    assert rec_file_pos["prompt_id"] == "p-file-pos"
+    assert rec_file_pos["task_id"] == ""
+
+    # Simulate an existing persisted output JSON on disk without task_id.
+    legacy_meta_path = store.outputs_dir / f"{rec_pos['id']}.json"
+    legacy_meta = json.loads(legacy_meta_path.read_text(encoding="utf-8"))
+    legacy_meta.pop("task_id", None)
+    legacy_meta_path.write_text(json.dumps(legacy_meta), encoding="utf-8")
+
+    reloaded = ColabOneComfyWorkflowStore(tmp_path)
+    by_id = {o["id"]: o for o in reloaded.list_outputs()}
+    assert by_id[rec_pos["id"]]["task_id"] == ""
+    assert by_id[rec_kw["id"]]["task_id"] == "task-abc-123"
+    assert by_id[rec_file["id"]]["task_id"] == overlong_task_id[:120]
+    assert by_id[rec_file_pos["id"]]["task_id"] == ""
+
+
+def test_comfyui_native_pack_reset_save_output_7arg_log_fd_skip_auto_release_and_tts_ref_flags(
+    runtime, tmp_path, monkeypatch
+):
+    import os
+    import threading
+    import wave
+    from server import comfyui as comfy_mod
+    from server.comfyui import ColabOneComfyWorkflowStore, _read_log_tail
+    from server.runtime import ColabOneTask
+    from server.tts_engines import ColabOneRemoteTtsRunner
+
+    # 1. Stale _native_active_pack_id cleared on standard/custom workflow after native pipeline.
+    fake_proc = Mock()
+    fake_proc.poll.return_value = None
+    runtime.comfy.proc = fake_proc
+    runtime.comfy.state = "ready"
+    runtime.http = Mock()
+    runtime.http.get.return_value = make_http_resp({"queue_running": [], "queue_pending": []})
+
+    runtime.comfy.mark_native_pack_ready("digital-human-longcat")
+    assert runtime.comfy.status()["active_pack"] == "digital-human-longcat"
+
+    custom_wf = {
+        "id": "custom-plain-wf",
+        "name": "Custom Plain",
+        "workflow": sample_api_workflow(),
+    }
+    runtime.comfy.ensure_template_ready(ColabOneTask("comfyui_run", "custom-plain-wf"), custom_wf)
+    assert runtime.comfy._native_active_pack_id == ""
+    assert runtime.comfy.status()["active_pack"] == ""
+    runtime.comfy.proc = None
+    runtime.comfy.state = "stopped"
+
+    # 2. save_output_file 7-positional-arg compat preserves BOTH prompt_id and task_id,
+    #    and save_output/save_output_file normalize whitespace and cap at 120 chars.
+    store = ColabOneComfyWorkflowStore(tmp_path / "store_7arg")
+    src_file = tmp_path / "clip7.mp4"
+    src_file.write_bytes(b"\x00\x00\x00\x18ftypmp42seven-pos-args")
+    rec_7 = store.save_output_file(
+        src_file,
+        "wf-7",
+        "Flow 7",
+        "clip7.mp4",
+        1.75,
+        "  p-seven  ",
+        "  task-seven  ",
+    )
+    assert rec_7["elapsed"] == 1.75
+    assert rec_7["prompt_id"] == "p-seven"
+    assert rec_7["task_id"] == "task-seven"
+
+    rec_raw = store.save_output(
+        make_png_bytes("teal"),
+        "wf-7",
+        "Flow 7",
+        "trim.png",
+        0.5,
+        "  p-" + ("a" * 140) + "  ",
+        "  t-" + ("b" * 140) + "  ",
+    )
+    assert rec_raw["prompt_id"] == ("p-" + ("a" * 140))[:120]
+    assert rec_raw["task_id"] == ("t-" + ("b" * 140))[:120]
+
+    # 3. _read_log_tail on a non-regular file (directory) must NOT leak file descriptors.
+    if os.name == "posix":
+        dir_as_log = tmp_path / "not_a_regular_file"
+        dir_as_log.mkdir()
+        opened_fds: list[int] = []
+        closed_fds: list[int] = []
+        orig_open = comfy_mod.os.open
+        orig_close = comfy_mod.os.close
+
+        def _spy_open(path, flags, *args, **kwargs):
+            fd = orig_open(path, flags, *args, **kwargs)
+            opened_fds.append(fd)
+            return fd
+
+        def _spy_close(fd):
+            closed_fds.append(fd)
+            return orig_close(fd)
+
+        with monkeypatch.context() as mp:
+            mp.setattr(comfy_mod.os, "open", _spy_open)
+            mp.setattr(comfy_mod.os, "close", _spy_close)
+            assert _read_log_tail(dir_as_log, max_bytes=1024) == ""
+        assert opened_fds, "Expected os.open to open directory fd before fstat check"
+        assert set(opened_fds).issubset(set(closed_fds)), (
+            f"Leaked fd(s) on non-regular log path: opened={opened_fds}, closed={closed_fds}"
+        )
+
+    # 4. skip_auto_release isolates guest workflow runs from host-armed auto_release.
+    runtime.comfy.store.save_workflow(
+        {"id": "wf-guest-iso", "name": "Guest Iso", "workflow": sample_api_workflow()}
+    )
+    monkeypatch.setattr(runtime.drive, "available", lambda: True)
+    finalize_calls: list[str] = []
+    monkeypatch.setattr(
+        runtime,
+        "_finalize_comfyui_workflow_auto_release",
+        lambda t: finalize_calls.append(t.id),
+    )
+
+    armed = runtime.set_comfyui_auto_release(True)
+    assert armed["enabled"] is True
+    assert armed["state"] == "armed"
+
+    gate = threading.Event()
+    started_ev = threading.Event()
+
+    def _guest_run_wf(task, req):
+        started_ev.set()
+        gate.wait(timeout=3.0)
+        task.outputs.append({"id": "a" * 32, "filename": "guest.png"})
+        return list(task.outputs)
+
+    monkeypatch.setattr(runtime.comfy, "run_workflow", _guest_run_wf)
+    snap_guest = runtime.run_comfyui_workflow(
+        WorkflowRunRequest(
+            workflow_id="wf-guest-iso",
+            skip_auto_release=True,
+            auto_release_after_sync=True,
+        )
+    )
+    assert started_ev.wait(timeout=3.0)
+
+    # Host re-arming auto_release while a guest skip_auto_release task runs must NOT bind to guest task.
+    rearmed = runtime.set_comfyui_auto_release(True)
+    assert rearmed["task_id"] == ""
+    gate.set()
+
+    done_guest = wait_task(runtime, snap_guest)
+    assert done_guest.state == "completed", done_guest.error
+    assert finalize_calls == []
+    ar_after = runtime.workflow_auto_release_status()
+    assert ar_after["enabled"] is True
+    assert ar_after["state"] == "armed"
+    assert ar_after["task_id"] == ""
+    assert runtime._pending_workflow_auto_release is False
+    assert runtime.quiescing is False
+
+    # A failing guest run with skip_auto_release=True must also leave host's armed auto_release intact.
+    monkeypatch.setattr(
+        runtime.comfy,
+        "run_workflow",
+        lambda task, req: (_ for _ in ()).throw(RuntimeError("guest fail")),
+    )
+    snap_fail = runtime.run_comfyui_workflow(
+        WorkflowRunRequest(workflow_id="wf-guest-iso", skip_auto_release=True)
+    )
+    done_fail = wait_task(runtime, snap_fail)
+    assert done_fail.state == "failed"
+    ar_after_fail = runtime.workflow_auto_release_status()
+    assert ar_after_fail["enabled"] is True
+    assert ar_after_fail["state"] == "armed"
+
+    # 5. TTS preview persists and emits explicit has_ref_audio & has_emotion_ref boolean flags.
+    def _write_short_wav(path: Path, sr: int = 24000) -> None:
+        with wave.open(str(path), "wb") as wf_w:
+            wf_w.setnchannels(1)
+            wf_w.setsampwidth(2)
+            wf_w.setframerate(sr)
+            wf_w.writeframes(b"\x10\x00" * 600)
+
+    def _fake_tts_synth(engine, segments, segments_dir):
+        sr = int(engine.get("sample_rate") or 24000)
+        out_paths = []
+        for idx, _ in enumerate(segments):
+            p = Path(segments_dir) / f"seg_{idx:03d}.wav"
+            _write_short_wav(p, sr=sr)
+            out_paths.append(p)
+        return out_paths
+
+    real_catalog = ComfyCatalog.model_validate_json(
+        (Path(__file__).resolve().parents[1] / "catalog" / "comfyui.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    engines_by_id = {e.id: e.model_dump() for e in real_catalog.tts_engines}
+    tts_runner = ColabOneRemoteTtsRunner(
+        runtime, engines_by_id, synth_fn=_fake_tts_synth
+    )
+
+    # (a) Preset-only preview -> both flags False.
+    preset_res = tts_runner.synthesize_preview(
+        ColabOneTask("comfyui_tts_preview", "voxcpm2"),
+        engine_id="voxcpm2",
+        voice_preset="shen_zhiyi",
+        preview_text="测试预置音色试听。",
+    )
+    assert preset_res["has_ref_audio"] is False
+    assert preset_res["has_emotion_ref"] is False
+    preset_meta = json.loads(
+        (tts_runner.previews_dir / f"{preset_res['preview_id']}.json").read_text(encoding="utf-8")
+    )
+    assert preset_meta["has_ref_audio"] is False
+    assert preset_meta["has_emotion_ref"] is False
+    preset_cached = tts_runner.get_cached_preview(preset_res["preview_id"])
+    assert preset_cached is not None
+    assert preset_cached["has_ref_audio"] is False
+    assert preset_cached["has_emotion_ref"] is False
+    preset_chunk = tts_runner.get_cached_preview_chunk(preset_res["preview_id"], offset=0, length=256)
+    assert preset_chunk is not None
+    assert preset_chunk["has_ref_audio"] is False
+    assert preset_chunk["has_emotion_ref"] is False
+
+    # (b) Custom ref audio + emotion ref audio -> both flags True.
+    ref_wav = tmp_path / "custom_ref.wav"
+    emo_wav = tmp_path / "emotion_ref.wav"
+    _write_short_wav(ref_wav, sr=24000)
+    _write_short_wav(emo_wav, sr=24000)
+    ref_res = tts_runner.synthesize_preview(
+        ColabOneTask("comfyui_tts_preview", "indextts2"),
+        engine_id="indextts2",
+        voice_preset="custom",
+        preview_text="测试参考音频与情绪参考试听。",
+        ref_audio_path=ref_wav,
+        emotion_ref_path=emo_wav,
+    )
+    assert ref_res["has_ref_audio"] is True
+    assert ref_res["has_emotion_ref"] is True
+    ref_meta = json.loads(
+        (tts_runner.previews_dir / f"{ref_res['preview_id']}.json").read_text(encoding="utf-8")
+    )
+    assert ref_meta["has_ref_audio"] is True
+    assert ref_meta["has_emotion_ref"] is True
+    ref_cached = tts_runner.get_cached_preview(ref_res["preview_id"])
+    assert ref_cached is not None
+    assert ref_cached["has_ref_audio"] is True
+    assert ref_cached["has_emotion_ref"] is True
+    ref_chunk = tts_runner.get_cached_preview_chunk(ref_res["preview_id"], offset=0, length=256)
+    assert ref_chunk is not None
+    assert ref_chunk["has_ref_audio"] is True
+    assert ref_chunk["has_emotion_ref"] is True
+
 

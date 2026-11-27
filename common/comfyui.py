@@ -1042,6 +1042,7 @@ class WorkflowRunRequest(BaseModel):
     inputs: dict[str, str] = Field(default_factory=dict)
     hf_token: str = Field(default="", max_length=512, repr=False)
     auto_release_after_sync: StrictBool = False
+    skip_auto_release: StrictBool = False
 
     @field_validator("hf_token")
     @classmethod
@@ -1154,6 +1155,7 @@ class WorkflowOutputRecord(BaseModel):
     created_at: float = Field(ge=0)
     elapsed: float = Field(default=0.0, ge=0)
     prompt_id: str = Field(default="", max_length=120)
+    task_id: str = Field(default="", max_length=120)
 
     @field_validator("filename")
     @classmethod

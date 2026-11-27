@@ -1400,6 +1400,14 @@ export const jaJPMessages: ColabOneMessages = {
   "comfy.outputDriveSyncedTooltip": "Google ドライブ (ColabOne_Drive) に同期済み",
   "comfy.outputTagSavedInDrive": "ドライブ保存済み",
   "comfy.outputTagSyncedInDrive": "ドライブ同期済み",
+  "comfy.outputTagShared": "外部共有",
+  "comfy.outputTagSharedTooltip": "外部共有「{label}」から生成されました",
+  "comfy.outputTagSharedTooltipAnonymous": "外部共有リンクから生成されました",
+  "comfy.saveToHostDriveBtn": "ホストのドライブに保存",
+  "comfy.savedToHostDriveBtn": "ホストのドライブに保存済み",
+  "comfy.noticeSavedToHostDrive": "ホストのドライブに保存しました",
+  "comfy.noticeAlreadyInHostDrive": "この作品はすでにホストのドライブに保存されています",
+  "comfy.shareWorkflowBtn": "ワークフローを共有",
   "comfy.exportLocalNeedDriveApiTooltip": "ネイティブ DriveFS 記録は GPU なしで直接ダウンロードできません。「ドライブで開く」を使うかポップアップ不要モードを有効にしてください",
   "comfy.deleteDriveOutputDesc": "Google ドライブ連携作品「{name}」を削除しますか？（ドライブ API 有効時は Google ドライブのゴミ箱にも移動します）",
   "comfy.driveModalConnectedAutoReleaseDesc": "Google ドライブ「{folder}」にマウント済みです{free}。下のボタンからワークフロー完了後の自動同期・インスタンス解放を有効にできます。",
@@ -1474,6 +1482,8 @@ export const jaJPMessages: ColabOneMessages = {
     "現在の組み合わせ（{names}）には非商用・研究限定ライセンスのコンポーネントが含まれます: {notices}",
   "comfy.preflightVramInsufficient":
     "GPU VRAM が不足しています（必要 {required} GB、現在 {available} GB）。推奨 GPU（{gpu}）に切り替えてください。",
+  "comfy.preflightVramInsufficientShare":
+    "現在の GPU VRAM が不足しています（必要 {required} GB、現在 {available} GB、推奨 {gpu}）。共有者に計算リソースの調整を依頼してください。",
   "comfy.preflightDiskInsufficient":
     "リモートディスク容量が不足しています（約 {required} GB 必要、現在 {available} GB 空き）",
   "comfy.preflightPackReady": "ワークフローパックとモデルは準備完了です",
@@ -1481,8 +1491,12 @@ export const jaJPMessages: ColabOneMessages = {
     "初回実行時に約 {size} のモデルとノード依存関係をリモートで自動ダウンロードします",
   "comfy.videoPreviewTooLarge":
     "ファイルサイズが大きいため（{size}）、メモリ節約のため下の「ローカルへ保存」または「ドライブへ保存」から確認することをおすすめします",
+  "comfy.sharePreviewTooLarge":
+    "ファイルサイズが大きいため（{size}）、メモリ節約のため下の「ローカルへ保存」からダウンロードして確認することをおすすめします",
   "comfy.mediaPreviewError":
     "内蔵プレーヤーでこのメディアを再生できません。「ローカルへ保存」または「ドライブへ保存」して確認してください。",
+  "comfy.shareMediaPreviewError":
+    "内蔵プレーヤーでこのメディアを再生できません。「ローカルへ保存」からダウンロードして確認してください。",
   "comfy.errImportTooLarge": "ワークフロー JSON が 2 MB の上限を超えています",
   "comfy.errImportTooManyNodes":
     "ワークフローのノード数が上限（500）を超えています",
@@ -1544,6 +1558,8 @@ export const jaJPMessages: ColabOneMessages = {
     "試聴をクリックすると、選択中のエンジンでリモート GPU 上にてこの短文を合成・キャッシュします。ボイスやモデル間の聴き比べに便利です。",
   "comfy.voicePreviewHintOffline":
     "リモート GPU インスタンスに接続すると各エンジンとボイスをリアルタイム試聴できます。接続前でも例文やボイス説明を確認できます。",
+  "comfy.voicePreviewHintOfflineShare":
+    "共有者が計算サービスを開始すると各エンジンとボイスをリアルタイム試聴できます。それまでは例文やボイス説明を確認できます。",
   "comfy.voicePreviewHintCustom":
     "カスタムボイスが選択されています。下の参照音声またはテキスト声質指定を使って試聴音声を合成します。",
   "comfy.voicePreviewCachedTag": "キャッシュ再利用",
@@ -2061,6 +2077,107 @@ export const jaJPMessages: ColabOneMessages = {
   "webConsole.webOAuthManualHint":
     "リモート Web モードでは手動認可ログインをご利用ください。Google 認可ページを開き、返却された内容を下に貼り付けるとログインを完了できます。",
   "webConsole.webOpenCanvasBrowserOnly": "新しいタブでキャンバスを開く",
+  "webConsole.workflowShareSectionTitle": "ワークフロー Web 共有",
+  "webConsole.workflowShareSectionDesc":
+    "独立したワークフロー共有リンクを発行します。ゲストは選択されたワークフローのみ実行でき、各自が生成した作品だけを閲覧できます。",
+  "webConsole.workflowShareManageBtn": "ワークフロー共有を管理",
+  "webConsole.workflowShareActiveTag": "有効な共有 {count} 件",
+
+  // Workflow Web Sharing
+  "workflowShare.modalTitle": "ワークフローを共有",
+  "workflowShare.tabCreate": "新規共有",
+  "workflowShare.tabManage": "共有を管理",
+  "workflowShare.webConsoleOffTitle": "リモート Web コンソールが無効です",
+  "workflowShare.webConsoleOffDesc":
+    "ワークフロー Web 共有はリモート Web コンソールのアクセス URL を利用します。共有リンクを作成する前に Web コンソールを有効にしてください。",
+  "workflowShare.enableWebConsoleBtn": "Web コンソールを有効化",
+  "workflowShare.openWebConsoleSettingsBtn": "公開ドメインを設定",
+  "workflowShare.noPublicOriginHint":
+    "固定公開ドメインが未設定のため、生成されるリンクにはローカルアドレスが使用されます。外部へ共有する場合は、設定で公開ドメインを構成することをおすすめします。",
+  "workflowShare.publicOriginHint":
+    "公開アドレス {origin} を使用して共有リンクを生成します。",
+  "workflowShare.selectWorkflowsLabel": "共有するワークフローを選択",
+  "workflowShare.selectWorkflowsHint":
+    "リンクを開いたゲストには、ここでチェックしたワークフローのみが表示・実行可能になります。",
+  "workflowShare.digitalHumanGroupSub":
+    "InfiniteTalk 長尺安定版と LongCat 96GB フラッグシップ版を含む",
+  "workflowShare.noWorkflowsHint": "現在共有できるワークフローはありません。",
+  "workflowShare.labelField": "共有メモ（任意）",
+  "workflowShare.labelPlaceholder": "例：田中さん向けデジタルヒューマンテスト",
+  "workflowShare.titleField": "ゲストページタイトル（任意）",
+  "workflowShare.titlePlaceholder": "空欄の場合はデフォルトのタイトルを表示",
+  "workflowShare.ttlLabel": "共有キーの有効期限",
+  "workflowShare.ttlHint":
+    "ゲストが有効期限内にリンクを開くとブラウザに長期セッションが保持され、その後リンクが期限切れになっても手動で取り消すまで同じブラウザから継続利用できます。",
+  "workflowShare.ttl24h": "24 時間（既定）",
+  "workflowShare.ttlOnce": "1 回限り",
+  "workflowShare.ttl7d": "7 日間",
+  "workflowShare.ttlForever": "無期限",
+  "workflowShare.createAndCopyBtn": "共有リンクを生成してコピー",
+  "workflowShare.createdLinkTitle": "共有リンクを生成してコピーしました",
+  "workflowShare.createdLinkTitleOnly": "共有リンクを生成しました",
+  "workflowShare.copyLinkBtn": "リンクをコピー",
+  "workflowShare.toastCreatedCopied":
+    "ワークフロー共有リンクを生成してクリップボードにコピーしました",
+  "workflowShare.toastCreatedOnly":
+    "ワークフロー共有を作成しました。リンクを手動でコピーしてください",
+  "workflowShare.toastLinkCopied": "共有リンクをクリップボードにコピーしました",
+  "workflowShare.toastRevoked":
+    "この共有を取り消し、関連するゲストセッションを無効化しました",
+  "workflowShare.toastDeleted": "共有履歴を削除しました",
+  "workflowShare.errSelectWorkflow":
+    "共有するワークフローを少なくとも 1 つ選択してください",
+  "workflowShare.emptyShares": "ワークフロー共有はまだ作成されていません",
+  "workflowShare.emptySharesDesc":
+    "「新規共有」からワークフローを選択すると、独立したテスト用リンクを発行できます。",
+  "workflowShare.statusActive": "有効",
+  "workflowShare.statusExpired": "期限切れ",
+  "workflowShare.statusUsed": "使用済み",
+  "workflowShare.statusRevoked": "取消済み",
+  "workflowShare.defaultRemark": "名称未設定の共有",
+  "workflowShare.metaSessions": "アクティブなゲスト {count} 名",
+  "workflowShare.metaOutputs": "作品 {count} 件",
+  "workflowShare.metaExpiresAt": "リンク有効期限：{time}",
+  "workflowShare.metaNeverExpires": "リンク有効期限なし",
+  "workflowShare.metaSingleUse": "1 回限りリンク",
+  "workflowShare.revokeBtn": "共有を取り消す",
+  "workflowShare.revokeConfirmTitle": "共有「{name}」を取り消しますか？",
+  "workflowShare.revokeConfirmDesc":
+    "取り消すとリンクは即座に無効になり、このリンクからアクセス済みのすべてのゲストも利用できなくなります。",
+  "workflowShare.deleteRecordBtn": "履歴を削除",
+  "workflowShare.deleteConfirmActiveTitle": "共有「{name}」の履歴を削除しますか？",
+  "workflowShare.deleteConfirmActiveDesc":
+    "現在 {count} 件のログイン済みゲストセッションが残っており、削除すると直ちにアクセスできなくなります。",
+  "workflowShare.guestDefaultTitle": "ワークフロー体験スペース",
+  "workflowShare.guestSubtitle":
+    "下のワークフローを選んでパラメータを設定し実行してください。生成された作品はこの共有内でのみ閲覧できます。",
+  "workflowShare.guestStatusReady": "GPU 準備完了",
+  "workflowShare.guestStatusRunning": "生成中",
+  "workflowShare.guestStatusBusyOther": "GPU 使用中",
+  "workflowShare.guestStatusOffline": "サービス停止中",
+  "workflowShare.guestStatusReconnecting": "接続が中断されました",
+  "workflowShare.guestOfflineBannerTitle": "計算サービスがまだ開始されていません",
+  "workflowShare.guestOfflineBannerDesc":
+    "リモート GPU インスタンスがまだ起動していないため、現在ワークフローを実行できません。共有者に起動を依頼してから再度お試しください。",
+  "workflowShare.guestDisconnectedTitle": "共有ホストとの接続が切れました",
+  "workflowShare.guestDisconnectedDesc":
+    "自動的に再接続を試みています。しばらく回復しない場合は、共有者にサービスが稼働しているか確認してください。",
+  "workflowShare.guestNetworkError":
+    "共有サービスに接続できません。ネットワークを確認するか、しばらくしてから再試行してください",
+  "workflowShare.guestStillExpiredToast":
+    "この共有リンクは引き続き無効です。共有者に新しいリンクの発行を依頼してください",
+  "workflowShare.guestBusyOtherBannerTitle": "現在 GPU で別のタスクを実行中です",
+  "workflowShare.guestBusyOtherBannerDesc":
+    "しばらくお待ちください。実行中のタスクが完了次第、生成タスクを送信できます。",
+  "workflowShare.guestExpiredTitle": "このワークフロー共有は無効になりました",
+  "workflowShare.guestExpiredDesc":
+    "この共有リンクは共有者によって取り消されたか有効期限が切れています。共有者に新しいリンクの発行を依頼してください。",
+  "workflowShare.guestRefreshBtn": "状態を再確認",
+  "workflowShare.guestOutputsBtn": "生成履歴",
+  "workflowShare.guestEmptyWorkflows":
+    "この共有で利用できるワークフローはありません",
+  "workflowShare.guestFooter": "ColabOne · ワークフロー共有スタジオ",
+  "workflowShare.guestWorkflowCount": "利用可能なワークフロー {count} 件",
 
   // Live Studio (Real-time Interactive Digital Human)
   "live.sectionAria": "ライブスタジオ",

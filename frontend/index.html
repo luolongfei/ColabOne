@@ -16,7 +16,13 @@
         let storedLocale = "";
         try {
           choice = localStorage.getItem("colabone.appearance") || "system";
-          storedLocale = localStorage.getItem("colabone.locale") || "";
+          const isShareRoute =
+            location.pathname === "/share" ||
+            location.pathname.startsWith("/share/");
+          storedLocale =
+            localStorage.getItem(
+              isShareRoute ? "colabone.share.locale" : "colabone.locale",
+            ) || "";
         } catch {}
         const dark =
           choice === "dark" ||

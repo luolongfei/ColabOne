@@ -228,6 +228,7 @@ class ColabOneTask:
         self.logs = []
         self.log_seq = 0
         self.outputs = []
+        self.skip_auto_release = False
 
     def note(self, message, level="info"):
         with self.lock:
@@ -611,6 +612,7 @@ class ColabOneRuntime:
                 "comfyui_longcat_native",
                 "comfyui_workflow_auto_release",
                 "comfyui_live_studio",
+                "comfyui_share_guard",
             ],
             "comfyui": comfy_status,
             "live_studio": live_status,
@@ -839,7 +841,11 @@ class ColabOneRuntime:
                         done_payload["download"] = transfer_snap
                     t.emit("done", done_payload)
                 should_trigger_auto_release = False
-                if final_state == "completed" and kind == "comfyui_run":
+                if (
+                    final_state == "completed"
+                    and kind == "comfyui_run"
+                    and not getattr(t, "skip_auto_release", False)
+                ):
                     with self.lock:
                         should_trigger_auto_release = bool(
                             self._pending_workflow_auto_release
@@ -2242,6 +2248,7 @@ class ColabOneRuntime:
                         if (
                             existing.state == "running"
                             and existing.kind == "comfyui_run"
+                            and not getattr(existing, "skip_auto_release", False)
                         ):
                             running_tid = existing.id
                             break
@@ -2616,7 +2623,12 @@ class ColabOneRuntime:
             if scrubbed != raw_msg:
                 raise ValueError(scrubbed) from None
             raise
-        want_auto_release = bool(getattr(req, "auto_release_after_sync", False))
+        skip_auto_release = bool(getattr(req, "skip_auto_release", False))
+        want_auto_release = (
+            False
+            if skip_auto_release
+            else bool(getattr(req, "auto_release_after_sync", False))
+        )
         self._refresh_comfy_queue_if_needed()
         with self.lock:
             if self.quiescing or self.stopping.is_set():
@@ -2655,76 +2667,83 @@ class ColabOneRuntime:
                         raise KeyError("工作流不存在")
                 prev_auto_release = copy.deepcopy(self._workflow_auto_release)
                 prev_pending_auto_release = self._pending_workflow_auto_release
-                arm_requested = want_auto_release or bool(
-                    self._workflow_auto_release.get("enabled")
-                )
-                if arm_requested:
-                    if not self.drive.available():
-                        raise ValueError(
-                            "当前实例尚未连接 Google 云盘，请先完成云盘授权与挂载"
-                        )
-                    self._pending_workflow_auto_release = False
-                    self._workflow_auto_release["enabled"] = True
-                    self._workflow_auto_release["state"] = "armed"
-                    self._workflow_auto_release["task_id"] = ""
-                    self._workflow_auto_release["error"] = ""
-                    self._workflow_auto_release["message"] = ""
-                    self._workflow_auto_release["exported"] = []
-                    self._workflow_auto_release["updated_at"] = time.time()
-                elif str(self._workflow_auto_release.get("state") or "") in (
-                    "failed",
-                    "skipped",
-                ):
-                    self._pending_workflow_auto_release = False
-                    self._workflow_auto_release["state"] = "idle"
-                    self._workflow_auto_release["task_id"] = ""
-                    self._workflow_auto_release["error"] = ""
-                    self._workflow_auto_release["message"] = ""
-                    self._workflow_auto_release["exported"] = []
-                    self._workflow_auto_release["updated_at"] = time.time()
+                if not skip_auto_release:
+                    arm_requested = want_auto_release or bool(
+                        self._workflow_auto_release.get("enabled")
+                    )
+                    if arm_requested:
+                        if not self.drive.available():
+                            raise ValueError(
+                                "当前实例尚未连接 Google 云盘，请先完成云盘授权与挂载"
+                            )
+                        self._pending_workflow_auto_release = False
+                        self._workflow_auto_release["enabled"] = True
+                        self._workflow_auto_release["state"] = "armed"
+                        self._workflow_auto_release["task_id"] = ""
+                        self._workflow_auto_release["error"] = ""
+                        self._workflow_auto_release["message"] = ""
+                        self._workflow_auto_release["exported"] = []
+                        self._workflow_auto_release["updated_at"] = time.time()
+                    elif str(self._workflow_auto_release.get("state") or "") in (
+                        "failed",
+                        "skipped",
+                    ):
+                        self._pending_workflow_auto_release = False
+                        self._workflow_auto_release["state"] = "idle"
+                        self._workflow_auto_release["task_id"] = ""
+                        self._workflow_auto_release["error"] = ""
+                        self._workflow_auto_release["message"] = ""
+                        self._workflow_auto_release["exported"] = []
+                        self._workflow_auto_release["updated_at"] = time.time()
                 token_secret = getattr(req, "hf_token", "") or ""
 
                 def _execute(task):
-                    with self.lock:
-                        if (
-                            self._workflow_auto_release.get("enabled")
-                            and self._workflow_auto_release.get("task_id") in ("", task.id)
-                        ):
-                            self._workflow_auto_release["task_id"] = task.id
+                    if skip_auto_release:
+                        with task.lock:
+                            task.skip_auto_release = True
+                    else:
+                        with self.lock:
+                            if (
+                                self._workflow_auto_release.get("enabled")
+                                and self._workflow_auto_release.get("task_id") in ("", task.id)
+                            ):
+                                self._workflow_auto_release["task_id"] = task.id
                     try:
                         self._stop_live_for_exclusive_gpu("comfyui_run", task=task)
                         result = self.comfy.run_workflow(task, req)
                     except ColabOneCancelledError:
-                        with self.lock:
-                            if (
-                                self._workflow_auto_release.get("enabled")
-                                and self._workflow_auto_release.get("task_id")
-                                in ("", task.id)
-                            ):
-                                self._pending_workflow_auto_release = False
-                                self._workflow_auto_release["enabled"] = False
-                                self._workflow_auto_release["state"] = "skipped"
-                                self._workflow_auto_release["error"] = ""
-                                self._workflow_auto_release["message"] = (
-                                    "工作流已取消，已保留当前实例"
-                                )
-                                self._workflow_auto_release["updated_at"] = time.time()
+                        if not skip_auto_release:
+                            with self.lock:
+                                if (
+                                    self._workflow_auto_release.get("enabled")
+                                    and self._workflow_auto_release.get("task_id")
+                                    in ("", task.id)
+                                ):
+                                    self._pending_workflow_auto_release = False
+                                    self._workflow_auto_release["enabled"] = False
+                                    self._workflow_auto_release["state"] = "skipped"
+                                    self._workflow_auto_release["error"] = ""
+                                    self._workflow_auto_release["message"] = (
+                                        "工作流已取消，已保留当前实例"
+                                    )
+                                    self._workflow_auto_release["updated_at"] = time.time()
                         raise
                     except Exception as exc:
-                        with self.lock:
-                            if (
-                                self._workflow_auto_release.get("enabled")
-                                and self._workflow_auto_release.get("task_id")
-                                in ("", task.id)
-                            ):
-                                self._pending_workflow_auto_release = False
-                                self._workflow_auto_release["enabled"] = False
-                                self._workflow_auto_release["state"] = "skipped"
-                                self._workflow_auto_release["error"] = ""
-                                self._workflow_auto_release["message"] = (
-                                    "工作流未成功完成，已保留当前实例"
-                                )
-                                self._workflow_auto_release["updated_at"] = time.time()
+                        if not skip_auto_release:
+                            with self.lock:
+                                if (
+                                    self._workflow_auto_release.get("enabled")
+                                    and self._workflow_auto_release.get("task_id")
+                                    in ("", task.id)
+                                ):
+                                    self._pending_workflow_auto_release = False
+                                    self._workflow_auto_release["enabled"] = False
+                                    self._workflow_auto_release["state"] = "skipped"
+                                    self._workflow_auto_release["error"] = ""
+                                    self._workflow_auto_release["message"] = (
+                                        "工作流未成功完成，已保留当前实例"
+                                    )
+                                    self._workflow_auto_release["updated_at"] = time.time()
                         raw_msg = str(exc) or type(exc).__name__
                         scrubbed = _scrub_secret_text(
                             raw_msg, raw_token_secret, token_secret
@@ -2733,7 +2752,8 @@ class ColabOneRuntime:
                             raise RuntimeError(scrubbed) from None
                         raise
                     task.check()
-                    self._finalize_comfyui_workflow_auto_release(task)
+                    if not skip_auto_release:
+                        self._finalize_comfyui_workflow_auto_release(task)
                     return result
 
                 try:
@@ -2743,12 +2763,18 @@ class ColabOneRuntime:
                         _execute,
                     )
                 except Exception:
-                    with self.lock:
-                        self._workflow_auto_release = prev_auto_release
-                        self._pending_workflow_auto_release = prev_pending_auto_release
+                    if not skip_auto_release:
+                        with self.lock:
+                            self._workflow_auto_release = prev_auto_release
+                            self._pending_workflow_auto_release = prev_pending_auto_release
                     raise
                 with self.lock:
-                    if (
+                    if skip_auto_release:
+                        submitted_task = self.tasks.get(snap["id"])
+                        if submitted_task is not None:
+                            with submitted_task.lock:
+                                submitted_task.skip_auto_release = True
+                    elif (
                         self._workflow_auto_release.get("enabled")
                         and not self._workflow_auto_release.get("task_id")
                     ):

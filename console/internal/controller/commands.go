@@ -16,12 +16,31 @@ import (
 )
 
 const (
-	colabOneTtsPreviewUpgradeHint    = "当前远端服务版本暂不支持 TTS 音色试听，请先点击顶部「立即热更新」升级远端服务后再试"
+	colabOneTtsPreviewUpgradeHint   = "当前远端服务版本暂不支持 TTS 音色试听，请先点击顶部「立即热更新」升级远端服务后再试"
 	colabOneLongCatNativeUpgradeHint = "当前远端实例服务版本较旧，暂不支持原生 LongCat-Video-Avatar 1.6 管线，请先点击「热更新服务」或重新启动 GPU 实例"
-	colabOneTtsPreviewChunkBytes     = 512 * 1024
-	colabOneMaxTtsPreviewBytes       = 16 * 1024 * 1024
-	colabOneMaxTtsPreviewChunks      = 256
+	colabOneTtsPreviewChunkBytes    = 512 * 1024
+	colabOneMaxTtsPreviewBytes      = 16 * 1024 * 1024
+	colabOneMaxTtsPreviewChunks     = 256
 )
+
+func (c *ColabOneController) hasExportedDriveOutput(identity string) bool {
+	cleanID := strings.ToLower(strings.TrimSpace(identity))
+	if !reHex32ID.MatchString(cleanID) {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	acctKey := c.currentDriveAccountKeyLocked()
+	if acctKey == "" || c.driveOutputs == nil {
+		return false
+	}
+	bucket := c.driveOutputs[acctKey]
+	if bucket == nil {
+		return false
+	}
+	rec := bucket[cleanID]
+	return rec != nil && (sanitizeDriveFileID(rec.DriveFileID) != "" || rec.DriveExported)
+}
 
 func (c *ColabOneController) builtinTemplateVideoBackend(workflowID string) string {
 	if workflowID == "" {
@@ -744,6 +763,13 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		} else {
 			delete(req, "auto_release_after_sync")
 		}
+		if asBool(req["skip_auto_release"]) {
+			if !c.hasRemoteCapability("comfyui_share_guard") {
+				delete(req, "skip_auto_release")
+			}
+		} else {
+			delete(req, "skip_auto_release")
+		}
 		wfID := asString(req["workflow_id"])
 		if c.builtinTemplateVideoBackend(wfID) == "longcat_avatar_native" && c.readyRemoteLacksCapability("comfyui_longcat_native") {
 			return nil, errors.New(colabOneLongCatNativeUpgradeHint)
@@ -843,6 +869,8 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		if reqCopy == nil {
 			reqCopy = map[string]any{}
 		}
+		skipLocalCache := asBool(reqCopy["skip_local_cache"])
+		delete(reqCopy, "skip_local_cache")
 		explicitTok := ""
 		if rawTok, hasTok := reqCopy["hf_token"]; hasTok {
 			if rawTok == nil {
@@ -899,13 +927,21 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		}
 		resMap := asMap(res)
 		if asBool(resMap["cached"]) {
-			if rawB64 := asString(resMap["data"]); rawB64 != "" {
-				if decoded, decErr := base64.StdEncoding.DecodeString(rawB64); decErr == nil && len(decoded) > 0 {
-					c.saveLocalTtsPreview(req, resMap, decoded)
+			if !skipLocalCache {
+				if rawB64 := asString(resMap["data"]); rawB64 != "" {
+					if decoded, decErr := base64.StdEncoding.DecodeString(rawB64); decErr == nil && len(decoded) > 0 {
+						c.saveLocalTtsPreview(req, resMap, decoded)
+					}
+				} else {
+					// Metadata-only cached hit (>512 KiB): remember req context so the subsequent
+					// comfyui.tts.preview.asset fetch knows whether ref_audio/emotion_ref was used.
+					c.rememberPendingTtsPreviewReq(asString(resMap["preview_id"]), req)
 				}
 			}
 		} else {
-			c.rememberPendingTtsPreviewReq(asString(resMap["preview_id"]), req)
+			if !skipLocalCache {
+				c.rememberPendingTtsPreviewReq(asString(resMap["preview_id"]), req)
+			}
 			if err := c.RefreshRemote(ctx, ""); err != nil {
 				c.log("远端已受理 TTS 音色试听任务，但刷新状态失败（将自动重试）："+errTypeName(err), "ComfyUI", "warning")
 				return res, nil
@@ -1207,8 +1243,10 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 				out[k] = val
 			}
 		}
-		pendingReq := c.consumePendingTtsPreviewReq(previewID)
-		c.saveLocalTtsPreview(pendingReq, out, buf.Bytes())
+		if !asBool(payload["skip_local_cache"]) {
+			pendingReq := c.consumePendingTtsPreviewReq(previewID)
+			c.saveLocalTtsPreview(pendingReq, out, buf.Bytes())
+		}
 		out["data"] = base64.StdEncoding.EncodeToString(buf.Bytes())
 		out["size"] = buf.Len()
 		return out, nil
@@ -1280,7 +1318,26 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		c.mu.Lock()
 		gpuReady := asString(asMap(c.data["runtime"])["state"]) == "ready"
 		c.mu.Unlock()
+		runtimeOnly := asBool(payload["runtime_only"])
 		if action == "comfyui.output.delete" {
+			if runtimeOnly {
+				if !gpuReady {
+					return nil, errors.New("当前算力服务暂未就绪，暂不可访问该作品文件")
+				}
+				c.log("正在删除远端 ComfyUI 作品文件", "ComfyUI", "info")
+				res, err := c.remote(ctx, "DELETE", "comfyui/outputs/"+identity, nil, "", 0)
+				if err != nil {
+					return nil, err
+				}
+				if !c.hasExportedDriveOutput(identity) {
+					c.removeDriveOutputRecord(identity)
+				}
+				if err := c.RefreshRemote(ctx, ""); err != nil {
+					return nil, err
+				}
+				c.log("已删除远端 ComfyUI 作品文件", "ComfyUI", "info")
+				return res, nil
+			}
 			if gpuReady && (c.hasLiveRemoteOutput(identity) || !c.hasDriveOutputRecord(identity)) {
 				c.log("正在删除远端 ComfyUI 作品文件", "ComfyUI", "info")
 				res, err := c.remote(ctx, "DELETE", "comfyui/outputs/"+identity, nil, "", 0)
@@ -1318,6 +1375,12 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		}
 		if offset < 0 || offset > colabOneMaxOutputAssetOffset {
 			return nil, errors.New("读取范围不合法")
+		}
+		if runtimeOnly {
+			if !gpuReady {
+				return nil, errors.New("当前算力服务暂未就绪，暂不可访问该作品文件")
+			}
+			return c.remote(ctx, "GET", fmt.Sprintf("comfyui/outputs/%s/asset?offset=%d", identity, offset), nil, "", 0)
 		}
 		if gpuReady && (c.hasLiveRemoteOutput(identity) || !c.hasDriveOutputRecord(identity)) {
 			res, err := c.remote(ctx, "GET", fmt.Sprintf("comfyui/outputs/%s/asset?offset=%d", identity, offset), nil, "", 0)

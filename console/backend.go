@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -53,9 +55,10 @@ type colabOneBridge struct {
 	vault          *vault.ColabOneVault
 	factory        func() *controller.ColabOneController
 	closeCtrl      func(*controller.ColabOneController)
-	resolveMediaFn func(context.Context, string) (*controller.ColabOneOutputMediaMeta, error)
-	serveMediaFn   func(context.Context, http.ResponseWriter, *http.Request, string)
-	onFocusWindow  func()
+	resolveMediaFn       func(context.Context, string) (*controller.ColabOneOutputMediaMeta, error)
+	serveMediaFn         func(context.Context, http.ResponseWriter, *http.Request, string)
+	serveMediaWithOptsFn func(context.Context, http.ResponseWriter, *http.Request, string, controller.ColabOneOutputMediaOptions)
+	onFocusWindow        func()
 	starting      bool
 	startDone     chan struct{}
 	closedCh      chan struct{}
@@ -335,28 +338,64 @@ func (b *colabOneBridge) resolveOutputMedia(
 	return meta, nil
 }
 
+func writeColabOneMediaError(rw http.ResponseWriter, r *http.Request, status int, msg string) {
+	safe := activity.SafeMessage(strings.TrimSpace(msg))
+	if safe == "" {
+		safe = http.StatusText(status)
+	}
+	h := rw.Header()
+	h.Set("Content-Type", "application/json; charset=utf-8")
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Cache-Control", "no-store")
+	h.Set("Referrer-Policy", "no-referrer")
+	h.Set("X-ColabOne-Error", url.QueryEscape(safe))
+	rw.WriteHeader(status)
+	if r == nil || r.Method != http.MethodHead {
+		_ = json.NewEncoder(rw).Encode(map[string]string{"error": safe})
+	}
+}
+
 func (b *colabOneBridge) serveOutputMedia(
 	ctx context.Context,
 	rw http.ResponseWriter,
 	r *http.Request,
 	id string,
 ) {
+	b.serveOutputMediaWithOptions(ctx, rw, r, id, controller.ColabOneOutputMediaOptions{})
+}
+
+func (b *colabOneBridge) serveOutputMediaWithOptions(
+	ctx context.Context,
+	rw http.ResponseWriter,
+	r *http.Request,
+	id string,
+	opts controller.ColabOneOutputMediaOptions,
+) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	b.mu.Lock()
+	fnWithOpts := b.serveMediaWithOptsFn
 	fn := b.serveMediaFn
 	b.mu.Unlock()
-	if fn != nil {
+	if fnWithOpts != nil {
+		fnWithOpts(ctx, rw, r, id, opts)
+		return
+	}
+	if fn != nil && !opts.RuntimeOnly {
 		fn(ctx, rw, r, id)
 		return
 	}
 	ctrl, err := b.ensureController(ctx)
 	if err != nil {
-		http.Error(rw, err.Error(), http.StatusServiceUnavailable)
+		msg := err.Error()
+		if opts.RuntimeOnly {
+			msg = "当前无法访问该作品文件，请稍后再试"
+		}
+		writeColabOneMediaError(rw, r, http.StatusServiceUnavailable, msg)
 		return
 	}
-	ctrl.ServeOutputMediaHTTP(ctx, rw, r, id)
+	ctrl.ServeOutputMediaHTTPWithOptions(ctx, rw, r, id, opts)
 }
 
 func (b *colabOneBridge) close() {

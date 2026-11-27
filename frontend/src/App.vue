@@ -52,6 +52,7 @@ import ColabOneToastHost from "./ColabOneToastHost.vue";
 import ColabOneTooltip from "./ColabOneTooltip.vue";
 import ColabOneUpdateModal from "./ColabOneUpdateModal.vue";
 import ColabOneWebConsoleCard from "./ColabOneWebConsoleCard.vue";
+import ColabOneWorkflowShareModal from "./ColabOneWorkflowShareModal.vue";
 import {
   buildColabOnePrivacyContext,
   colabOnePrivacyActive,
@@ -152,11 +153,14 @@ import {
   colabOneCheckForUpdate,
   colabOneCommand,
   colabOneCreateWebConsoleLoginTicket,
+  colabOneCreateWorkflowShare,
+  colabOneDeleteWorkflowShare,
   colabOneGetCloseBehavior,
   colabOneGetLogDrawerState,
   colabOneGetUpdateState,
   colabOneGetWebConsolePasscode,
   colabOneGetWebConsoleState,
+  colabOneGetWorkflowSharesState,
   colabOneListRollbackVersions,
   colabOneOnCloseBehavior,
   colabOneOnCloseRequest,
@@ -168,12 +172,14 @@ import {
   colabOneGetMigrationExportSummary,
   colabOneOnUpdateState,
   colabOneOnWebConsoleState,
+  colabOneOnWorkflowSharesState,
   colabOneOpenURL,
   colabOnePickMigrationFile,
   colabOneReadClipboard,
   colabOneRelaunchForUpdate,
   colabOneResolveCloseRequest,
   colabOneRevokeWebConsoleSessions,
+  colabOneRevokeWorkflowShare,
   colabOneRuntimeCapabilities,
   colabOneSetCloseBehavior,
   colabOneSetLogDrawer,
@@ -189,10 +195,12 @@ import {
   colabOneWebSessionExpired,
   colabOneWriteClipboard,
   createColabOneDefaultWebConsoleState,
+  createColabOneDefaultWorkflowShareListState,
   fetchColabOneWebCapabilities,
   isColabOneDesktopRuntime,
   normalizeColabOneCloseAction,
   normalizeColabOneCloseBehavior,
+  normalizeColabOneWorkflowShareListState,
   validateColabOneWebExternalURL,
   type ColabOneCloseAction,
   type ColabOneCloseBehaviorState,
@@ -203,6 +211,9 @@ import {
   type ColabOneUpdateState,
   type ColabOneWebConsoleState,
   type ColabOneWebConsoleUpdateRequest,
+  type ColabOneWorkflowShareCreateRequest,
+  type ColabOneWorkflowShareListState,
+  type ColabOneWorkflowShareSummary,
 } from "./api";
 import {
   applyColabOneMigrationUIPrefs,
@@ -951,6 +962,8 @@ function selectPage(nextPage: string) {
   page.value = nextPage;
 }
 
+let suppressNextPageScrollTop = false;
+
 watch(page, (next) => {
   if (next !== "api") modelsDrawerOpen.value = false;
   if (next !== "comfyui") resetComfyDrawerState();
@@ -959,6 +972,10 @@ watch(page, (next) => {
 watch(
   page,
   () => {
+    if (suppressNextPageScrollTop) {
+      suppressNextPageScrollTop = false;
+      return;
+    }
     scrollWorkspaceToTop();
   },
   { flush: "post" },
@@ -3787,17 +3804,209 @@ async function handleMigrationApply(payload: {
 
 const capabilities = colabOneRuntimeCapabilities;
 const isWebMode = computed(() => capabilities.value.runtime === "web");
+const webConsoleCardRef = ref<{
+  expandAndFocusPublicOrigin: () => Promise<void> | void;
+} | null>(null);
 const webConsoleLoaded = ref(false);
 const webConsoleSaving = ref(false);
 const webConsolePasscodeBusy = ref(false);
 const webConsolePasscodeResetSeq = ref(0);
 const webConsoleTicketBusy = ref(false);
 const webConsoleRevoking = ref(false);
+let webConsoleStateEpoch = 0;
 let unsubWebConsole: (() => void) | null = null;
 
-function applyWebConsoleState(next: ColabOneWebConsoleState) {
+const workflowSharesState = ref<ColabOneWorkflowShareListState>(
+  createColabOneDefaultWorkflowShareListState(),
+);
+const workflowSharesLoaded = ref(false);
+const workflowShareModalOpen = ref(false);
+const workflowShareCreating = ref(false);
+const workflowShareRevokingId = ref("");
+const workflowShareDeletingId = ref("");
+const workflowShareLastCreated = ref<ColabOneWorkflowShareSummary | null>(null);
+const workflowShareLastCreatedCopied = ref(false);
+const workflowShareMutating = computed(
+  () =>
+    workflowShareCreating.value ||
+    Boolean(workflowShareRevokingId.value) ||
+    Boolean(workflowShareDeletingId.value),
+);
+let workflowSharesStateEpoch = 0;
+let unsubWorkflowShares: (() => void) | null = null;
+
+watch(
+  () => capabilities.value.can_manage_web_console,
+  (allowed) => {
+    if (!allowed) {
+      workflowShareModalOpen.value = false;
+    }
+  },
+);
+
+function applyWorkflowSharesState(
+  next: ColabOneWorkflowShareListState,
+  expectedEpoch?: number,
+): boolean {
+  if (
+    expectedEpoch !== undefined &&
+    expectedEpoch !== workflowSharesStateEpoch
+  ) {
+    return false;
+  }
+  workflowSharesStateEpoch += 1;
+  workflowSharesState.value = next;
+  workflowSharesLoaded.value = true;
+  return true;
+}
+
+function openWorkflowShareModal() {
+  if (!capabilities.value.can_manage_web_console) return;
+  workflowShareLastCreated.value = null;
+  workflowShareLastCreatedCopied.value = false;
+  workflowShareModalOpen.value = true;
+  if (isColabOneDesktopRuntime()) {
+    const wcEpoch = webConsoleStateEpoch;
+    void colabOneGetWebConsoleState()
+      .then((st) => {
+        if (!stopped) applyWebConsoleState(st, wcEpoch);
+      })
+      .catch(() => {});
+    const wsEpoch = workflowSharesStateEpoch;
+    void colabOneGetWorkflowSharesState()
+      .then((st) => {
+        if (!stopped) applyWorkflowSharesState(st, wsEpoch);
+      })
+      .catch(() => {
+        if (!stopped) workflowSharesLoaded.value = true;
+      });
+  }
+}
+
+async function handleWorkflowShareCreate(req: ColabOneWorkflowShareCreateRequest) {
+  if (workflowShareMutating.value) return;
+  workflowShareCreating.value = true;
+  const preCreateEpoch = workflowSharesStateEpoch;
+  try {
+    const created = await colabOneCreateWorkflowShare(req);
+    if (!stopped && workflowSharesStateEpoch === preCreateEpoch) {
+      const merged = normalizeColabOneWorkflowShareListState({
+        shares: [
+          created,
+          ...workflowSharesState.value.shares.filter(
+            (item) => item.id !== created.id,
+          ),
+        ],
+      });
+      applyWorkflowSharesState(merged, preCreateEpoch);
+    }
+    const targetUrl = created.url || created.local_url || "";
+    let copied = false;
+    if (targetUrl) {
+      try {
+        await colabOneWriteClipboard(targetUrl);
+        await navigator.clipboard?.writeText(targetUrl).catch(() => {});
+        copied = true;
+      } catch {
+        try {
+          await navigator.clipboard.writeText(targetUrl);
+          copied = true;
+        } catch {
+          copied = false;
+        }
+      }
+    }
+    workflowShareLastCreatedCopied.value = copied;
+    workflowShareLastCreated.value = created;
+    if (targetUrl) {
+      notify(
+        copied
+          ? t("workflowShare.toastCreatedCopied")
+          : t("workflowShare.toastCreatedOnly"),
+        "success",
+        "workflow-share-create",
+      );
+    } else {
+      notify(
+        t("workflowShare.toastCreatedOnly"),
+        "success",
+        "workflow-share-create",
+      );
+    }
+  } catch (e) {
+    showError(e);
+  } finally {
+    workflowShareCreating.value = false;
+  }
+}
+
+async function handleWorkflowShareRevoke(shareID: string) {
+  if (workflowShareMutating.value) return;
+  workflowShareRevokingId.value = shareID;
+  try {
+    const next = await colabOneRevokeWorkflowShare(shareID);
+    applyWorkflowSharesState(next);
+    if (workflowShareLastCreated.value?.id === shareID) {
+      workflowShareLastCreated.value = null;
+      workflowShareLastCreatedCopied.value = false;
+    }
+    notify(t("workflowShare.toastRevoked"), "info", "workflow-share-revoke");
+  } catch (e) {
+    showError(e);
+  } finally {
+    workflowShareRevokingId.value = "";
+  }
+}
+
+async function handleWorkflowShareDelete(shareID: string) {
+  if (workflowShareMutating.value) return;
+  workflowShareDeletingId.value = shareID;
+  try {
+    const next = await colabOneDeleteWorkflowShare(shareID);
+    applyWorkflowSharesState(next);
+    if (workflowShareLastCreated.value?.id === shareID) {
+      workflowShareLastCreated.value = null;
+      workflowShareLastCreatedCopied.value = false;
+    }
+    notify(t("workflowShare.toastDeleted"), "info", "workflow-share-delete");
+  } catch (e) {
+    showError(e);
+  } finally {
+    workflowShareDeletingId.value = "";
+  }
+}
+
+async function handleWorkflowShareCopyLink(url: string) {
+  if (!url) return;
+  await copyWithToast(url, t("workflowShare.toastLinkCopied"), "workflow-share-copy");
+}
+
+function handleWorkflowShareEnableWebConsole() {
+  void handleWebConsoleToggle({ enabled: true });
+}
+
+async function handleWorkflowShareOpenSettings() {
+  workflowShareModalOpen.value = false;
+  scrollController.cancel();
+  if (page.value !== "settings") {
+    suppressNextPageScrollTop = true;
+    page.value = "settings";
+  }
+  await nextTick();
+  await webConsoleCardRef.value?.expandAndFocusPublicOrigin();
+}
+
+function applyWebConsoleState(
+  next: ColabOneWebConsoleState,
+  expectedEpoch?: number,
+): boolean {
+  if (expectedEpoch !== undefined && expectedEpoch !== webConsoleStateEpoch) {
+    return false;
+  }
+  webConsoleStateEpoch += 1;
   webConsoleState.value = next;
   webConsoleLoaded.value = true;
+  return true;
 }
 
 async function copyWithToast(text: string, message: string, group?: string) {
@@ -3838,9 +4047,10 @@ async function handleWebConsoleToggle(req: ColabOneWebConsoleUpdateRequest) {
     }
   } catch (e) {
     showError(e);
+    const wcEpoch = webConsoleStateEpoch;
     void colabOneGetWebConsoleState()
       .then((st) => {
-        if (!stopped) applyWebConsoleState(st);
+        if (!stopped) applyWebConsoleState(st, wcEpoch);
       })
       .catch(() => {});
   } finally {
@@ -3857,9 +4067,10 @@ async function handleWebConsoleSaveConfig(req: ColabOneWebConsoleUpdateRequest) 
     notify(t("webConsole.toastConfigSaved"), "success", "web-console-config");
   } catch (e) {
     showError(e);
+    const wcEpoch = webConsoleStateEpoch;
     void colabOneGetWebConsoleState()
       .then((st) => {
-        if (!stopped) applyWebConsoleState(st);
+        if (!stopped) applyWebConsoleState(st, wcEpoch);
       })
       .catch(() => {});
   } finally {
@@ -4043,15 +4254,28 @@ onMounted(() => {
     unsubWebConsole = colabOneOnWebConsoleState((st) => {
       if (!stopped) applyWebConsoleState(st);
     });
+    const initialWcEpoch = webConsoleStateEpoch;
     void colabOneGetWebConsoleState()
       .then((st) => {
-        if (!stopped) applyWebConsoleState(st);
+        if (!stopped) applyWebConsoleState(st, initialWcEpoch);
       })
       .catch(() => {
         if (!stopped) webConsoleLoaded.value = true;
       });
+    unsubWorkflowShares = colabOneOnWorkflowSharesState((st) => {
+      if (!stopped) applyWorkflowSharesState(st);
+    });
+    const initialWsEpoch = workflowSharesStateEpoch;
+    void colabOneGetWorkflowSharesState()
+      .then((st) => {
+        if (!stopped) applyWorkflowSharesState(st, initialWsEpoch);
+      })
+      .catch(() => {
+        if (!stopped) workflowSharesLoaded.value = true;
+      });
   } else {
     webConsoleLoaded.value = true;
+    workflowSharesLoaded.value = true;
     window.addEventListener(
       COLABONE_WEB_AUTH_REQUIRED_EVENT,
       handleWebAuthRequired,
@@ -4104,6 +4328,8 @@ onUnmounted(() => {
   unsubCloseBehavior = null;
   unsubWebConsole?.();
   unsubWebConsole = null;
+  unsubWorkflowShares?.();
+  unsubWorkflowShares = null;
   window.removeEventListener(
     COLABONE_WEB_AUTH_REQUIRED_EVENT,
     handleWebAuthRequired,
@@ -5665,6 +5891,8 @@ onUnmounted(() => {
               :loading="!snapshotLoaded"
               :clock-now="clockNow"
               :snapshot-at="snapshotAt"
+              :can-share-workflows="capabilities.can_manage_web_console"
+              :active-share-count="workflowSharesState.active_count"
               @device="openDevice"
               @settings="selectPage('settings')"
               @upgrade="requestRuntimeUpgrade"
@@ -5673,6 +5901,7 @@ onUnmounted(() => {
               @clear-error="clearActionErrors"
               @error="showError"
               @drawer-state="onComfyDrawerState"
+              @open-share-modal="openWorkflowShareModal"
             />
           </main>
 
@@ -6608,6 +6837,7 @@ onUnmounted(() => {
                   </h2>
                   <div class="co-settings-list">
                     <ColabOneWebConsoleCard
+                      ref="webConsoleCardRef"
                       :state="webConsoleState"
                       :loading="!webConsoleLoaded"
                       :saving="webConsoleSaving"
@@ -6615,6 +6845,7 @@ onUnmounted(() => {
                       :passcode-reset-seq="webConsolePasscodeResetSeq"
                       :ticket-busy="webConsoleTicketBusy"
                       :revoking="webConsoleRevoking"
+                      :workflow-share-active-count="workflowSharesState.active_count"
                       :load-saved-passcode="loadSavedWebConsolePasscode"
                       @toggle="handleWebConsoleToggle"
                       @save-config="handleWebConsoleSaveConfig"
@@ -6622,6 +6853,7 @@ onUnmounted(() => {
                       @copy-passcode="handleWebConsoleCopyPasscode"
                       @create-ticket="handleWebConsoleCreateTicket"
                       @revoke-sessions="handleWebConsoleRevokeSessions"
+                      @open-workflow-shares="openWorkflowShareModal"
                       @copy-text="handleWebConsoleCopyText"
                       @open-url="openExternalURL"
                       @error="showError"
@@ -7523,6 +7755,30 @@ onUnmounted(() => {
         @repick="openMigrationImport"
         @decrypt="handleMigrationDecrypt"
         @apply="handleMigrationApply"
+      />
+
+      <!-- Modal: Workflow Web Share (Create & Manage) -->
+      <ColabOneWorkflowShareModal
+        v-if="capabilities.can_manage_web_console"
+        :open="workflowShareModalOpen"
+        :workflows="state.workflows || []"
+        :web-console-state="webConsoleState"
+        :shares-state="workflowSharesState"
+        :loading="!workflowSharesLoaded"
+        :creating="workflowShareCreating"
+        :mutating="workflowShareMutating"
+        :enabling-web-console="webConsoleSaving"
+        :revoking-id="workflowShareRevokingId"
+        :deleting-id="workflowShareDeletingId"
+        :last-created-share="workflowShareLastCreated"
+        :last-created-copied="workflowShareLastCreatedCopied"
+        @update:open="workflowShareModalOpen = $event"
+        @create="handleWorkflowShareCreate"
+        @revoke="handleWorkflowShareRevoke"
+        @delete="handleWorkflowShareDelete"
+        @copy-link="handleWorkflowShareCopyLink"
+        @enable-web-console="handleWorkflowShareEnableWebConsole"
+        @open-web-console-settings="handleWorkflowShareOpenSettings"
       />
     </ALayout>
   </AConfigProvider>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import {
   Alert as AAlert,
   Button as AButton,
@@ -19,6 +19,7 @@ import {
   PhGlobe,
   PhKey,
   PhLinkSimple,
+  PhShareNetwork,
   PhSignOut,
   PhWifiHigh,
 } from "@phosphor-icons/vue";
@@ -55,6 +56,7 @@ const props = defineProps<{
   passcodeResetSeq?: number;
   ticketBusy: boolean;
   revoking: boolean;
+  workflowShareActiveCount?: number;
   loadSavedPasscode: () => Promise<string>;
 }>();
 
@@ -65,6 +67,7 @@ const emit = defineEmits<{
   copyPasscode: [];
   createTicket: [singleUse: boolean];
   revokeSessions: [];
+  openWorkflowShares: [];
   copyText: [text: string, labelKey: string];
   openUrl: [url: string];
   error: [err: unknown];
@@ -295,6 +298,30 @@ function copyQuickCommand() {
     "webConsole.toastQuickCmdCopied",
   );
 }
+
+async function expandAndFocusPublicOrigin() {
+  expanded.value = true;
+  await nextTick();
+  if (typeof document === "undefined") return;
+  const prefersReducedMotion =
+    typeof window !== "undefined" &&
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  const sectionHeading = document.getElementById("settings-sec-web-console");
+  sectionHeading?.scrollIntoView({
+    behavior: prefersReducedMotion ? "auto" : "smooth",
+    block: "start",
+  });
+  const inputEl = document.getElementById(
+    "settings-web-console-public-origin",
+  ) as HTMLInputElement | null;
+  if (inputEl && typeof inputEl.focus === "function") {
+    inputEl.focus({ preventScroll: true });
+  }
+}
+
+defineExpose({
+  expandAndFocusPublicOrigin,
+});
 </script>
 
 <template>
@@ -339,6 +366,17 @@ function copyQuickCommand() {
               {{
                 t("webConsole.sessionsTag", {
                   count: props.state.active_sessions,
+                })
+              }}
+            </ATag>
+            <ATag
+              v-if="(props.workflowShareActiveCount || 0) > 0"
+              color="purple"
+              :bordered="false"
+            >
+              {{
+                t("webConsole.workflowShareActiveTag", {
+                  count: props.workflowShareActiveCount || 0,
                 })
               }}
             </ATag>
@@ -683,6 +721,43 @@ function copyQuickCommand() {
               <PhArrowsClockwise :size="13" />
             </template>
             {{ t("webConsole.rotatePasscodeBtn") }}
+          </AButton>
+        </div>
+      </div>
+
+      <!-- Workflow Share Management Entry -->
+      <div class="co-webconsole-section co-webconsole-share-section">
+        <div class="co-webconsole-share-row">
+          <div class="co-webconsole-share-info">
+            <div class="co-webconsole-share-title-line">
+              <span class="co-webconsole-field-label">
+                {{ t("webConsole.workflowShareSectionTitle") }}
+              </span>
+              <ATag
+                v-if="(props.workflowShareActiveCount || 0) > 0"
+                color="purple"
+                :bordered="false"
+              >
+                {{
+                  t("webConsole.workflowShareActiveTag", {
+                    count: props.workflowShareActiveCount || 0,
+                  })
+                }}
+              </ATag>
+            </div>
+            <p class="co-webconsole-hint">
+              {{ t("webConsole.workflowShareSectionDesc") }}
+            </p>
+          </div>
+          <AButton
+            size="small"
+            data-testid="settings-web-console-workflow-shares-btn"
+            @click="emit('openWorkflowShares')"
+          >
+            <template #icon>
+              <PhShareNetwork :size="14" />
+            </template>
+            {{ t("webConsole.workflowShareManageBtn") }}
           </AButton>
         </div>
       </div>
@@ -1061,6 +1136,29 @@ function copyQuickCommand() {
 .co-webconsole-dash-link {
   padding-left: 0;
   padding-right: 0;
+}
+
+.co-webconsole-share-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.co-webconsole-share-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1 1 220px;
+}
+
+.co-webconsole-share-title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 @media (max-width: 720px) {

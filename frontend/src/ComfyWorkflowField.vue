@@ -72,6 +72,7 @@ const props = defineProps<{
   voicePreviewPrefetchActive?: boolean;
   voicePreviewPrefetchDone?: number;
   voicePreviewPrefetchTotal?: number;
+  shareMode?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -259,7 +260,11 @@ const formattedVoicePreviewError = computed(() => {
 
 const voicePreviewHint = computed(() => {
   if (!props.voicePreviewRemoteReady) {
-    return t("comfy.voicePreviewHintOffline");
+    return t(
+      props.shareMode
+        ? "comfy.voicePreviewHintOfflineShare"
+        : "comfy.voicePreviewHintOffline",
+    );
   }
   if (isCustomVoiceSelected.value) {
     return t("comfy.voicePreviewHintCustom");

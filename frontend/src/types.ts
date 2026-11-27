@@ -283,6 +283,9 @@ export interface WorkflowOutput {
   drive_web_view_link?: string;
   drive_previewable?: boolean;
   drive_mode?: string;
+  share_id?: string;
+  share_label?: string;
+  task_id?: string;
 }
 export interface ColabOneDriveOutputsStatus {
   syncing: boolean;
@@ -606,6 +609,7 @@ export interface RuntimeStatus {
   live_studio?: ColabOneLiveStudioStatus;
   active_engine?: "llama" | "comfyui" | "live_studio" | "llama+live_studio" | null;
   drive?: DriveStatus;
+  drive_export_ready?: boolean;
   location?: InstanceLocation | null;
   id?: string;
   state: string;
@@ -762,8 +766,17 @@ export interface ColabOneOperation {
   allocated?: boolean;
   gpu?: string;
 }
+export interface ColabOneWorkflowShareSnapshotMeta {
+  id: string;
+  title: string;
+  allowed_workflow_ids: string[];
+  workflow_entry_ids?: string[];
+  busy_other?: boolean;
+  drive_export_ready?: boolean;
+}
 export interface ColabOneSnapshot {
   active_endpoint?: string;
+  share?: ColabOneWorkflowShareSnapshotMeta;
   monitor?: MonitorSnapshot;
   api_settings?: {
     mode: "named";

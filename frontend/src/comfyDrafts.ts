@@ -1,6 +1,10 @@
 import { colabOneCommand } from "./api";
 import { colabOneWebBackendReady } from "./colabOneWebConsole";
 import {
+  colabOneWorkflowShareId,
+  isColabOneWorkflowShareActive,
+} from "./colabOneWorkflowShare";
+import {
   COLABONE_VOICE_PRESET_ID_RE,
   clampColabOneNumericFieldValue,
   defaultFieldValues,
@@ -227,14 +231,39 @@ function normalizeDraft(
   };
 }
 
+function resolveLocalDraftStorageKey(
+  shareMode = isColabOneWorkflowShareActive(),
+): string | null {
+  if (shareMode) {
+    const shareId = (colabOneWorkflowShareId.value || "").trim();
+    if (!shareId) {
+      return null;
+    }
+    return `${COLABONE_STORAGE_KEYS.workflowShareDraftsPrefix}${shareId}`;
+  }
+  return COLABONE_STORAGE_KEYS.comfyDrafts;
+}
+
+function captureDraftContext(): {
+  shareMode: boolean;
+  storageKey: string | null;
+} {
+  const shareMode = isColabOneWorkflowShareActive();
+  return {
+    shareMode,
+    storageKey: resolveLocalDraftStorageKey(shareMode),
+  };
+}
+
 function readLocalDraftMap(
   storage: Storage | null,
+  storageKey: string | null = resolveLocalDraftStorageKey(),
 ): Record<string, StoredLocalDraftRecord> {
-  if (!storage) {
+  if (!storage || !storageKey) {
     return {};
   }
   try {
-    const raw = storage.getItem(COLABONE_STORAGE_KEYS.comfyDrafts);
+    const raw = storage.getItem(storageKey);
     if (!raw) {
       return {};
     }
@@ -269,16 +298,17 @@ function readLocalDraftMap(
 function writeLocalDraftMap(
   storage: Storage | null,
   map: Record<string, StoredLocalDraftRecord>,
+  storageKey: string | null = resolveLocalDraftStorageKey(),
 ): void {
-  if (!storage) {
+  if (!storage || !storageKey) {
     return;
   }
   try {
     const keys = Object.keys(map);
     if (keys.length === 0) {
-      storage.removeItem(COLABONE_STORAGE_KEYS.comfyDrafts);
+      storage.removeItem(storageKey);
     } else {
-      storage.setItem(COLABONE_STORAGE_KEYS.comfyDrafts, JSON.stringify(map));
+      storage.setItem(storageKey, JSON.stringify(map));
     }
   } catch {
     // Ignore storage quota or restricted storage errors.
@@ -288,8 +318,12 @@ function writeLocalDraftMap(
 function readLocalDraft(
   storage: Storage | null,
   workflowId: string,
+  storageKey: string | null = resolveLocalDraftStorageKey(),
 ): ColabOneWorkflowDraft | null {
-  const map = readLocalDraftMap(storage);
+  if (!storageKey) {
+    return null;
+  }
+  const map = readLocalDraftMap(storage, storageKey);
   if (!hasOwn(map, workflowId)) {
     return null;
   }
@@ -307,6 +341,7 @@ function writeLocalDraft(
   workflowId: string,
   fields: Record<string, string | number | boolean>,
   updatedAt: number,
+  storageKey: string | null = resolveLocalDraftStorageKey(),
 ): ColabOneWorkflowDraft {
   const safeFields = sanitizePrimitiveRecord(fields);
   const draft: ColabOneWorkflowDraft = {
@@ -315,28 +350,32 @@ function writeLocalDraft(
     media: {},
     updated_at: updatedAt,
   };
-  if (storage && !isForbiddenObjectKey(workflowId)) {
-    const map = readLocalDraftMap(storage);
+  if (storage && storageKey && !isForbiddenObjectKey(workflowId)) {
+    const map = readLocalDraftMap(storage, storageKey);
     map[workflowId] = {
       workflow_id: workflowId,
       fields: safeFields,
       updated_at: updatedAt,
     };
-    writeLocalDraftMap(storage, map);
+    writeLocalDraftMap(storage, map, storageKey);
   }
   return draft;
 }
 
-function deleteLocalDraft(storage: Storage | null, workflowId: string): void {
-  if (!storage) {
+function deleteLocalDraft(
+  storage: Storage | null,
+  workflowId: string,
+  storageKey: string | null = resolveLocalDraftStorageKey(),
+): void {
+  if (!storage || !storageKey) {
     return;
   }
-  const map = readLocalDraftMap(storage);
+  const map = readLocalDraftMap(storage, storageKey);
   if (!hasOwn(map, workflowId)) {
     return;
   }
   delete map[workflowId];
-  writeLocalDraftMap(storage, map);
+  writeLocalDraftMap(storage, map, storageKey);
 }
 
 export function colabOneBase64ToBlob(base64: string, mime: string): Blob {
@@ -706,7 +745,14 @@ export function createColabOneWorkflowDraftClient(
     if (!wfId) {
       return null;
     }
+    const { shareMode, storageKey } = captureDraftContext();
     await waitForPendingWrites(wfId);
+    if (shareMode) {
+      if (!storageKey) {
+        return null;
+      }
+      return readLocalDraft(resolveStorage(), wfId, storageKey);
+    }
     try {
       const res = await invoker("comfyui.draft.get", { workflow_id: wfId });
       if (!res || res.draft === null || res.draft === undefined) {
@@ -715,7 +761,7 @@ export function createColabOneWorkflowDraftClient(
       return normalizeDraft(res.draft, wfId);
     } catch (err) {
       if (canFallback(err)) {
-        return readLocalDraft(resolveStorage(), wfId);
+        return readLocalDraft(resolveStorage(), wfId, storageKey);
       }
       throw err;
     }
@@ -729,9 +775,22 @@ export function createColabOneWorkflowDraftClient(
     if (!wfId) {
       return Promise.resolve(null);
     }
+    const { shareMode, storageKey } = captureDraftContext();
     const safeFields = sanitizePrimitiveRecord(fields);
     return enqueueWrite(wfId, async () => {
       const now = Date.now() / 1000;
+      if (shareMode) {
+        if (!storageKey) {
+          return null;
+        }
+        return writeLocalDraft(
+          resolveStorage(),
+          wfId,
+          safeFields,
+          now,
+          storageKey,
+        );
+      }
       try {
         const res = await invoker("comfyui.draft.save", {
           workflow_id: wfId,
@@ -744,7 +803,13 @@ export function createColabOneWorkflowDraftClient(
             media: {},
             updated_at: now,
           };
-        writeLocalDraft(resolveStorage(), wfId, draft.fields, draft.updated_at);
+        writeLocalDraft(
+          resolveStorage(),
+          wfId,
+          draft.fields,
+          draft.updated_at,
+          storageKey,
+        );
         return draft;
       } catch (err) {
         if (canFallback(err)) {
@@ -753,6 +818,7 @@ export function createColabOneWorkflowDraftClient(
             wfId,
             safeFields,
             now,
+            storageKey,
           );
         }
         throw err;
@@ -770,6 +836,7 @@ export function createColabOneWorkflowDraftClient(
     if (!wfId || !key) {
       return Promise.resolve(null);
     }
+    const { shareMode } = captureDraftContext();
     const snapshot = {
       workflow_id: wfId,
       field_key: key,
@@ -778,6 +845,9 @@ export function createColabOneWorkflowDraftClient(
       data: payload.data,
     };
     return enqueueWrite(wfId, async () => {
+      if (shareMode) {
+        return null;
+      }
       try {
         const res = await invoker("comfyui.draft.media.save", snapshot);
         return normalizeMediaMeta(res?.media);
@@ -799,7 +869,11 @@ export function createColabOneWorkflowDraftClient(
     if (!wfId || !key) {
       return null;
     }
+    const { shareMode } = captureDraftContext();
     await waitForPendingWrites(wfId);
+    if (shareMode) {
+      return null;
+    }
     try {
       const res = await invoker("comfyui.draft.media.read", {
         workflow_id: wfId,
@@ -823,7 +897,11 @@ export function createColabOneWorkflowDraftClient(
     if (!wfId || !key) {
       return Promise.resolve();
     }
+    const { shareMode } = captureDraftContext();
     return enqueueWrite(wfId, async () => {
+      if (shareMode) {
+        return;
+      }
       try {
         await invoker("comfyui.draft.media.delete", {
           workflow_id: wfId,
@@ -843,13 +921,20 @@ export function createColabOneWorkflowDraftClient(
     if (!wfId) {
       return Promise.resolve();
     }
+    const { shareMode, storageKey } = captureDraftContext();
     return enqueueWrite(wfId, async () => {
+      if (shareMode) {
+        if (storageKey) {
+          deleteLocalDraft(resolveStorage(), wfId, storageKey);
+        }
+        return;
+      }
       try {
         await invoker("comfyui.draft.clear", { workflow_id: wfId });
-        deleteLocalDraft(resolveStorage(), wfId);
+        deleteLocalDraft(resolveStorage(), wfId, storageKey);
       } catch (err) {
         if (canFallback(err)) {
-          deleteLocalDraft(resolveStorage(), wfId);
+          deleteLocalDraft(resolveStorage(), wfId, storageKey);
           return;
         }
         throw err;

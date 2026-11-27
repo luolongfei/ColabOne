@@ -304,7 +304,7 @@
   }
 
   /* ComfyUI & Live Studio non-invasive mobile layout refinements */
-  .co-comfy-page {
+  .co-comfy-page:not(.is-share-mode) {
     padding: 12px var(--co-container-pad) 24px !important;
     gap: 12px !important;
   }

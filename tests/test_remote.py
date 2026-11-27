@@ -106,6 +106,7 @@ def test_status_and_snapshot_report_protocol_7_and_comfyui_capabilities(
             "comfyui_longcat_native",
             "comfyui_workflow_auto_release",
             "comfyui_live_studio",
+            "comfyui_share_guard",
         ]
         assert "comfyui" in st
         assert "live_studio" in st

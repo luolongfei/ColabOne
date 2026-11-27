@@ -6,7 +6,12 @@ import koKRAntd from "ant-design-vue/es/locale/ko_KR";
 import zhCNAntd from "ant-design-vue/es/locale/zh_CN";
 import zhHKAntd from "ant-design-vue/es/locale/zh_HK";
 import zhTWAntd from "ant-design-vue/es/locale/zh_TW";
-import { colabOneCommand, colabOneSetLocale } from "../api";
+import {
+  colabOneCommand,
+  colabOneSetLocale,
+  isColabOneDesktopRuntime,
+  isColabOneWorkflowShareActive,
+} from "../api";
 import { COLABONE_STORAGE_KEYS } from "../storage";
 import {
   translateColabOneActivitySource,
@@ -134,11 +139,17 @@ export function detectColabOneSystemLocale(
   return "en-US";
 }
 
+function resolveLocaleStorageKey(): string {
+  return isColabOneWorkflowShareActive()
+    ? COLABONE_STORAGE_KEYS.workflowShareLocale
+    : COLABONE_STORAGE_KEYS.locale;
+}
+
 export function readStoredColabOneLocale(): ColabOneLocale | null {
   if (typeof window === "undefined") return null;
   try {
     return normalizeColabOneLocale(
-      window.localStorage.getItem(COLABONE_STORAGE_KEYS.locale),
+      window.localStorage.getItem(resolveLocaleStorageKey()),
     );
   } catch {
     return null;
@@ -185,6 +196,9 @@ export function syncColabOneLocaleToNative(
   persist: boolean,
 ) {
   if (typeof window === "undefined") return;
+  if (isColabOneWorkflowShareActive()) {
+    return;
+  }
   try {
     void colabOneSetLocale(locale).catch(() => {});
   } catch {
@@ -198,12 +212,14 @@ export function syncColabOneLocaleToNative(
 }
 
 if (typeof window !== "undefined") {
-  // Sync initial active locale to Go tray/windows & Python OAuth callback without
-  // writing a manual override unless the user explicitly chose one.
-  syncColabOneLocaleToNative(colabOneLocaleCode.value, false);
+  // Sync initial active locale to Go tray/windows & Python OAuth callback on
+  // desktop launch without firing unguarded HTTP POSTs on Web Console import.
+  if (isColabOneDesktopRuntime()) {
+    syncColabOneLocaleToNative(colabOneLocaleCode.value, false);
+  }
 
   window.addEventListener("storage", (event) => {
-    if (event.key !== COLABONE_STORAGE_KEYS.locale) return;
+    if (event.key !== resolveLocaleStorageKey()) return;
     const synced = normalizeColabOneLocale(event.newValue);
     if (!synced) return;
     colabOneLocaleCode.value = synced;
@@ -228,7 +244,7 @@ export function setColabOneLocale(
     colabOneLocaleIsManual.value = true;
     if (typeof window !== "undefined") {
       try {
-        window.localStorage.setItem(COLABONE_STORAGE_KEYS.locale, next);
+        window.localStorage.setItem(resolveLocaleStorageKey(), next);
       } catch {
         // Ignore restricted storage contexts.
       }
@@ -252,6 +268,7 @@ let nativeSyncedAfterSnapshot = false;
 export function hydrateColabOneLocaleFromSettings(
   savedLocale: string | null | undefined,
 ) {
+  if (isColabOneWorkflowShareActive()) return;
   const normalized = normalizeColabOneLocale(savedLocale);
   const hasManual = colabOneLocaleIsManual.value || Boolean(readStoredColabOneLocale());
   if (normalized && !hasManual) {

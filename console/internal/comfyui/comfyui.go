@@ -110,6 +110,8 @@ var (
 		".pt":          true,
 		".pth":         true,
 		".bin":         true,
+		".onnx":        true,
+		".sft":         true,
 	}
 
 	allowedModelTargetDirs = map[string]bool{
@@ -559,8 +561,11 @@ func isIntValue(v any) bool {
 		if _, err := strconv.ParseInt(string(x), 10, 64); err == nil {
 			return true
 		}
-		_, err := strconv.ParseUint(string(x), 10, 64)
-		return err == nil
+		if _, err := strconv.ParseUint(string(x), 10, 64); err == nil {
+			return true
+		}
+		f, err := strconv.ParseFloat(string(x), 64)
+		return err == nil && isFiniteFloat64(f) && math.Trunc(f) == f
 	default:
 		return false
 	}
@@ -1013,7 +1018,7 @@ func validateModelFilePath(value string) error {
 		return errors.New("模型文件路径不合法")
 	}
 	for _, part := range strings.Split(value, "/") {
-		if part == "." || part == ".." {
+		if part == "" || strings.HasPrefix(part, ".") {
 			return errors.New("模型文件路径不合法")
 		}
 	}
@@ -2173,11 +2178,12 @@ type ColabOneWorkflowRunRequest struct {
 	Inputs               map[string]string `json:"inputs"`
 	HFToken              string            `json:"hf_token,omitempty"`
 	AutoReleaseAfterSync bool              `json:"auto_release_after_sync,omitempty"`
+	SkipAutoRelease      bool              `json:"skip_auto_release,omitempty"`
 }
 
 // String redacts HFToken so logging a ColabOneWorkflowRunRequest never leaks credentials.
 func (r ColabOneWorkflowRunRequest) String() string {
-	return fmt.Sprintf("ColabOneWorkflowRunRequest{WorkflowID:%q, Overrides:%v, Inputs:%v, AutoReleaseAfterSync:%t, HFToken:[redacted]}", r.WorkflowID, r.Overrides, r.Inputs, r.AutoReleaseAfterSync)
+	return fmt.Sprintf("ColabOneWorkflowRunRequest{WorkflowID:%q, Overrides:%v, Inputs:%v, AutoReleaseAfterSync:%t, SkipAutoRelease:%t, HFToken:[redacted]}", r.WorkflowID, r.Overrides, r.Inputs, r.AutoReleaseAfterSync, r.SkipAutoRelease)
 }
 
 // GoString redacts HFToken when formatted with %#v.
@@ -2391,6 +2397,7 @@ type ColabOneWorkflowOutputRecord struct {
 	CreatedAt    float64 `json:"created_at"`
 	Elapsed      float64 `json:"elapsed"`
 	PromptID     string  `json:"prompt_id"`
+	TaskID       string  `json:"task_id,omitempty"`
 }
 
 // UnmarshalJSON decodes a ColabOneWorkflowOutputRecord with unknown fields forbidden.
@@ -2408,6 +2415,7 @@ func (r *ColabOneWorkflowOutputRecord) UnmarshalJSON(data []byte) error {
 		CreatedAt    *float64 `json:"created_at"`
 		Elapsed      float64  `json:"elapsed"`
 		PromptID     string   `json:"prompt_id"`
+		TaskID       string   `json:"task_id,omitempty"`
 	}
 	if err := decodeStrictJSONObject(data, &raw); err != nil {
 		return err
@@ -2428,6 +2436,7 @@ func (r *ColabOneWorkflowOutputRecord) UnmarshalJSON(data []byte) error {
 		CreatedAt:    *raw.CreatedAt,
 		Elapsed:      raw.Elapsed,
 		PromptID:     raw.PromptID,
+		TaskID:       raw.TaskID,
 	}
 	return nil
 }
@@ -2476,6 +2485,9 @@ func (r *ColabOneWorkflowOutputRecord) Validate() error {
 	}
 	if utf8.RuneCountInString(r.PromptID) > 120 {
 		return errors.New("prompt_id 长度不合法")
+	}
+	if utf8.RuneCountInString(r.TaskID) > 120 {
+		return errors.New("task_id 长度不合法")
 	}
 	if expected.Kind != r.Kind || expected.MIME != r.MIME {
 		return errors.New("输出文件格式与类型不匹配")

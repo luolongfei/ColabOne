@@ -1367,6 +1367,14 @@ export const zhHKMessages: ColabOneMessages = {
   "comfy.outputDriveSyncedTooltip": "已同步至 Google 雲端硬碟 (ColabOne_Drive)",
   "comfy.outputTagSavedInDrive": "已存至雲端",
   "comfy.outputTagSyncedInDrive": "已同步雲端",
+  "comfy.outputTagShared": "外部分享",
+  "comfy.outputTagSharedTooltip": "由外部分享「{label}」生成",
+  "comfy.outputTagSharedTooltipAnonymous": "由外部分享連結生成",
+  "comfy.saveToHostDriveBtn": "存至宿主雲端硬碟",
+  "comfy.savedToHostDriveBtn": "已存至宿主雲端硬碟",
+  "comfy.noticeSavedToHostDrive": "已儲存至宿主雲端硬碟",
+  "comfy.noticeAlreadyInHostDrive": "該作品已存在於宿主雲端硬碟",
+  "comfy.shareWorkflowBtn": "分享工作流",
   "comfy.exportLocalNeedDriveApiTooltip": "目前為原生掛載紀錄，暫無法免開機直傳本機；請點擊「在雲端查看」下載，或開啟免彈窗雲端模式",
   "comfy.deleteDriveOutputDesc": "將移除雲端硬碟關聯作品「{name}」（若已開啟雲端 API 會同步移入 Google 雲端硬碟垃圾桶），確認刪除嗎？",
   "comfy.driveModalConnectedAutoReleaseDesc": "已掛載至 Google 雲端硬碟「{folder}」{free}。點擊下方按鈕即可開啟工作流完成後自動同步作品並安全釋放實例。",
@@ -1440,6 +1448,8 @@ export const zhHKMessages: ColabOneMessages = {
     "目前組合（{names}）包含非商用/研究元件：{notices}",
   "comfy.preflightVramInsufficient":
     "目前 GPU 顯存不足（需 {required} GB，目前 {available} GB），請切換至建議機型（{gpu}）",
+  "comfy.preflightVramInsufficientShare":
+    "目前算力顯存不足（需 {required} GB，目前 {available} GB，建議 {gpu}），請聯絡分享者調整算力規格",
   "comfy.preflightDiskInsufficient":
     "遠端可用磁碟空間不足（需預留約 {required} GB，目前剩餘 {available} GB）",
   "comfy.preflightPackReady": "依賴套件與模型已就緒，可直接執行",
@@ -1447,8 +1457,12 @@ export const zhHKMessages: ColabOneMessages = {
     "首次執行將自動在遠端下載約 {size} 權重與節點依賴套件",
   "comfy.videoPreviewTooLarge":
     "檔案體積較大（{size}），為避免佔用過多記憶體，建議直接點擊下方「匯出至本地」或「匯出至雲端」檢視",
+  "comfy.sharePreviewTooLarge":
+    "檔案體積較大（{size}），為避免佔用過多記憶體，建議直接點擊下方「匯出至本地」下載檢視",
   "comfy.mediaPreviewError":
     "無法在內置播放器中解碼此媒體，請點擊「匯出至本地」或「匯出至雲端」檢視",
+  "comfy.shareMediaPreviewError":
+    "無法在內置播放器中解碼此媒體，請點擊「匯出至本地」下載檢視",
   "comfy.errImportTooLarge": "工作流 JSON 體積超過 2 MB 上限",
   "comfy.errImportTooManyNodes": "工作流節點數量超過 500 個上限",
   "comfy.errImportInvalidNodeId": "包含不合法的節點 ID「{id}」",
@@ -1505,6 +1519,8 @@ export const zhHKMessages: ColabOneMessages = {
     "點擊試聽會在遠端 GPU 使用目前所選引擎合成這段短文並快取，方便直觀對比不同聲線與大模型表現。",
   "comfy.voicePreviewHintOffline":
     "連接遠端 GPU 實例後即可即時試聽各引擎與聲線效果；您仍可先瀏覽推薦試聽散文與聲線說明。",
+  "comfy.voicePreviewHintOfflineShare":
+    "待分享者開啟算力服務後即可即時試聽各引擎與聲線效果；您仍可先瀏覽推薦試聽散文與聲線說明。",
   "comfy.voicePreviewHintCustom":
     "目前為自訂聲線，將使用下方上傳的參考聲線或文字描述進行試聽合成。",
   "comfy.voicePreviewCachedTag": "已快取複用",
@@ -2005,6 +2021,96 @@ export const zhHKMessages: ColabOneMessages = {
   "webConsole.webOAuthManualHint":
     "遠端網頁模式下請使用手動授權登入：開啟 Google 授權頁後，將返回內容貼上到下方即可完成登入。",
   "webConsole.webOpenCanvasBrowserOnly": "在新分頁開啟畫布",
+  "webConsole.workflowShareSectionTitle": "工作流網頁分享",
+  "webConsole.workflowShareSectionDesc":
+    "產生獨立的工作流分享連結，訪客只可使用勾選的工作流並查看各自生成的作品。",
+  "webConsole.workflowShareManageBtn": "管理工作流分享",
+  "webConsole.workflowShareActiveTag": "{count} 個分享生效中",
+
+  // Workflow Web Sharing
+  "workflowShare.modalTitle": "分享工作流",
+  "workflowShare.tabCreate": "建立分享",
+  "workflowShare.tabManage": "管理分享",
+  "workflowShare.webConsoleOffTitle": "遠端網頁控制台尚未開啟",
+  "workflowShare.webConsoleOffDesc":
+    "工作流網頁分享依託遠端網頁控制台提供存取網址，請先開啟網頁控制台後再建立分享連結。",
+  "workflowShare.enableWebConsoleBtn": "一鍵開啟網頁控制台",
+  "workflowShare.openWebConsoleSettingsBtn": "前往設定公網域名",
+  "workflowShare.noPublicOriginHint":
+    "目前未設定固定公網域名，產生的連結會使用本地網址；如需分享給外部朋友，建議在設定中設定公網域名。",
+  "workflowShare.publicOriginHint": "將使用公網網址 {origin} 產生分享連結。",
+  "workflowShare.selectWorkflowsLabel": "選擇要分享的工作流",
+  "workflowShare.selectWorkflowsHint": "訪客開啟連結後只會看到並運行這裡勾選的工作流。",
+  "workflowShare.digitalHumanGroupSub": "含 InfiniteTalk 長影片版與 LongCat 96GB 旗艦版",
+  "workflowShare.noWorkflowsHint": "目前暫無可分享的工作流。",
+  "workflowShare.labelField": "分享備註（選填）",
+  "workflowShare.labelPlaceholder": "例如：給朋友測試數碼人",
+  "workflowShare.titleField": "訪客頁標題（選填）",
+  "workflowShare.titlePlaceholder": "留空則顯示預設標題",
+  "workflowShare.ttlLabel": "分享金鑰有效期",
+  "workflowShare.ttlHint":
+    "訪客在有效期內開啟連結後，瀏覽器會自動保留長期工作階段；即使連結其後過期，原瀏覽器仍可繼續使用，直至你手動撤銷。",
+  "workflowShare.ttl24h": "24 小時（預設）",
+  "workflowShare.ttlOnce": "一次性有效",
+  "workflowShare.ttl7d": "7 天",
+  "workflowShare.ttlForever": "長期有效",
+  "workflowShare.createAndCopyBtn": "產生並複製分享連結",
+  "workflowShare.createdLinkTitle": "分享連結已產生並複製",
+  "workflowShare.createdLinkTitleOnly": "分享連結已產生",
+  "workflowShare.copyLinkBtn": "複製連結",
+  "workflowShare.toastCreatedCopied": "工作流分享連結已產生並複製至剪貼簿",
+  "workflowShare.toastCreatedOnly": "工作流分享已產生，請手動複製連結",
+  "workflowShare.toastLinkCopied": "分享連結已複製至剪貼簿",
+  "workflowShare.toastRevoked": "已撤銷該分享並使關聯訪客工作階段失效",
+  "workflowShare.toastDeleted": "已刪除該分享紀錄",
+  "workflowShare.errSelectWorkflow": "請至少選擇一個要分享的工作流",
+  "workflowShare.emptyShares": "尚未建立任何工作流分享",
+  "workflowShare.emptySharesDesc": "點擊「建立分享」勾選工作流即可產生獨立測試連結。",
+  "workflowShare.statusActive": "生效中",
+  "workflowShare.statusExpired": "已過期",
+  "workflowShare.statusUsed": "已使用",
+  "workflowShare.statusRevoked": "已撤銷",
+  "workflowShare.defaultRemark": "未命名分享",
+  "workflowShare.metaSessions": "{count} 位活躍訪客",
+  "workflowShare.metaOutputs": "{count} 個作品",
+  "workflowShare.metaExpiresAt": "連結有效至 {time}",
+  "workflowShare.metaNeverExpires": "連結長期有效",
+  "workflowShare.metaSingleUse": "一次性連結",
+  "workflowShare.revokeBtn": "撤銷分享",
+  "workflowShare.revokeConfirmTitle": "確定撤銷分享「{name}」嗎？",
+  "workflowShare.revokeConfirmDesc":
+    "撤銷後該連結將立即失效，所有已透過此連結登入的訪客亦將無法繼續存取。",
+  "workflowShare.deleteRecordBtn": "刪除紀錄",
+  "workflowShare.deleteConfirmActiveTitle": "刪除分享「{name}」紀錄？",
+  "workflowShare.deleteConfirmActiveDesc":
+    "目前仍有 {count} 個已登入的訪客工作階段，刪除紀錄後這些訪客將會即時失去存取權限。",
+  "workflowShare.guestDefaultTitle": "工作流體驗空間",
+  "workflowShare.guestSubtitle": "選擇下方工作流設定參數並運行，生成的作品只對目前分享可見。",
+  "workflowShare.guestStatusReady": "算力就緒",
+  "workflowShare.guestStatusRunning": "正在生成",
+  "workflowShare.guestStatusBusyOther": "算力忙碌中",
+  "workflowShare.guestStatusOffline": "服務暫未開啟",
+  "workflowShare.guestStatusReconnecting": "連線中斷",
+  "workflowShare.guestOfflineBannerTitle": "算力服務暫未開啟",
+  "workflowShare.guestOfflineBannerDesc":
+    "目前遠端 GPU 實例尚未啟動，暫時無法運行工作流，請聯絡分享者開啟後再試。",
+  "workflowShare.guestDisconnectedTitle": "與分享服務斷開連線",
+  "workflowShare.guestDisconnectedDesc":
+    "正在嘗試自動重新連線，若長時間未恢復請聯絡分享者確認服務是否開啟。",
+  "workflowShare.guestNetworkError": "無法連接分享服務，請檢查網絡連線或稍後再試",
+  "workflowShare.guestStillExpiredToast":
+    "分享連結仍處於失效狀態，請聯絡分享者取得新連結",
+  "workflowShare.guestBusyOtherBannerTitle": "目前算力正在執行其他任務",
+  "workflowShare.guestBusyOtherBannerDesc":
+    "請稍候片刻，待目前任務完成後即可提交你的生成任務。",
+  "workflowShare.guestExpiredTitle": "該工作流分享已失效",
+  "workflowShare.guestExpiredDesc":
+    "此分享連結可能已被分享者撤銷或已過期，請聯絡分享者取得新的連結。",
+  "workflowShare.guestRefreshBtn": "重新檢查狀態",
+  "workflowShare.guestOutputsBtn": "生成紀錄",
+  "workflowShare.guestEmptyWorkflows": "目前分享暫無可用工作流",
+  "workflowShare.guestFooter": "ColabOne · 工作流共享體驗",
+  "workflowShare.guestWorkflowCount": "共 {count} 個可用工作流",
 
   // Live Studio (Real-time Interactive Digital Human)
   "live.sectionAria": "實時演播室",

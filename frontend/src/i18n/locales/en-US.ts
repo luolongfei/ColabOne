@@ -1411,6 +1411,14 @@ export const enUSMessages: ColabOneMessages = {
   "comfy.outputDriveSyncedTooltip": "Synced to Google Drive (ColabOne_Drive)",
   "comfy.outputTagSavedInDrive": "Saved in Drive",
   "comfy.outputTagSyncedInDrive": "Synced to Drive",
+  "comfy.outputTagShared": "External Share",
+  "comfy.outputTagSharedTooltip": "Generated via external share \"{label}\"",
+  "comfy.outputTagSharedTooltipAnonymous": "Generated via an external share link",
+  "comfy.saveToHostDriveBtn": "Save to Host Drive",
+  "comfy.savedToHostDriveBtn": "Saved to Host Drive",
+  "comfy.noticeSavedToHostDrive": "Saved to host drive",
+  "comfy.noticeAlreadyInHostDrive": "This output is already in host drive",
+  "comfy.shareWorkflowBtn": "Share Workflow",
   "comfy.exportLocalNeedDriveApiTooltip": "Native DriveFS record cannot stream directly without GPU; click View in Drive or enable headless Drive API",
   "comfy.deleteDriveOutputDesc": "Remove Drive-linked output \"{name}\" (also moves it to Google Drive Trash when Drive API is enabled). Continue?",
   "comfy.driveModalConnectedAutoReleaseDesc": "Mounted to Google Drive \"{folder}\"{free}. Click below to enable automatic output sync and safe instance release after workflow completion.",
@@ -1487,6 +1495,8 @@ export const enUSMessages: ColabOneMessages = {
     "Current selection ({names}) includes non-commercial/research components: {notices}",
   "comfy.preflightVramInsufficient":
     "Insufficient GPU VRAM (requires {required} GB, current {available} GB). Switch to recommended GPU ({gpu}).",
+  "comfy.preflightVramInsufficientShare":
+    "Current GPU VRAM is insufficient (requires {required} GB, available {available} GB; {gpu} recommended). Please ask the host to adjust the compute tier.",
   "comfy.preflightDiskInsufficient":
     "Insufficient remote disk space (requires ~{required} GB, available {available} GB)",
   "comfy.preflightPackReady": "Workflow pack and models are ready",
@@ -1494,8 +1504,12 @@ export const enUSMessages: ColabOneMessages = {
     "First run will download ~{size} of models and custom nodes remotely",
   "comfy.videoPreviewTooLarge":
     "File is large ({size}). Click \"Export Local\" or \"Save to Drive\" below to view without high memory usage.",
+  "comfy.sharePreviewTooLarge":
+    "File is large ({size}). Click \"Export Local\" below to download and view without high memory usage.",
   "comfy.mediaPreviewError":
     "Unable to decode this media in the built-in player. Click \"Export Local\" or \"Save to Drive\" to view.",
+  "comfy.shareMediaPreviewError":
+    "Unable to decode this media in the built-in player. Click \"Export Local\" to download and view.",
   "comfy.errImportTooLarge": "Workflow JSON exceeds the 2 MB limit",
   "comfy.errImportTooManyNodes": "Workflow exceeds the 500-node limit",
   "comfy.errImportInvalidNodeId": "Invalid node ID \"{id}\"",
@@ -1552,6 +1566,8 @@ export const enUSMessages: ColabOneMessages = {
     "Click Preview to synthesize and cache this passage on the remote GPU with the selected engine, making it easy to compare voices and models directly.",
   "comfy.voicePreviewHintOffline":
     "Connect a remote GPU instance to preview engines and voices live; you can still browse sample passages and voice notes offline.",
+  "comfy.voicePreviewHintOfflineShare":
+    "Live voice previews will be available once the host starts the compute service; you can still browse sample passages and voice notes.",
   "comfy.voicePreviewHintCustom":
     "Custom Voice is active — preview synthesis will use the uploaded reference audio or voice description below.",
   "comfy.voicePreviewCachedTag": "Cached",
@@ -2076,6 +2092,107 @@ export const enUSMessages: ColabOneMessages = {
   "webConsole.webOAuthManualHint":
     "Use manual authorization in Remote Web Mode: open the Google authorization page and paste the returned content below to finish signing in.",
   "webConsole.webOpenCanvasBrowserOnly": "Open Canvas in New Tab",
+  "webConsole.workflowShareSectionTitle": "Workflow Web Sharing",
+  "webConsole.workflowShareSectionDesc":
+    "Create standalone workflow share links. Guests can only run the selected workflows and view outputs generated within their share.",
+  "webConsole.workflowShareManageBtn": "Manage Workflow Shares",
+  "webConsole.workflowShareActiveTag": "{count} active shares",
+
+  // Workflow Web Sharing
+  "workflowShare.modalTitle": "Share Workflows",
+  "workflowShare.tabCreate": "New Share",
+  "workflowShare.tabManage": "Manage Shares",
+  "workflowShare.webConsoleOffTitle": "Remote Web Console is not enabled",
+  "workflowShare.webConsoleOffDesc":
+    "Workflow Web Sharing uses the Remote Web Console to serve guest links. Enable the Web Console first before creating a share link.",
+  "workflowShare.enableWebConsoleBtn": "Enable Web Console",
+  "workflowShare.openWebConsoleSettingsBtn": "Configure Public Domain",
+  "workflowShare.noPublicOriginHint":
+    "No custom public domain is configured, so the generated link will use your local address. Configure a public domain in Settings to share externally.",
+  "workflowShare.publicOriginHint":
+    "Share links will be generated using the public address {origin}.",
+  "workflowShare.selectWorkflowsLabel": "Select Workflows to Share",
+  "workflowShare.selectWorkflowsHint":
+    "Guests who open the link will only see and run the workflows checked here.",
+  "workflowShare.digitalHumanGroupSub":
+    "Includes InfiniteTalk Long-Video and LongCat 96GB Flagship",
+  "workflowShare.noWorkflowsHint": "No workflows are currently available to share.",
+  "workflowShare.labelField": "Share Note (Optional)",
+  "workflowShare.labelPlaceholder": "e.g., Digital human demo for Alex",
+  "workflowShare.titleField": "Guest Page Title (Optional)",
+  "workflowShare.titlePlaceholder": "Leave blank to use the default title",
+  "workflowShare.ttlLabel": "Share Link Validity",
+  "workflowShare.ttlHint":
+    "Once a guest opens the link while valid, their browser keeps a persistent session even after the link expires, until you manually revoke the share.",
+  "workflowShare.ttl24h": "24 Hours (Default)",
+  "workflowShare.ttlOnce": "Single-Use",
+  "workflowShare.ttl7d": "7 Days",
+  "workflowShare.ttlForever": "Never Expires",
+  "workflowShare.createAndCopyBtn": "Create & Copy Share Link",
+  "workflowShare.createdLinkTitle": "Share link created and copied",
+  "workflowShare.createdLinkTitleOnly": "Share link created",
+  "workflowShare.copyLinkBtn": "Copy Link",
+  "workflowShare.toastCreatedCopied":
+    "Workflow share link created and copied to clipboard",
+  "workflowShare.toastCreatedOnly":
+    "Workflow share created; please copy the link manually",
+  "workflowShare.toastLinkCopied": "Share link copied to clipboard",
+  "workflowShare.toastRevoked":
+    "Share revoked and all linked guest sessions invalidated",
+  "workflowShare.toastDeleted": "Share record deleted",
+  "workflowShare.errSelectWorkflow":
+    "Please select at least one workflow to share",
+  "workflowShare.emptyShares": "No workflow shares created yet",
+  "workflowShare.emptySharesDesc":
+    "Open \"New Share\" and check workflows to generate a standalone guest link.",
+  "workflowShare.statusActive": "Active",
+  "workflowShare.statusExpired": "Expired",
+  "workflowShare.statusUsed": "Used",
+  "workflowShare.statusRevoked": "Revoked",
+  "workflowShare.defaultRemark": "Untitled Share",
+  "workflowShare.metaSessions": "{count} active guests",
+  "workflowShare.metaOutputs": "{count} outputs",
+  "workflowShare.metaExpiresAt": "Link valid until {time}",
+  "workflowShare.metaNeverExpires": "Link never expires",
+  "workflowShare.metaSingleUse": "Single-use link",
+  "workflowShare.revokeBtn": "Revoke Share",
+  "workflowShare.revokeConfirmTitle": "Revoke share \"{name}\"?",
+  "workflowShare.revokeConfirmDesc":
+    "The link will stop working immediately, and all guests who signed in through it will lose access.",
+  "workflowShare.deleteRecordBtn": "Delete Record",
+  "workflowShare.deleteConfirmActiveTitle": "Delete share record \"{name}\"?",
+  "workflowShare.deleteConfirmActiveDesc":
+    "{count} signed-in guest session(s) are still active and will lose access immediately after deletion.",
+  "workflowShare.guestDefaultTitle": "Workflow Playground",
+  "workflowShare.guestSubtitle":
+    "Select a workflow below, configure its parameters, and run it. Generated outputs are visible only within this share.",
+  "workflowShare.guestStatusReady": "GPU Ready",
+  "workflowShare.guestStatusRunning": "Generating",
+  "workflowShare.guestStatusBusyOther": "GPU Busy",
+  "workflowShare.guestStatusOffline": "Service Offline",
+  "workflowShare.guestStatusReconnecting": "Reconnecting",
+  "workflowShare.guestOfflineBannerTitle": "Compute service is currently offline",
+  "workflowShare.guestOfflineBannerDesc":
+    "The remote GPU instance is not running yet, so workflows cannot be executed right now. Please ask the host to start it and try again.",
+  "workflowShare.guestDisconnectedTitle": "Disconnected from share host",
+  "workflowShare.guestDisconnectedDesc":
+    "Attempting to reconnect automatically. If this persists, please contact the host to confirm the share service is running.",
+  "workflowShare.guestNetworkError":
+    "Unable to reach the share service. Check your network connection or try again later.",
+  "workflowShare.guestStillExpiredToast":
+    "This share link is still invalid. Please contact the host for a new link.",
+  "workflowShare.guestBusyOtherBannerTitle":
+    "GPU is currently running another task",
+  "workflowShare.guestBusyOtherBannerDesc":
+    "Please wait a moment; you can submit your generation task as soon as the current run finishes.",
+  "workflowShare.guestExpiredTitle": "This workflow share is no longer valid",
+  "workflowShare.guestExpiredDesc":
+    "This share link may have been revoked by the host or expired. Please contact the host for a new link.",
+  "workflowShare.guestRefreshBtn": "Refresh Status",
+  "workflowShare.guestOutputsBtn": "Outputs",
+  "workflowShare.guestEmptyWorkflows": "No workflows are available in this share",
+  "workflowShare.guestFooter": "ColabOne · Shared Workflow Studio",
+  "workflowShare.guestWorkflowCount": "{count} available workflows",
 
   // Live Studio (Real-time Interactive Digital Human)
   "live.sectionAria": "Live Studio",

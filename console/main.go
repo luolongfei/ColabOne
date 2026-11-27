@@ -250,11 +250,37 @@ func (d *ColabOneDesktop) buildTrayMenu() *mygo.Menu {
 
 func (d *ColabOneDesktop) Snapshot(ctx context.Context) (string, error) {
 	res, err := d.bridge.call(ctx, "snapshot", nil)
+	if err == nil {
+		if wc := d.webConsoleService(); wc != nil {
+			res = wc.EnrichHostSnapshotJSON(res)
+		}
+	}
 	d.notifyInitialSnapshotSettled()
 	return res, err
 }
 func (d *ColabOneDesktop) Command(ctx context.Context, request ColabOneCommandRequest) (string, error) {
-	return d.bridge.call(ctx, request.Action, request.Payload)
+	action := strings.TrimSpace(request.Action)
+	if action == "comfyui.run" {
+		if wc := d.webConsoleService(); wc != nil {
+			wc.NotifyHostWorkflowRunStarting()
+		}
+	}
+	res, err := d.bridge.call(ctx, request.Action, request.Payload)
+	if err == nil {
+		switch action {
+		case "comfyui.output.delete":
+			if id, ok := request.Payload["id"].(string); ok && strings.TrimSpace(id) != "" {
+				if wc := d.webConsoleService(); wc != nil {
+					wc.ForgetOutputOwnership(id)
+				}
+			}
+		case "comfyui.run":
+			if wc := d.webConsoleService(); wc != nil {
+				wc.NotifyHostWorkflowRunStarted()
+			}
+		}
+	}
+	return res, err
 }
 func (d *ColabOneDesktop) SystemAppearance() string {
 	return colabOneDetectSystemAppearance()

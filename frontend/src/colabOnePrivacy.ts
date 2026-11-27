@@ -309,9 +309,112 @@ export function colabOneApplyPrivacyInputPaste(
   return { value, caret: start + pasted.length };
 }
 
+const COLABONE_SECRET_TOKEN_RE =
+  /\b(?:co_wf_[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+|hf_[A-Za-z0-9]{10,}|eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]+)?|sk-[A-Za-z0-9_-]{16,}|(?:sk|co)_[A-Za-z0-9_-]{16,})\b/g;
+
+const COLABONE_SENSITIVE_QUERY_PARAM_RE =
+  /([?&](?:k|ticket|token)=)([^&#\s"'<>)\]}]+)/gi;
+
+function resolvePrivacyMatchSpans(
+  matches: PrivacyMatchSpan[],
+): PrivacyMatchSpan[] {
+  if (!matches.length) return [];
+  // Sort by start ascending, then longest span first so wider matches (e.g.
+  // user:pass@host:port) beat narrower inner host matches.
+  matches.sort((a, b) => a.start - b.start || b.end - a.end);
+  const resolved: PrivacyMatchSpan[] = [];
+  let lastEnd = -1;
+  for (const span of matches) {
+    if (span.start < lastEnd) continue;
+    resolved.push(span);
+    lastEnd = span.end;
+  }
+  return resolved;
+}
+
+function findColabOneSensitiveUrlTailMatches(tail: string): PrivacyMatchSpan[] {
+  if (!tail) return [];
+  const matches: PrivacyMatchSpan[] = [];
+  for (const m of tail.matchAll(COLABONE_SENSITIVE_QUERY_PARAM_RE)) {
+    if (m.index === undefined || !m[1] || !m[2]) continue;
+    const start = m.index + m[1].length;
+    matches.push({
+      start,
+      end: start + m[2].length,
+      replacement: colabOneSynthesizeToken(m[2]),
+    });
+  }
+  for (const m of tail.matchAll(COLABONE_SECRET_TOKEN_RE)) {
+    if (m.index === undefined) continue;
+    matches.push({
+      start: m.index,
+      end: m.index + m[0].length,
+      replacement: colabOneSynthesizeToken(m[0]),
+    });
+  }
+  return resolvePrivacyMatchSpans(matches);
+}
+
+function segmentColabOneUrlTail(tail: string): ColabOnePrivacySegment[] {
+  if (!tail) return [];
+  const spans = findColabOneSensitiveUrlTailMatches(tail);
+  if (!spans.length) {
+    return [{ text: tail, masked: false }];
+  }
+  const out: ColabOnePrivacySegment[] = [];
+  let cursor = 0;
+  for (const span of spans) {
+    if (span.start > cursor) {
+      out.push({ text: tail.slice(cursor, span.start), masked: false });
+    }
+    out.push({
+      text: span.replacement,
+      masked: true,
+      original: tail.slice(span.start, span.end),
+    });
+    cursor = span.end;
+  }
+  if (cursor < tail.length) {
+    out.push({ text: tail.slice(cursor), masked: false });
+  }
+  return out;
+}
+
+function buildUrlSegmentsWithTail(
+  scheme: string,
+  authority: string,
+  tail: string,
+  maskAuthority: boolean,
+): ColabOnePrivacySegment[] {
+  const tailSegments = segmentColabOneUrlTail(tail);
+  if (maskAuthority) {
+    const segments: ColabOnePrivacySegment[] = [];
+    if (scheme) segments.push({ text: scheme, masked: false });
+    segments.push({
+      text: colabOneSynthesizeHost(authority),
+      masked: true,
+      original: authority,
+    });
+    if (tailSegments.length) segments.push(...tailSegments);
+    return segments;
+  }
+  if (!tailSegments.some((seg) => seg.masked)) {
+    return [{ text: `${scheme}${authority}${tail}`, masked: false }];
+  }
+  const prefix = `${scheme}${authority}`;
+  if (tailSegments.length && !tailSegments[0].masked) {
+    return [
+      { text: `${prefix}${tailSegments[0].text}`, masked: false },
+      ...tailSegments.slice(1),
+    ];
+  }
+  return [{ text: prefix, masked: false }, ...tailSegments];
+}
+
 /**
  * Splits a URL (e.g. `https://colabone.acme.dev/v1`) into unmasked scheme/path
- * segments and a masked host segment. Leaves generic placeholder hosts intact.
+ * segments and masked host / sensitive token segments. Leaves generic
+ * placeholder hosts intact while always masking share keys and auth tokens.
  */
 export function segmentColabOneUrlText(url: string): ColabOnePrivacySegment[] {
   const text = String(url ?? "");
@@ -323,34 +426,14 @@ export function segmentColabOneUrlText(url: string): ColabOnePrivacySegment[] {
     const tail = slashIdx >= 0 ? text.slice(slashIdx) : "";
     const hasUserinfo = authority.includes("@");
     const host = extractColabOneHostFromInput(authority);
-    if (!hasUserinfo && (!host || isColabOnePublicHost(host))) {
-      return [{ text, masked: false }];
-    }
-    const segments: ColabOnePrivacySegment[] = [
-      {
-        text: colabOneSynthesizeHost(authority),
-        masked: true,
-        original: authority,
-      },
-    ];
-    if (tail) segments.push({ text: tail, masked: false });
-    return segments;
+    const maskAuthority = hasUserinfo || (Boolean(host) && !isColabOnePublicHost(host));
+    return buildUrlSegmentsWithTail("", authority, tail, maskAuthority);
   }
   const [, scheme, authority, tail] = match;
   const hasUserinfo = authority.includes("@");
   const host = extractColabOneHostFromInput(authority);
-  if (!hasUserinfo && (!host || isColabOnePublicHost(host))) {
-    return [{ text, masked: false }];
-  }
-  const segments: ColabOnePrivacySegment[] = [];
-  if (scheme) segments.push({ text: scheme, masked: false });
-  segments.push({
-    text: colabOneSynthesizeHost(authority),
-    masked: true,
-    original: authority,
-  });
-  if (tail) segments.push({ text: tail, masked: false });
-  return segments;
+  const maskAuthority = hasUserinfo || (Boolean(host) && !isColabOnePublicHost(host));
+  return buildUrlSegmentsWithTail(scheme, authority, tail, maskAuthority);
 }
 
 export function buildColabOnePrivacyContext(
@@ -501,10 +584,8 @@ function findColabOnePrivacyMatches(
     });
   }
 
-  // 7. Defense-in-depth secret tokens if ever surfaced in logs or errors
-  const secretTokenRe =
-    /\b(?:hf_[A-Za-z0-9]{10,}|eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]+)?|sk-[A-Za-z0-9_-]{16,}|(?:sk|co)_[A-Za-z0-9_-]{16,})\b/g;
-  for (const m of text.matchAll(secretTokenRe)) {
+  // 7. Defense-in-depth secret tokens (including workflow share keys) if ever surfaced
+  for (const m of text.matchAll(COLABONE_SECRET_TOKEN_RE)) {
     if (m.index === undefined) continue;
     matches.push({
       start: m.index,
@@ -513,20 +594,18 @@ function findColabOnePrivacyMatches(
     });
   }
 
-  if (!matches.length) return [];
-
-  // Sort by start ascending, then longest span first so wider matches (e.g.
-  // user:pass@host:port) beat narrower inner host matches.
-  matches.sort((a, b) => a.start - b.start || b.end - a.end);
-
-  const resolved: PrivacyMatchSpan[] = [];
-  let lastEnd = -1;
-  for (const span of matches) {
-    if (span.start < lastEnd) continue;
-    resolved.push(span);
-    lastEnd = span.end;
+  // 8. Sensitive URL query parameters (share keys, one-time tickets, auth tokens)
+  for (const m of text.matchAll(COLABONE_SENSITIVE_QUERY_PARAM_RE)) {
+    if (m.index === undefined || !m[1] || !m[2]) continue;
+    const start = m.index + m[1].length;
+    matches.push({
+      start,
+      end: start + m[2].length,
+      replacement: colabOneSynthesizeToken(m[2]),
+    });
   }
-  return resolved;
+
+  return resolvePrivacyMatchSpans(matches);
 }
 
 export function segmentColabOnePrivacyText(

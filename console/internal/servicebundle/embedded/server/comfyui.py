@@ -440,6 +440,7 @@ class ColabOneComfyWorkflowStore:
         filename: str,
         elapsed: float,
         prompt_id: str = "",
+        task_id: str = "",
     ) -> dict:
         if not isinstance(raw, (bytes, bytearray)) or not raw:
             raise ValueError("生成结果为空")
@@ -473,7 +474,8 @@ class ColabOneComfyWorkflowStore:
                 "sha256": hashlib.sha256(data).hexdigest(),
                 "created_at": time.time(),
                 "elapsed": max(0.0, float(elapsed)),
-                "prompt_id": (prompt_id or "")[:120],
+                "prompt_id": str(prompt_id or "").strip()[:120],
+                "task_id": str(task_id or "").strip()[:120],
             }
         ).model_dump()
 
@@ -508,11 +510,14 @@ class ColabOneComfyWorkflowStore:
         prompt_id: str = "",
         extension: str | None = None,
         kind: str | None = None,
+        task_id: str = "",
     ) -> dict:
         """Stream an output file from disk into immutable storage without loading it into RAM."""
         if isinstance(mime_type, (int, float)) and not isinstance(mime_type, bool):
-            # Support positional (src_path, workflow_id, workflow_name, filename, elapsed, prompt_id)
-            if isinstance(elapsed, str) and not prompt_id:
+            # Support positional (src_path, workflow_id, workflow_name, filename, elapsed, prompt_id[, task_id])
+            if isinstance(elapsed, str):
+                if prompt_id and not task_id:
+                    task_id = prompt_id
                 prompt_id = elapsed
             elapsed = float(mime_type)
             mime_type = None
@@ -590,7 +595,8 @@ class ColabOneComfyWorkflowStore:
                     "sha256": hasher.hexdigest(),
                     "created_at": time.time(),
                     "elapsed": max(0.0, float(elapsed)),
-                    "prompt_id": (prompt_id or "")[:120],
+                    "prompt_id": str(prompt_id or "").strip()[:120],
+                    "task_id": str(task_id or "").strip()[:120],
                 }
             ).model_dump()
 
@@ -825,12 +831,13 @@ def _read_log_tail(log_path: Path, max_bytes: int = 4096) -> str:
             fh.seek(max(0, size - max_bytes), os.SEEK_SET)
             raw = fh.read(max_bytes)
     except OSError:
+        return ""
+    finally:
         if fd >= 0:
             try:
                 os.close(fd)
             except OSError:
                 pass
-        return ""
     if truncated and raw:
         idx = 0
         n = len(raw)
@@ -1754,6 +1761,8 @@ class ColabOneComfyManager:
                 self.mark_native_pack_ready(wf_id)
             task.check()
             return
+        with self.lock:
+            self._native_active_pack_id = ""
         has_pack_requirements = bool(
             wf.get("custom_nodes")
             or wf.get("pip_packages")
@@ -2245,6 +2254,7 @@ class ColabOneComfyManager:
                                         filename=fname,
                                         elapsed=elapsed,
                                         prompt_id=prompt_id,
+                                        task_id=str(getattr(task, "id", "") or ""),
                                     )
                                     with (
                                         task_lock

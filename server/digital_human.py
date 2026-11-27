@@ -256,6 +256,26 @@ def _sanitize_task_tag(raw_tag: Any, *, allow_empty: bool = False) -> str:
     return "" if allow_empty else "task"
 
 
+def _callable_accepts_kwarg(fn: Callable[..., Any], kwarg_name: str) -> bool:
+    """Return True if fn accepts kwarg_name explicitly or via **kwargs."""
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return True
+    return any(
+        (
+            param.name == kwarg_name
+            and param.kind
+            in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            )
+        )
+        or param.kind == inspect.Parameter.VAR_KEYWORD
+        for param in sig.parameters.values()
+    )
+
+
 def _validate_safe_path(path: Path | str, label: str = "路径") -> Path:
     """Reject CR, LF, and NUL control characters in filesystem paths passed to ffmpeg."""
     raw = os.fspath(path)
@@ -4043,25 +4063,32 @@ class ColabOneDigitalHumanRunner:
             elapsed = max(0.0, time.monotonic() - started)
             out_filename = f"{wf['id']}_{out_w}x{out_h}_{int(time.time())}.mp4"
             native_prompt_id = f"longcat16-native-{safe_task_tag}"
+            task_id = str(getattr(task, "id", "") or "")
             save_file_fn = getattr(self.manager.store, "save_output_file", None)
             if callable(save_file_fn):
-                record = save_file_fn(
-                    output_src_path,
-                    workflow_id=wf["id"],
-                    workflow_name=wf_name,
-                    filename=out_filename,
-                    elapsed=elapsed,
-                    prompt_id=native_prompt_id,
-                )
+                save_kwargs: dict[str, Any] = {
+                    "workflow_id": wf["id"],
+                    "workflow_name": wf_name,
+                    "filename": out_filename,
+                    "elapsed": elapsed,
+                    "prompt_id": native_prompt_id,
+                }
+                if _callable_accepts_kwarg(save_file_fn, "task_id"):
+                    save_kwargs["task_id"] = task_id
+                record = save_file_fn(output_src_path, **save_kwargs)
             else:
-                record = self.manager.store.save_output(
-                    raw=output_src_path.read_bytes(),
-                    workflow_id=wf["id"],
-                    workflow_name=wf_name,
-                    filename=out_filename,
-                    elapsed=elapsed,
-                    prompt_id=native_prompt_id,
-                )
+                save_fn = self.manager.store.save_output
+                save_kwargs = {
+                    "raw": output_src_path.read_bytes(),
+                    "workflow_id": wf["id"],
+                    "workflow_name": wf_name,
+                    "filename": out_filename,
+                    "elapsed": elapsed,
+                    "prompt_id": native_prompt_id,
+                }
+                if _callable_accepts_kwarg(save_fn, "task_id"):
+                    save_kwargs["task_id"] = task_id
+                record = save_fn(**save_kwargs)
             elapsed_label = format_colabone_duration_zh(elapsed, subsecond=True)
             vsr_note = f" + {upscale_engine}" if upscale_engine != "none" else ""
             done_msg = (
@@ -5679,25 +5706,32 @@ class ColabOneDigitalHumanRunner:
             _update_task(task, progress=0.97)
             elapsed = max(0.0, time.monotonic() - started)
             out_filename = f"{wf['id']}_{out_w}x{out_h}_{int(time.time())}.mp4"
+            task_id = str(getattr(task, "id", "") or "")
             save_file_fn = getattr(self.manager.store, "save_output_file", None)
             if callable(save_file_fn):
-                record = save_file_fn(
-                    output_src_path,
-                    workflow_id=wf["id"],
-                    workflow_name=wf_name,
-                    filename=out_filename,
-                    elapsed=elapsed,
-                    prompt_id=last_prompt_id,
-                )
+                save_kwargs: dict[str, Any] = {
+                    "workflow_id": wf["id"],
+                    "workflow_name": wf_name,
+                    "filename": out_filename,
+                    "elapsed": elapsed,
+                    "prompt_id": last_prompt_id,
+                }
+                if _callable_accepts_kwarg(save_file_fn, "task_id"):
+                    save_kwargs["task_id"] = task_id
+                record = save_file_fn(output_src_path, **save_kwargs)
             else:
-                record = self.manager.store.save_output(
-                    raw=output_src_path.read_bytes(),
-                    workflow_id=wf["id"],
-                    workflow_name=wf_name,
-                    filename=out_filename,
-                    elapsed=elapsed,
-                    prompt_id=last_prompt_id,
-                )
+                save_fn = self.manager.store.save_output
+                save_kwargs = {
+                    "raw": output_src_path.read_bytes(),
+                    "workflow_id": wf["id"],
+                    "workflow_name": wf_name,
+                    "filename": out_filename,
+                    "elapsed": elapsed,
+                    "prompt_id": last_prompt_id,
+                }
+                if _callable_accepts_kwarg(save_fn, "task_id"):
+                    save_kwargs["task_id"] = task_id
+                record = save_fn(**save_kwargs)
             elapsed_label = format_colabone_duration_zh(elapsed, subsecond=True)
             done_msg = (
                 f"{wf_name} · 数字人长视频生成完成"

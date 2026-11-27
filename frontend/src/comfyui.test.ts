@@ -45,6 +45,10 @@ import {
   workflowModelsTotalBytes,
   writeColabOnePreferredDigitalHumanEngine,
 } from "./comfyui";
+import {
+  colabOneWorkflowShareId,
+  colabOneWorkflowShareMode,
+} from "./colabOneWorkflowShare";
 import { COLABONE_LOCALE_LIST, t, type ColabOneLocale } from "./i18n";
 import { COLABONE_STORAGE_KEYS } from "./storage";
 import type {
@@ -5982,6 +5986,82 @@ describe("unified digital human workflow helpers", () => {
         "zh-CN",
       );
       expect(customTtsToInfiniteTalk["pipeline.tts_engine"]).toBe("qwen3_tts");
+    });
+
+    it("scopes preferred Digital Human engine storage by share context and no-ops when shareId is empty", () => {
+      const store = new Map<string, string>();
+      const fakeStorage = {
+        getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
+        setItem: (k: string, v: string) => {
+          store.set(k, v);
+        },
+        removeItem: (k: string) => {
+          store.delete(k);
+        },
+        clear: () => store.clear(),
+        key: (i: number) => Array.from(store.keys())[i] ?? null,
+        get length() {
+          return store.size;
+        },
+      } as Storage;
+
+      const prevMode = colabOneWorkflowShareMode.value;
+      const prevShareId = colabOneWorkflowShareId.value;
+      try {
+        // Host mode reads/writes the global host storage key
+        colabOneWorkflowShareMode.value = false;
+        colabOneWorkflowShareId.value = "";
+        writeColabOnePreferredDigitalHumanEngine(
+          "digital-human-longcat",
+          fakeStorage,
+        );
+        expect(store.get(COLABONE_STORAGE_KEYS.comfyDigitalHumanEngine)).toBe(
+          "digital-human-longcat",
+        );
+        expect(readColabOnePreferredDigitalHumanEngine(fakeStorage)).toBe(
+          "digital-human-longcat",
+        );
+
+        // Guest Share Mode with empty shareId is a strict no-op (never reads/writes host key)
+        colabOneWorkflowShareMode.value = true;
+        colabOneWorkflowShareId.value = "";
+        expect(readColabOnePreferredDigitalHumanEngine(fakeStorage)).toBe("");
+        writeColabOnePreferredDigitalHumanEngine(
+          "digital-human-infinitetalk",
+          fakeStorage,
+        );
+        expect(store.get(COLABONE_STORAGE_KEYS.comfyDigitalHumanEngine)).toBe(
+          "digital-human-longcat",
+        );
+        expect(store.size).toBe(1);
+
+        // Guest Share Mode with active shareId isolates preference under share-scoped prefix
+        colabOneWorkflowShareId.value = "sh_demo_01";
+        expect(readColabOnePreferredDigitalHumanEngine(fakeStorage)).toBe("");
+        writeColabOnePreferredDigitalHumanEngine(
+          "digital-human-infinitetalk",
+          fakeStorage,
+        );
+        const scopedKey = `${COLABONE_STORAGE_KEYS.workflowShareDigitalHumanEnginePrefix}sh_demo_01`;
+        expect(store.get(scopedKey)).toBe("digital-human-infinitetalk");
+        expect(readColabOnePreferredDigitalHumanEngine(fakeStorage)).toBe(
+          "digital-human-infinitetalk",
+        );
+        // Host key remains untouched
+        expect(store.get(COLABONE_STORAGE_KEYS.comfyDigitalHumanEngine)).toBe(
+          "digital-human-longcat",
+        );
+
+        // Clearing share preference removes only the share-scoped key
+        writeColabOnePreferredDigitalHumanEngine("", fakeStorage);
+        expect(store.has(scopedKey)).toBe(false);
+        expect(store.get(COLABONE_STORAGE_KEYS.comfyDigitalHumanEngine)).toBe(
+          "digital-human-longcat",
+        );
+      } finally {
+        colabOneWorkflowShareMode.value = prevMode;
+        colabOneWorkflowShareId.value = prevShareId;
+      }
     });
   });
 });

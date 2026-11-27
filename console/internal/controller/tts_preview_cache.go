@@ -601,7 +601,8 @@ func (c *ColabOneController) saveLocalTtsPreview(
 	}
 
 	requestKey := ""
-	if effectiveReq != nil {
+	hasRefAudio := asBool(meta["has_ref_audio"]) || asBool(meta["has_emotion_ref"])
+	if !hasRefAudio && effectiveReq != nil {
 		if engine := c.findTtsEngineSpec(engineID); engine != nil {
 			if k, ok := computeLocalTtsPreviewRequestKey(engine, effectiveReq); ok {
 				requestKey = k

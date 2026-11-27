@@ -1313,6 +1313,13 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
           text: tpl.license_notice,
         });
       }
+      const gpuNote = (tpl as { gpu_note?: string }).gpu_note;
+      if (gpuNote) {
+        entries.push({
+          path: `templates.${tpl.id}.gpu_note`,
+          text: gpuNote,
+        });
+      }
       for (const field of tpl.fields) {
         if (field.label) {
           entries.push({
@@ -3235,6 +3242,194 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
             STRICT_CANTONESE_RE,
           );
         }
+      }
+    }
+  });
+
+  it("translates all workflow-share backend errors, activity logs, and workflowShare locale keys across all 6 locales with zero CJK leaks or regional violations", () => {
+    const FORBIDDEN_ZH_TW_RE =
+      /工作流(?!程)|显存|顯存|尾帧|尾幀|渲染|视频|視頻|音频|音頻|默认|保存|缓存|緩存|跳過/;
+    const STRICT_CANTONESE_RE = /[搵唔喺嘅啲咗冇佢咁]/;
+
+    // 1. Validate all workflowShare.*, webConsole.workflowShare*, and guest-safe comfy.* locale keys
+    const shareLocaleKeys = (
+      Object.keys(COLABONE_MESSAGES["zh-CN"]) as ColabOneMessageKey[]
+    ).filter(
+      (k) =>
+        k.startsWith("workflowShare.") ||
+        k.startsWith("webConsole.workflowShare") ||
+        k === "comfy.shareWorkflowBtn" ||
+        k === "comfy.noticeSavedToHostDrive" ||
+        k === "comfy.noticeAlreadyInHostDrive" ||
+        k === "comfy.sharePreviewTooLarge" ||
+        k === "comfy.shareMediaPreviewError" ||
+        k === "comfy.preflightVramInsufficientShare" ||
+        k === "comfy.voicePreviewHintOfflineShare",
+    );
+    expect(shareLocaleKeys.length).toBeGreaterThanOrEqual(45);
+
+    for (const loc of ALL_LOCALES) {
+      for (const key of shareLocaleKeys) {
+        const val = COLABONE_MESSAGES[loc][key];
+        expect(val.trim().length, `empty ${loc}[${key}]`).toBeGreaterThan(0);
+        if (loc !== "ja-JP") {
+          expect(val, `katakana middot in ${loc}[${key}]`).not.toContain(
+            "\u30fb",
+          );
+        }
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            CJK_OR_FULLWIDTH_RE.test(val),
+            `CJK/fullwidth leak in ${loc}[${key}]: "${val}"`,
+          ).toBe(false);
+        }
+        if (loc === "ko-KR") {
+          expect(
+            val,
+            `non-standard 워크플로우 in ko-KR[${key}]: "${val}"`,
+          ).not.toContain("워크플로우");
+        }
+        if (loc === "zh-TW") {
+          expect(
+            val,
+            `forbidden zh-TW term in ${loc}[${key}]: "${val}"`,
+          ).not.toMatch(FORBIDDEN_ZH_TW_RE);
+        }
+        if (loc === "zh-HK") {
+          expect(
+            val,
+            `spoken Cantonese or non-HK char in zh-HK[${key}]: "${val}"`,
+          ).not.toMatch(STRICT_CANTONESE_RE);
+          expect(val, `non-HK 這裏 in zh-HK[${key}]`).not.toContain("這裏");
+        }
+      }
+      // Vendor-neutral host drive copy (never mentions Google)
+      expect(COLABONE_MESSAGES[loc]["comfy.noticeSavedToHostDrive"]).not.toMatch(
+        /google/i,
+      );
+      expect(
+        COLABONE_MESSAGES[loc]["comfy.noticeAlreadyInHostDrive"],
+      ).not.toMatch(/google/i);
+    }
+
+    // 2. Validate every static + dynamic workflow-share Go backend error & activity log
+    const workflowShareBackendSamples = [
+      "未登录或分享会话已失效",
+      "分享会话已失效",
+      "宿主机快照格式无效",
+      "序列化分享快照失败",
+      "当前算力服务暂未就绪，请联系分享者开启",
+      "当前算力服务暂未就绪，暂不可访问该作品文件",
+      "当前算力服务暂未就绪，请稍后再试",
+      "无权访问该作品文件",
+      "无权删除该作品文件",
+      "无权下载该作品文件",
+      "无权导出该作品文件",
+      "该作品已归档至宿主云盘，分享模式下不可访问",
+      "作品文件不存在或已清理",
+      "当前无法访问该作品文件，请稍后再试",
+      "当前分享链接未授权运行该工作流",
+      "工作流输入参数格式无效",
+      "工作流输入素材编号格式无效",
+      "无权使用该输入素材",
+      "任务编号无效",
+      "无权取消该任务",
+      "当前分享链接未开放数字人语音试听功能",
+      "参考音频素材编号格式无效",
+      "无权使用该参考音频素材",
+      "当前分享链接未授权访问该试听音频",
+      "试听音频编号无效",
+      "宿主机尚未连接云盘，暂不可保存到宿主云盘",
+      "宿主机当前算力版本暂不支持保存到宿主云盘",
+      "当前暂无法保存到宿主云盘，请联系分享者检查云盘状态",
+      "该操作在工作流分享模式下不可用",
+      "操作暂时不可用，请联系分享者检查云端服务状态",
+      "当前实时演播正在运行，暂不可执行工作流，请稍后再试",
+      "宿主机已开启任务完成后自动释放算力，请稍后再试",
+      "当前分享会话数量已达上限，请稍后再试",
+      "分享切换确认已过期，请重新打开分享链接",
+      "请至少选择一个有效的工作流（最多 64 项）",
+      "不支持的分享有效期设置",
+      "网页控制台服务已关闭",
+      "工作流分享链接数量已达上限，请先删除旧记录",
+      "无法分配唯一分享编号，请重试",
+      "分享编号无效",
+      "未找到对应的工作流分享链接",
+      "创建工作流分享返回数据无效",
+      "task_id 长度不合法",
+      "读取工作流分享签名密钥失败：vault locked",
+      "生成工作流分享签名密钥失败：entropy error",
+      "保存工作流分享签名密钥失败：disk full",
+      "保存工作流分享配置失败：permission denied",
+      "生成分享链接编号失败：entropy error",
+      "生成分享链接随机凭证失败：entropy error",
+      "分享备注包含无效字符",
+      "页面标题不能包含控制字符",
+      "分享备注长度不能超过 64 个字符",
+      "页面标题长度不能超过 80 个字符",
+      "清理工作流分享持久化会话失败：io error",
+      "保存工作流分享持久化会话失败：disk full",
+      "清理网页控制台持久化会话失败：io error",
+      "保存网页控制台持久化会话失败：disk full",
+      "已创建工作流分享链接（2 个工作流，有效期 24h）",
+      "已创建工作流分享链接（1 个工作流，有效期 once）",
+      "已创建工作流分享链接（3 个工作流，有效期 7d）",
+      "已创建工作流分享链接（4 个工作流，有效期 forever）",
+      "已撤销工作流分享链接 abcd1234 并注销关联访客会话",
+      "已删除工作流分享记录 abcd1234",
+      "排队中（第 1 位）· 已用 12 秒",
+      "远端 GPU 执行中 · 已用 25 秒",
+    ];
+
+    for (const loc of ALL_LOCALES) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      for (const sample of workflowShareBackendSamples) {
+        const out = translateColabOneBackendText(sample, loc);
+        expect(tb(sample), `tb() parity for ${loc}: ${sample}`).toBe(out);
+        expect(
+          out.trim().length,
+          `empty translation for ${loc}: ${sample}`,
+        ).toBeGreaterThan(0);
+        if (loc === "zh-CN") {
+          expect(out).toBe(sample);
+          continue;
+        }
+        if (loc !== "ja-JP") {
+          expect(out, `katakana middot leak in ${loc}: ${out}`).not.toContain(
+            "\u30fb",
+          );
+        }
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            CJK_OR_FULLWIDTH_RE.test(out),
+            `CJK/fullwidth leak in ${loc} for "${sample}" -> "${out}"`,
+          ).toBe(false);
+          expect(out, `${loc} must translate "${sample}"`).not.toBe(sample);
+        }
+        if (loc === "ja-JP") {
+          expect(out, `ja-JP must translate "${sample}"`).not.toBe(sample);
+        }
+        if (loc === "zh-TW") {
+          expect(out, `forbidden zh-TW term in "${out}"`).not.toMatch(
+            FORBIDDEN_ZH_TW_RE,
+          );
+        }
+        if (loc === "zh-HK") {
+          expect(out, `spoken Cantonese leak in zh-HK: "${out}"`).not.toMatch(
+            STRICT_CANTONESE_RE,
+          );
+        }
+      }
+      // Also verify English-source "Invalid output artifact ID" localizes cleanly in every locale
+      const invalidArtifactOut = translateColabOneBackendText(
+        "Invalid output artifact ID",
+        loc,
+      );
+      expect(invalidArtifactOut.trim().length).toBeGreaterThan(0);
+      if (loc === "en-US") {
+        expect(invalidArtifactOut).toBe("Invalid output artifact ID");
+      } else {
+        expect(invalidArtifactOut).not.toBe("Invalid output artifact ID");
       }
     }
   });

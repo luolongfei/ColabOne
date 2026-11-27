@@ -5116,6 +5116,47 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
+    re: /^排队中（第 (\d+) 位）· 已用 (.+)$/,
+    format: (m, loc) => {
+      const pos = m[1]!;
+      const dur = translateZhDuration(m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Queued (#${pos}) · ${dur} elapsed`;
+        case "zh-TW":
+          return `排隊中（第 ${pos} 位）· 已用 ${dur}`;
+        case "zh-HK":
+          return `排隊中（第 ${pos} 位）· 已用 ${dur}`;
+        case "ja-JP":
+          return `キュー待機中（${pos} 番目）· ${dur}経過`;
+        case "ko-KR":
+          return `대기 중 (${pos}번째) · ${dur} 경과`;
+        default:
+          return `排队中（第 ${pos} 位）· 已用 ${dur}`;
+      }
+    },
+  },
+  {
+    re: /^远端 GPU 执行中 · 已用 (.+)$/,
+    format: (m, loc) => {
+      const dur = translateZhDuration(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Running on remote GPU · ${dur} elapsed`;
+        case "zh-TW":
+          return `遠端 GPU 執行中 · 已用 ${dur}`;
+        case "zh-HK":
+          return `遠端 GPU 執行中 · 已用 ${dur}`;
+        case "ja-JP":
+          return `リモート GPU で実行中 · ${dur}経過`;
+        case "ko-KR":
+          return `원격 GPU에서 실행 중 · ${dur} 경과`;
+        default:
+          return `远端 GPU 执行中 · 已用 ${dur}`;
+      }
+    },
+  },
+  {
     re: /^(.+?) · 排队中（第 (\d+) 位）· 已用 (.+)$/,
     format: (m, loc) => {
       const name = translateInner(m[1]!, loc);
@@ -15631,6 +15672,313 @@ const PATTERN_RULES: PatternRule[] = [
           return `${label}が不正です: ${val}`;
         case "ko-KR":
           return `${label}이(가) 올바르지 않습니다: ${val}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  // === Workflow Web Sharing (console/internal/webconsole/workflow_share.go) ===
+  {
+    re: /^(读取|生成|保存)工作流分享签名密钥失败：(.+)$/s,
+    format: (m, loc) => {
+      const verb = m[1]!;
+      const detail = translateInner(m[2]!, loc);
+      switch (loc) {
+        case "en-US": {
+          const action =
+            verb === "读取" ? "read" : verb === "生成" ? "generate" : "save";
+          return `Failed to ${action} workflow share signing key: ${detail}`;
+        }
+        case "zh-TW": {
+          const action =
+            verb === "读取" ? "讀取" : verb === "生成" ? "產生" : "儲存";
+          return `${action}工作流程分享簽章金鑰失敗：${detail}`;
+        }
+        case "zh-HK": {
+          const action =
+            verb === "读取" ? "讀取" : verb === "生成" ? "產生" : "儲存";
+          return `${action}工作流分享簽章金鑰失敗：${detail}`;
+        }
+        case "ja-JP": {
+          const action =
+            verb === "读取" ? "読み込み" : verb === "生成" ? "生成" : "保存";
+          return `ワークフロー共有の署名キーの${action}に失敗しました: ${detail}`;
+        }
+        case "ko-KR": {
+          const action =
+            verb === "读取"
+              ? "읽지 못했습니다"
+              : verb === "生成"
+                ? "생성하지 못했습니다"
+                : "저장하지 못했습니다";
+          return `워크플로 공유 서명 키를 ${action}: ${detail}`;
+        }
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^保存工作流分享配置失败：(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to save workflow share configuration: ${detail}`;
+        case "zh-TW":
+          return `儲存工作流程分享設定失敗：${detail}`;
+        case "zh-HK":
+          return `儲存工作流分享配置失敗：${detail}`;
+        case "ja-JP":
+          return `ワークフロー共有設定の保存に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `워크플로 공유 설정을 저장하지 못했습니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^生成分享链接编号失败：(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to generate share link ID: ${detail}`;
+        case "zh-TW":
+          return `產生分享連結編號失敗：${detail}`;
+        case "zh-HK":
+          return `產生分享連結編號失敗：${detail}`;
+        case "ja-JP":
+          return `共有リンク ID の生成に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `공유 링크 ID를 생성하지 못했습니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^生成分享链接随机凭证失败：(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to generate random credentials for share link: ${detail}`;
+        case "zh-TW":
+          return `產生分享連結隨機憑證失敗：${detail}`;
+        case "zh-HK":
+          return `產生分享連結隨機憑證失敗：${detail}`;
+        case "ja-JP":
+          return `共有リンク用のランダム認証情報の生成に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `공유 링크용 무작위 자격 증명을 생성하지 못했습니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(分享备注|页面标题)(包含无效字符|不能包含控制字符|长度不能超过 (\d+) 个字符)$/,
+    format: (m, loc) => {
+      const rawField = m[1]!;
+      const rule = m[2]!;
+      const limit = m[3];
+      const fieldLabel =
+        rawField === "分享备注"
+          ? {
+              "zh-CN": "分享备注",
+              "en-US": "Share note",
+              "zh-TW": "分享備註",
+              "zh-HK": "分享備註",
+              "ja-JP": "共有メモ",
+              "ko-KR": "공유 메모",
+            }[loc]
+          : {
+              "zh-CN": "页面标题",
+              "en-US": "Page title",
+              "zh-TW": "頁面標題",
+              "zh-HK": "頁面標題",
+              "ja-JP": "ページタイトル",
+              "ko-KR": "페이지 제목",
+            }[loc];
+      if (rule === "包含无效字符") {
+        switch (loc) {
+          case "en-US":
+            return `${fieldLabel} contains invalid characters`;
+          case "zh-TW":
+            return `${fieldLabel}包含無效字元`;
+          case "zh-HK":
+            return `${fieldLabel}包含無效字元`;
+          case "ja-JP":
+            return `${fieldLabel}に無効な文字が含まれています`;
+          case "ko-KR":
+            return `${fieldLabel}에 유효하지 않은 문자가 포함되어 있습니다`;
+          default:
+            return m[0];
+        }
+      }
+      if (rule === "不能包含控制字符") {
+        switch (loc) {
+          case "en-US":
+            return `${fieldLabel} cannot contain control characters`;
+          case "zh-TW":
+            return `${fieldLabel}不可包含控制字元`;
+          case "zh-HK":
+            return `${fieldLabel}不能包含控制字元`;
+          case "ja-JP":
+            return `${fieldLabel}に制御文字は使用できません`;
+          case "ko-KR":
+            return `${fieldLabel}에는 제어 문자를 포함할 수 없습니다`;
+          default:
+            return m[0];
+        }
+      }
+      switch (loc) {
+        case "en-US":
+          return `${fieldLabel} cannot exceed ${limit} characters`;
+        case "zh-TW":
+          return `${fieldLabel}長度不可超過 ${limit} 個字元`;
+        case "zh-HK":
+          return `${fieldLabel}長度不能超過 ${limit} 個字元`;
+        case "ja-JP":
+          return `${fieldLabel}は ${limit} 文字以内で入力してください`;
+        case "ko-KR":
+          return `${fieldLabel} 길이는 ${limit}자를 초과할 수 없습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^(清理|保存)(工作流分享|网页控制台)持久化会话失败：(.+)$/s,
+    format: (m, loc) => {
+      const verb = m[1]!;
+      const rawScope = m[2]!;
+      const detail = translateInner(m[3]!, loc);
+      const isShare = rawScope === "工作流分享";
+      switch (loc) {
+        case "en-US": {
+          const action = verb === "清理" ? "clean up" : "save";
+          const scope = isShare ? "workflow share" : "Web Console";
+          return `Failed to ${action} persisted ${scope} sessions: ${detail}`;
+        }
+        case "zh-TW": {
+          const action = verb === "清理" ? "清理" : "儲存";
+          const scope = isShare ? "工作流程分享" : "網頁主控台";
+          return `${action}${scope}持久化工作階段失敗：${detail}`;
+        }
+        case "zh-HK": {
+          const action = verb === "清理" ? "清理" : "儲存";
+          const scope = isShare ? "工作流分享" : "網頁控制台";
+          return `${action}${scope}持久化工作階段失敗：${detail}`;
+        }
+        case "ja-JP": {
+          const action = verb === "清理" ? "クリーンアップ" : "保存";
+          const scope = isShare ? "ワークフロー共有" : "Web コンソール";
+          return `${scope}の永続セッションの${action}に失敗しました: ${detail}`;
+        }
+        case "ko-KR": {
+          const action =
+            verb === "清理" ? "정리하지 못했습니다" : "저장하지 못했습니다";
+          const scope = isShare ? "워크플로 공유" : "웹 콘솔";
+          return `${scope} 영구 세션을 ${action}: ${detail}`;
+        }
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已创建工作流分享链接（(\d+) 个工作流，有效期 (once|24h|7d|forever)）$/,
+    format: (m, loc) => {
+      const count = m[1]!;
+      const ttlKey = m[2] as "once" | "24h" | "7d" | "forever";
+      const ttlLabel = {
+        once: {
+          "zh-CN": "once",
+          "en-US": "single-use",
+          "zh-TW": "一次性",
+          "zh-HK": "一次性",
+          "ja-JP": "1 回限り",
+          "ko-KR": "1회용",
+        },
+        "24h": {
+          "zh-CN": "24h",
+          "en-US": "24 hours",
+          "zh-TW": "24 小時",
+          "zh-HK": "24 小時",
+          "ja-JP": "24 時間",
+          "ko-KR": "24시간",
+        },
+        "7d": {
+          "zh-CN": "7d",
+          "en-US": "7 days",
+          "zh-TW": "7 天",
+          "zh-HK": "7 天",
+          "ja-JP": "7 日間",
+          "ko-KR": "7일",
+        },
+        forever: {
+          "zh-CN": "forever",
+          "en-US": "never expires",
+          "zh-TW": "長期有效",
+          "zh-HK": "長期有效",
+          "ja-JP": "無期限",
+          "ko-KR": "무기한",
+        },
+      }[ttlKey][loc];
+      switch (loc) {
+        case "en-US":
+          return `Created workflow share link (${count} ${count === "1" ? "workflow" : "workflows"}, validity: ${ttlLabel})`;
+        case "zh-TW":
+          return `已建立工作流程分享連結（${count} 個工作流程，有效期：${ttlLabel}）`;
+        case "zh-HK":
+          return `已建立工作流分享連結（${count} 個工作流，有效期：${ttlLabel}）`;
+        case "ja-JP":
+          return `ワークフロー共有リンクを作成しました（${count} 件のワークフロー・有効期限: ${ttlLabel}）`;
+        case "ko-KR":
+          return `워크플로 공유 링크를 생성했습니다 (${count}개 워크플로, 유효 기간: ${ttlLabel})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已撤销工作流分享链接 ([0-9a-hjkmnp-tv-z]+) 并注销关联访客会话$/,
+    format: (m, loc) => {
+      const id = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Revoked workflow share link ${id} and signed out linked guest sessions`;
+        case "zh-TW":
+          return `已撤銷工作流程分享連結 ${id} 並登出關聯訪客工作階段`;
+        case "zh-HK":
+          return `已撤銷工作流分享連結 ${id} 並登出關聯訪客工作階段`;
+        case "ja-JP":
+          return `ワークフロー共有リンク ${id} を取り消し、関連するゲストセッションをサインアウトしました`;
+        case "ko-KR":
+          return `워크플로 공유 링크 ${id}을(를) 철회하고 연결된 방문자 세션을 로그아웃했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已删除工作流分享记录 ([0-9a-hjkmnp-tv-z]+)$/,
+    format: (m, loc) => {
+      const id = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Deleted workflow share record ${id}`;
+        case "zh-TW":
+          return `已刪除工作流程分享紀錄 ${id}`;
+        case "zh-HK":
+          return `已刪除工作流分享紀錄 ${id}`;
+        case "ja-JP":
+          return `ワークフロー共有履歴 ${id} を削除しました`;
+        case "ko-KR":
+          return `워크플로 공유 기록 ${id}을(를) 삭제했습니다`;
         default:
           return m[0];
       }

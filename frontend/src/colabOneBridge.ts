@@ -260,6 +260,42 @@ export interface ColabOneWebConsoleUpdateRequest {
   public_origin?: string;
 }
 
+/** ColabOneWorkflowShareCreateRequest configures a new guest workflow share link. */
+export interface ColabOneWorkflowShareCreateRequest {
+  label: string;
+  title: string;
+  workflow_ids: string[];
+  ttl_mode: string;
+}
+
+/** ColabOneWorkflowShareListState aggregates all workflow shares and active guest session metrics. */
+export interface ColabOneWorkflowShareListState {
+  shares: ColabOneWorkflowShareSummary[];
+  active_count: number;
+  total_active_sessions: number;
+}
+
+/** ColabOneWorkflowShareSummary describes a workflow share entry for the host desktop UI. */
+export interface ColabOneWorkflowShareSummary {
+  id: string;
+  label: string;
+  title: string;
+  workflow_ids: string[];
+  ttl_mode: string;
+  single_use: boolean;
+  status: string;
+  created_at: number;
+  expires_at: number;
+  revoked_at?: number;
+  consumed_at?: number;
+  active_sessions: number;
+  output_count: number;
+  url?: string;
+  local_url?: string;
+  uses_public_host: boolean;
+  can_copy_link: boolean;
+}
+
 // ---- Services ----
 
 export const ColabOneDesktop = {
@@ -286,12 +322,16 @@ export const ColabOneDesktop = {
    * when singleUse is true, the first redemption invalidates it immediately.
    */
   createWebConsoleLoginTicket: bind<[boolean], ColabOneWebConsoleTicket>("ColabOneDesktop.CreateWebConsoleLoginTicket", (singleUse: boolean) => [singleUse]),
+  /** CreateWorkflowShare generates a new HMAC-signed guest workflow share link. */
+  createWorkflowShare: bind<[ColabOneWorkflowShareCreateRequest], ColabOneWorkflowShareSummary>("ColabOneDesktop.CreateWorkflowShare", (req: ColabOneWorkflowShareCreateRequest) => [req]),
   /**
    * DecryptMigrationPreview decrypts the pending .colabone archive identified by
    * fileToken inside Go, caches the validated payload under a short-lived PreviewID,
    * and returns strictly redacted summaries to the WebView.
    */
   decryptMigrationPreview: bind<[string, string], ColabOneMigrationPreview>("ColabOneDesktop.DecryptMigrationPreview", (fileToken: string, password: string) => [fileToken, password]),
+  /** DeleteWorkflowShare permanently removes a workflow share link record and invalidates its active guests. */
+  deleteWorkflowShare: bind<[string], ColabOneWorkflowShareListState>("ColabOneDesktop.DeleteWorkflowShare", (shareID: string) => [shareID]),
   /**
    * ExportMigrationFile validates selections and password, opens the native Save
    * dialog, encrypts the selected modules in-process with Argon2id + AES-256-GCM,
@@ -324,6 +364,8 @@ export const ColabOneDesktop = {
   getWebConsolePasscode: bind<[], string>("ColabOneDesktop.GetWebConsolePasscode", () => []),
   /** GetWebConsoleState returns the live, redacted status of the remote web console server. */
   getWebConsoleState: bind<[], ColabOneWebConsoleState>("ColabOneDesktop.GetWebConsoleState", () => []),
+  /** GetWorkflowSharesState returns all configured workflow share links and live guest session counts. */
+  getWorkflowSharesState: bind<[], ColabOneWorkflowShareListState>("ColabOneDesktop.GetWorkflowSharesState", () => []),
   /** ListRollbackVersions queries recent older GitHub Releases available for version rollback. */
   listRollbackVersions: bind<[boolean], ColabOneRollbackVersion[]>("ColabOneDesktop.ListRollbackVersions", (forceRefresh: boolean) => [forceRefresh]),
   /**
@@ -355,6 +397,8 @@ export const ColabOneDesktop = {
   resolveCloseRequest: bind<[string, boolean], void>("ColabOneDesktop.ResolveCloseRequest", (action: string, remember: boolean) => [action, remember]),
   /** RevokeWebConsoleSessions signs out all currently authenticated web browsers. */
   revokeWebConsoleSessions: bind<[], ColabOneWebConsoleState>("ColabOneDesktop.RevokeWebConsoleSessions", () => []),
+  /** RevokeWorkflowShare revokes a workflow share link and immediately signs out all of its active guests. */
+  revokeWorkflowShare: bind<[string], ColabOneWorkflowShareListState>("ColabOneDesktop.RevokeWorkflowShare", (shareID: string) => [shareID]),
   setAppearance: bind<[string], void>("ColabOneDesktop.SetAppearance", (value: string) => [value]),
   /**
    * SetCloseBehavior updates and persists the main-window close policy ("ask",
@@ -424,4 +468,9 @@ export const events = {
    * session count updates from Go to open desktop windows.
    */
   colaboneWebConsole: event<ColabOneWebConsoleState>("colabone-web-console"),
+  /**
+   * ColabOneWorkflowSharesEvent pushes live workflow share list and active guest
+   * session count updates from Go to open desktop windows.
+   */
+  colaboneWorkflowShares: event<ColabOneWorkflowShareListState>("colabone-workflow-shares"),
 } as const;

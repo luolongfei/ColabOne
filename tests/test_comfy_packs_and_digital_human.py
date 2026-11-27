@@ -6775,6 +6775,177 @@ time.sleep(60)
         assert int(pgid_s) != os.getpgrp()
 
 
+def test_digital_human_runner_propagates_task_id_on_real_store_and_omits_on_legacy_stub(
+    runtime, tmp_path, monkeypatch
+):
+    from server.comfyui import ColabOneComfyWorkflowStore
+    from server.digital_human import ColabOneDigitalHumanRunner
+    from server.tts_engines import ColabOneRemoteTtsRunner
+
+    monkeypatch.setattr(
+        runtime,
+        "gpu_info",
+        lambda: {"name": "NVIDIA A100", "total_mib": 81920, "used_mib": 512},
+    )
+    monkeypatch.setattr("server.comfyui.time.sleep", lambda _: None)
+    monkeypatch.setattr("server.digital_human.time.sleep", lambda _: None, raising=False)
+
+    comfy_proc = Mock()
+    comfy_proc.poll.return_value = None
+    comfy_proc.pid = None
+    runtime.comfy.proc = comfy_proc
+    runtime.comfy.state = "ready"
+    monkeypatch.setattr(runtime.comfy.packs, "check_preflight", lambda _wf: None)
+    monkeypatch.setattr(runtime.comfy.packs, "ensure_pack", lambda *a, **k: False)
+
+    fake_seg_mp4 = b"\x00\x00\x00\x18ftypmp42task-id-dh-segment"
+    tail_png = make_png_bytes("blue", size=(64, 64))
+
+    def fake_post(url, **kwargs):
+        if url.endswith("/upload/image"):
+            files = kwargs.get("files") or {}
+            fname = files["image"][0] if "image" in files else "up.bin"
+            return make_http_resp({"name": fname, "subfolder": ""})
+        if url.endswith("/prompt"):
+            return make_http_resp({"prompt_id": "dh-tid-prompt-1"})
+        if url.endswith("/free") or url.endswith("/interrupt"):
+            return make_http_resp({"ok": True})
+        raise AssertionError(f"Unexpected POST {url}")
+
+    def fake_get(url, **kwargs):
+        if url.endswith("/system_stats"):
+            return make_http_resp({"system": {"comfyui_version": "0.46.0"}})
+        if url.endswith("/queue"):
+            return make_http_resp({"queue_running": [], "queue_pending": []})
+        if "/history/" in url:
+            pid = url.rsplit("/", 1)[-1]
+            return make_http_resp(
+                {
+                    pid: {
+                        "status": {"status_str": "success"},
+                        "outputs": {
+                            "11": {
+                                "gifs": [
+                                    {"filename": f"{pid}.mp4", "subfolder": "", "type": "output"}
+                                ]
+                            }
+                        },
+                    }
+                }
+            )
+        if url.endswith("/view"):
+            return make_http_resp(content=fake_seg_mp4)
+        raise AssertionError(f"Unexpected GET {url}")
+
+    runtime.http = Mock()
+    runtime.http.post.side_effect = fake_post
+    runtime.http.get.side_effect = fake_get
+
+    def fake_ffmpeg(*args, **kwargs):
+        cmd = [str(x) for x in args[0]]
+        out_file = Path(cmd[-1])
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        suf = out_file.suffix.lower()
+        if suf == ".wav":
+            write_pcm16_wav(
+                out_file, make_sine_samples(1.0, freq_hz=440.0, amp=0.3, sample_rate=16000), 16000
+            )
+        elif suf in (".png", ".jpg", ".jpeg"):
+            out_file.write_bytes(tail_png)
+        else:
+            out_file.write_bytes(b"\x00\x00\x00\x18ftypmp42final-dh-task-id-mp4")
+        return ""
+
+    anchor_png = tmp_path / "anchor.png"
+    anchor_png.write_bytes(tail_png)
+    audio_wav = tmp_path / "speech.wav"
+    write_pcm16_wav(
+        audio_wav, make_sine_samples(2.0, freq_hz=440.0, amp=0.3, sample_rate=16000), 16000
+    )
+
+    real_catalog = ComfyCatalog.model_validate_json(
+        (Path(__file__).resolve().parents[1] / "catalog" / "comfyui.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    wf = next(
+        t.model_dump()
+        for t in real_catalog.templates
+        if t.id == "digital-human-infinitetalk"
+    )
+    tts = ColabOneRemoteTtsRunner(
+        runtime, {e.id: e.model_dump() for e in real_catalog.tts_engines}
+    )
+    runner = ColabOneDigitalHumanRunner(runtime.comfy, tts, run_cmd_fn=fake_ffmpeg)
+    req = WorkflowRunRequest(
+        workflow_id=wf["id"],
+        overrides={"pipeline.audio_source": "audio", "pipeline.upscale_mode": "none"},
+        inputs={"1.image": "a" * 32, "2.audio": "b" * 32},
+    )
+    resolved_inputs = [
+        ("1.image", "anchor.png", anchor_png),
+        ("2.audio", "speech.wav", audio_wav),
+    ]
+
+    # 1. Real ColabOneComfyWorkflowStore persists task_id == task.id.
+    task_real = ColabOneTask("comfyui_run", wf["id"])
+    records_real = runner.run(task_real, wf, req, resolved_inputs)
+    assert len(records_real) == 1
+    assert records_real[0]["task_id"] == task_real.id
+    reloaded = ColabOneComfyWorkflowStore(runtime.root)
+    assert reloaded.outputs[records_real[0]["id"]]["task_id"] == task_real.id
+
+    # 2. Legacy stub store without `task_id` kwarg succeeds without TypeError and omits task_id.
+    legacy_calls: list[dict[str, Any]] = []
+
+    class _LegacyStoreWithoutTaskId:
+        def save_output_file(
+            self,
+            src_path,
+            workflow_id,
+            workflow_name,
+            filename,
+            elapsed=0.0,
+            prompt_id="",
+        ):
+            legacy_calls.append(
+                {
+                    "src_path": Path(src_path),
+                    "workflow_id": workflow_id,
+                    "filename": filename,
+                    "prompt_id": prompt_id,
+                }
+            )
+            return {
+                "id": "c" * 32,
+                "workflow_id": workflow_id,
+                "workflow_name": workflow_name,
+                "kind": "video",
+                "filename": filename,
+                "extension": "mp4",
+                "mime": "video/mp4",
+                "size": Path(src_path).stat().st_size,
+                "sha256": "d" * 64,
+                "created_at": time.time(),
+                "elapsed": elapsed,
+                "prompt_id": prompt_id,
+            }
+
+    orig_store = runtime.comfy.store
+    try:
+        runtime.comfy.store = _LegacyStoreWithoutTaskId()
+        task_legacy = ColabOneTask("comfyui_run", wf["id"])
+        records_legacy = runner.run(task_legacy, wf, req, resolved_inputs)
+        assert len(records_legacy) == 1
+        assert len(legacy_calls) == 1
+        assert "task_id" not in records_legacy[0]
+    finally:
+        runtime.comfy.store = orig_store
+        runtime.comfy.proc = None
+        runtime.comfy.state = "stopped"
+
+
+
 
 
 

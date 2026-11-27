@@ -242,6 +242,7 @@ def test_server_app_boots_offline_with_protocol_7_and_auth_contract(tmp_path, mo
             "comfyui_longcat_native",
             "comfyui_workflow_auto_release",
             "comfyui_live_studio",
+            "comfyui_share_guard",
         ]
         assert status["state"] == "ready"
         assert status["idle_minutes"] == 30
@@ -992,6 +993,9 @@ def test_go_controller_command_parity_across_timeout_webconsole_and_frontend():
     webconsole_go = (
         ROOT / "console" / "internal" / "webconsole" / "webconsole.go"
     ).read_text(encoding="utf-8")
+    workflow_share_go = (
+        ROOT / "console" / "internal" / "webconsole" / "workflow_share.go"
+    ).read_text(encoding="utf-8")
 
     controller_cmds = _extract_go_switch_case_strings(
         commands_go, "func (c *ColabOneController) dispatchCommand("
@@ -1001,6 +1005,9 @@ def test_go_controller_command_parity_across_timeout_webconsole_and_frontend():
     )
     blocked_web_cmds = _extract_go_map_keys(
         webconsole_go, "blockedWebCommands = map[string]string{"
+    )
+    share_cmds = _extract_go_switch_case_strings(
+        workflow_share_go, "func (w *ColabOneWebConsole) handleShareCommand("
     )
 
     frontend_cmds: set[str] = set()
@@ -1018,6 +1025,7 @@ def test_go_controller_command_parity_across_timeout_webconsole_and_frontend():
     assert controller_cmds, "Expected controller commands in commands.go"
     assert timeout_cmds, "Expected timeout entries in colabOneMethodTimeout"
     assert blocked_web_cmds, "Expected entries in blockedWebCommands"
+    assert share_cmds, "Expected guest allowlisted commands in handleShareCommand"
     assert frontend_cmds, "Expected static colabOneCommand calls in frontend/src"
 
     assert sorted(timeout_cmds - controller_cmds) == [], (
@@ -1025,6 +1033,12 @@ def test_go_controller_command_parity_across_timeout_webconsole_and_frontend():
     )
     assert sorted(blocked_web_cmds - controller_cmds) == [], (
         f"blockedWebCommands references unknown commands: {sorted(blocked_web_cmds - controller_cmds)}"
+    )
+    assert sorted(share_cmds - controller_cmds) == [], (
+        f"handleShareCommand references unknown commands: {sorted(share_cmds - controller_cmds)}"
+    )
+    assert share_cmds.isdisjoint(blocked_web_cmds), (
+        f"handleShareCommand must never expose blocked web commands: {sorted(share_cmds & blocked_web_cmds)}"
     )
     assert sorted(frontend_cmds - controller_cmds) == [], (
         f"frontend/src calls unknown commands: {sorted(frontend_cmds - controller_cmds)}"
@@ -1140,6 +1154,23 @@ def test_webconsole_command_body_size_limits_and_upload_allowlist():
         "handleCommand must enforce normalLimit for non-media-upload commands"
     )
 
+    workflow_share_go = (
+        ROOT / "console" / "internal" / "webconsole" / "workflow_share.go"
+    ).read_text(encoding="utf-8")
+    share_start = workflow_share_go.index(
+        "func (w *ColabOneWebConsole) handleShareCommand("
+    )
+    share_body = workflow_share_go[share_start:]
+    assert "normalLimit, mediaLimit := w.commandBodyLimits()" in share_body, (
+        "handleShareCommand must reuse w.commandBodyLimits()"
+    )
+    assert 'if peekCommandAction(prefix) == "comfyui.input.upload"' in share_body, (
+        "handleShareCommand must raise bodyLimit only for comfyui.input.upload"
+    )
+    assert 'if cr.n > normalLimit && action != "comfyui.input.upload"' in share_body, (
+        "handleShareCommand must enforce normalLimit for non-upload guest commands"
+    )
+
 
 def test_web_and_go_brand_icons_stay_in_sync_with_master_software_logo():
     master_svg = (ROOT / "console" / "resources" / "icon.svg").read_bytes()
@@ -1172,7 +1203,39 @@ def test_web_and_go_brand_icons_stay_in_sync_with_master_software_logo():
     assert "brandicon.DataURI()" in login_page_go
     assert 'viewBox="0 0 64 64"' not in login_page_go
 
+    workflow_share_page_go = (
+        ROOT / "console" / "internal" / "webconsole" / "workflow_share_page.go"
+    ).read_text(encoding="utf-8")
+    assert "colabOneWebIconDataURI()" in workflow_share_page_go
+    assert 'viewBox="0 0 64 64"' not in workflow_share_page_go
+    assert r'href=\"/favicon.ico\"' in workflow_share_page_go
+    assert r'href=\"/apple-touch-icon.png\"' in workflow_share_page_go
+
     index_html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
     assert "../console/internal/brandicon/favicon.svg" in index_html
     assert "../console/internal/brandicon/favicon.ico" in index_html
     assert "../console/internal/brandicon/apple-touch-icon.png" in index_html
+
+
+def test_share_digital_human_ids_match_catalog():
+    comfy_raw = json.loads((ROOT / "catalog" / "comfyui.json").read_text(encoding="utf-8"))
+    catalog = ComfyCatalog.model_validate(comfy_raw)
+    catalog_dh_ids = {
+        tpl.id
+        for tpl in catalog.templates
+        if tpl.pipeline is not None and tpl.pipeline.kind == "digital_human"
+    }
+    workflow_share_go = (
+        ROOT / "console" / "internal" / "webconsole" / "workflow_share.go"
+    ).read_text(encoding="utf-8")
+    dh_match = re.search(
+        r"\bbuiltinDigitalHumanIDs\s*=\s*\[\]string\{([^}]+)\}",
+        workflow_share_go,
+    )
+    assert dh_match is not None, "Missing builtinDigitalHumanIDs in workflow_share.go"
+    go_dh_ids = set(re.findall(r'"([a-zA-Z0-9_-]+)"', dh_match.group(1)))
+    assert go_dh_ids == catalog_dh_ids, (
+        f"workflow_share.go builtinDigitalHumanIDs ({sorted(go_dh_ids)}) diverged from "
+        f"catalog/comfyui.json digital_human templates ({sorted(catalog_dh_ids)})"
+    )
+

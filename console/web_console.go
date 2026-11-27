@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/egoist/mygo"
+	"github.com/luolongfei/ColabOne/console/internal/controller"
 	"github.com/luolongfei/ColabOne/console/internal/vault"
 	"github.com/luolongfei/ColabOne/console/internal/webconsole"
 )
@@ -15,6 +16,10 @@ import (
 // ColabOneWebConsoleEvent pushes live remote web console status and active
 // session count updates from Go to open desktop windows.
 var ColabOneWebConsoleEvent = mygo.NewEvent[webconsole.ColabOneWebConsoleState]("colabone-web-console")
+
+// ColabOneWorkflowSharesEvent pushes live workflow share list and active guest
+// session count updates from Go to open desktop windows.
+var ColabOneWorkflowSharesEvent = mygo.NewEvent[webconsole.ColabOneWorkflowShareListState]("colabone-workflow-shares")
 
 func (d *ColabOneDesktop) initWebConsole(configDir string, vaultStore *vault.ColabOneVault) {
 	d.initWebConsoleWithFS(configDir, vaultStore, colabOneFrontendFS)
@@ -43,10 +48,19 @@ func (d *ColabOneDesktop) initWebConsoleWithFS(
 		},
 		ServeOutputMedia: func(ctx context.Context, rw http.ResponseWriter, r *http.Request, id string) {
 			if d.bridge == nil {
-				http.Error(rw, colabOneT("err.bridgeNotInitialized"), http.StatusServiceUnavailable)
+				writeColabOneMediaError(rw, r, http.StatusServiceUnavailable, colabOneT("err.bridgeNotInitialized"))
 				return
 			}
 			d.bridge.serveOutputMedia(ctx, rw, r, id)
+		},
+		ServeShareOutputMedia: func(ctx context.Context, rw http.ResponseWriter, r *http.Request, id string) {
+			if d.bridge == nil {
+				writeColabOneMediaError(rw, r, http.StatusServiceUnavailable, "当前无法访问该作品文件，请稍后再试")
+				return
+			}
+			d.bridge.serveOutputMediaWithOptions(ctx, rw, r, id, controller.ColabOneOutputMediaOptions{
+				RuntimeOnly: true,
+			})
 		},
 		FrontendFS: frontendFS,
 		AppVersion: colabOneAppVersion(),
@@ -58,6 +72,9 @@ func (d *ColabOneDesktop) initWebConsoleWithFS(
 		},
 		OnStateChange: func(state webconsole.ColabOneWebConsoleState) {
 			d.notifyWebConsoleState(state)
+		},
+		OnWorkflowSharesChange: func(state webconsole.ColabOneWorkflowShareListState) {
+			d.notifyWorkflowSharesState(state)
 		},
 	})
 	d.webConsoleMu.Lock()
@@ -203,6 +220,13 @@ func (d *ColabOneDesktop) CreateWebConsoleLoginTicket(singleUse bool) (webconsol
 	return wc.CreateLoginTicket(singleUse)
 }
 
+func (d *ColabOneDesktop) notifyWorkflowSharesState(state webconsole.ColabOneWorkflowShareListState) {
+	if d.appQuitting.Load() || !mygo.App.IsReady() {
+		return
+	}
+	_ = ColabOneWorkflowSharesEvent.Broadcast(state)
+}
+
 // RevokeWebConsoleSessions signs out all currently authenticated web browsers.
 func (d *ColabOneDesktop) RevokeWebConsoleSessions() (webconsole.ColabOneWebConsoleState, error) {
 	wc := d.webConsoleService()
@@ -210,4 +234,48 @@ func (d *ColabOneDesktop) RevokeWebConsoleSessions() (webconsole.ColabOneWebCons
 		return d.GetWebConsoleState(), errors.New(colabOneT("err.webConsoleUnavailable"))
 	}
 	return wc.RevokeSessions(), nil
+}
+
+// GetWorkflowSharesState returns all configured workflow share links and live guest session counts.
+func (d *ColabOneDesktop) GetWorkflowSharesState() webconsole.ColabOneWorkflowShareListState {
+	wc := d.webConsoleService()
+	if wc == nil {
+		return webconsole.ColabOneWorkflowShareListState{
+			Shares: []webconsole.ColabOneWorkflowShareSummary{},
+		}
+	}
+	return wc.WorkflowSharesState()
+}
+
+// CreateWorkflowShare generates a new HMAC-signed guest workflow share link.
+func (d *ColabOneDesktop) CreateWorkflowShare(
+	req webconsole.ColabOneWorkflowShareCreateRequest,
+) (webconsole.ColabOneWorkflowShareSummary, error) {
+	wc := d.webConsoleService()
+	if wc == nil {
+		return webconsole.ColabOneWorkflowShareSummary{}, errors.New(colabOneT("err.webConsoleUnavailable"))
+	}
+	return wc.CreateWorkflowShare(req)
+}
+
+// RevokeWorkflowShare revokes a workflow share link and immediately signs out all of its active guests.
+func (d *ColabOneDesktop) RevokeWorkflowShare(
+	shareID string,
+) (webconsole.ColabOneWorkflowShareListState, error) {
+	wc := d.webConsoleService()
+	if wc == nil {
+		return d.GetWorkflowSharesState(), errors.New(colabOneT("err.webConsoleUnavailable"))
+	}
+	return wc.RevokeWorkflowShare(shareID)
+}
+
+// DeleteWorkflowShare permanently removes a workflow share link record and invalidates its active guests.
+func (d *ColabOneDesktop) DeleteWorkflowShare(
+	shareID string,
+) (webconsole.ColabOneWorkflowShareListState, error) {
+	wc := d.webConsoleService()
+	if wc == nil {
+		return d.GetWorkflowSharesState(), errors.New(colabOneT("err.webConsoleUnavailable"))
+	}
+	return wc.DeleteWorkflowShare(shareID)
 }

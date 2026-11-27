@@ -3798,3 +3798,140 @@ func TestValidateComfyInputUploadRejectsControlChars(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkflowOutputRecordTaskIDContract(t *testing.T) {
+	baseJSON := func(extra string) string {
+		return `{"id":"` + strings.Repeat("d", 32) + `","workflow_id":"wf_demo-1","workflow_name":"Demo","kind":"video","filename":"clip_0001.mp4","extension":"mp4","mime":"video/mp4","size":128,"sha256":"` + strings.Repeat("e", 64) + `","created_at":12.5,"elapsed":3.2,"prompt_id":"prompt-1"` + extra + `}`
+	}
+
+	// 1. Legacy JSON omitting task_id remains strictly backward compatible.
+	var legacy ColabOneWorkflowOutputRecord
+	if err := json.Unmarshal([]byte(baseJSON("")), &legacy); err != nil {
+		t.Fatalf("unmarshal legacy output record without task_id failed: %v", err)
+	}
+	if legacy.TaskID != "" {
+		t.Fatalf("legacy TaskID = %q, want empty string", legacy.TaskID)
+	}
+	if err := legacy.Validate(); err != nil {
+		t.Fatalf("validate legacy output record failed: %v", err)
+	}
+	legacyWire := marshalJSONMap(t, &legacy)
+	if _, hasTaskID := legacyWire["task_id"]; hasTaskID {
+		t.Fatalf("empty task_id should be omitted from marshaled JSON, got %#v", legacyWire["task_id"])
+	}
+
+	// 2. Optional task_id up to 120 runes (including multibyte UTF-8) unmarshals, validates, and marshals cleanly.
+	exact120 := strings.Repeat("任", 120)
+	var tagged ColabOneWorkflowOutputRecord
+	if err := json.Unmarshal([]byte(baseJSON(`,"task_id":"`+exact120+`"`)), &tagged); err != nil {
+		t.Fatalf("unmarshal output record with 120-rune task_id failed: %v", err)
+	}
+	if tagged.TaskID != exact120 {
+		t.Fatalf("tagged TaskID mismatch: got len %d, want 120 runes", len([]rune(tagged.TaskID)))
+	}
+	if err := tagged.Validate(); err != nil {
+		t.Fatalf("validate output record with 120-rune task_id failed: %v", err)
+	}
+	taggedWire := marshalJSONMap(t, &tagged)
+	if taggedWire["task_id"] != exact120 {
+		t.Fatalf("marshaled task_id = %#v, want %q", taggedWire["task_id"], exact120)
+	}
+
+	// 3. Explicit null task_id is rejected by strict unmarshal.
+	var nullTask ColabOneWorkflowOutputRecord
+	if err := json.Unmarshal([]byte(baseJSON(`,"task_id":null`)), &nullTask); err == nil || !strings.Contains(err.Error(), "不能为空值") {
+		t.Fatalf("null task_id: err = %v, want non-null rejection", err)
+	}
+
+	// 4. task_id exceeding 120 runes fails Validate.
+	overlongASCII := tagged
+	overlongASCII.TaskID = strings.Repeat("t", 121)
+	if err := overlongASCII.Validate(); err == nil || err.Error() != "task_id 长度不合法" {
+		t.Fatalf("121-char ASCII task_id: err = %v, want %q", err, "task_id 长度不合法")
+	}
+	overlongUnicode := tagged
+	overlongUnicode.TaskID = strings.Repeat("任", 121)
+	if err := overlongUnicode.Validate(); err == nil || err.Error() != "task_id 长度不合法" {
+		t.Fatalf("121-rune Unicode task_id: err = %v, want %q", err, "task_id 长度不合法")
+	}
+}
+
+func TestComfyModelExtensionsPathDotfilesIntNumberAndSkipAutoRelease(t *testing.T) {
+	// 1. .onnx and .sft model file extensions are accepted by ColabOneComfyModelRef.
+	for _, ext := range []string{".onnx", ".sft"} {
+		ref := ColabOneComfyModelRef{
+			TargetDir: "checkpoints",
+			Repo:      "org/demo-model",
+			Path:      "sub/weights" + ext,
+			Revision:  strings.Repeat("a", 40),
+			Size:      1024,
+			SHA256:    strings.Repeat("b", 64),
+		}
+		if err := ref.Validate(); err != nil {
+			t.Fatalf("model extension %s should be accepted, got %v", ext, err)
+		}
+	}
+
+	// 2. validateModelFilePath rejects dotfile segments and empty path segments.
+	for _, badPath := range []string{
+		".hidden/model.safetensors",
+		"dir/.secret.onnx",
+		"dir//model.sft",
+		"/leading/model.onnx",
+		"trailing/model.onnx/",
+		"../escape.onnx",
+	} {
+		if err := validateModelFilePath(badPath); err == nil {
+			t.Fatalf("validateModelFilePath(%q) expected error, got nil", badPath)
+		}
+	}
+	if err := validateModelFilePath("nested/sub_dir/model_v1.onnx"); err != nil {
+		t.Fatalf("valid nested model path rejected: %v", err)
+	}
+
+	// 3. isIntValue accepts integral json.Number floats while isStrictIntValue rejects decimal floats.
+	for _, okNum := range []json.Number{"20", "20.0", "1e3", "-0.0", "42.000"} {
+		if !isIntValue(okNum) {
+			t.Fatalf("isIntValue(%q) expected true", okNum)
+		}
+	}
+	for _, badNum := range []json.Number{"20.5", "1.25", "NaN", "1e309", "not-a-num"} {
+		if isIntValue(badNum) {
+			t.Fatalf("isIntValue(%q) expected false", badNum)
+		}
+	}
+	if isStrictIntValue(json.Number("20.0")) {
+		t.Fatalf("isStrictIntValue(20.0) must remain false")
+	}
+	if !isStrictIntValue(json.Number("20")) {
+		t.Fatalf("isStrictIntValue(20) expected true")
+	}
+
+	// 4. ColabOneWorkflowRunRequest accepts optional skip_auto_release boolean and omits when false.
+	var runReq ColabOneWorkflowRunRequest
+	if err := json.Unmarshal([]byte(`{"workflow_id":"digital-human-longcat","skip_auto_release":true}`), &runReq); err != nil {
+		t.Fatalf("unmarshal workflow run with skip_auto_release=true: %v", err)
+	}
+	if !runReq.SkipAutoRelease {
+		t.Fatalf("expected SkipAutoRelease=true")
+	}
+	if err := runReq.Validate(); err != nil {
+		t.Fatalf("validate workflow run with skip_auto_release=true: %v", err)
+	}
+	wire := marshalJSONMap(t, &runReq)
+	if wire["skip_auto_release"] != true {
+		t.Fatalf("marshaled skip_auto_release = %#v, want true", wire["skip_auto_release"])
+	}
+	var defaultRunReq ColabOneWorkflowRunRequest
+	if err := json.Unmarshal([]byte(`{"workflow_id":"digital-human-longcat"}`), &defaultRunReq); err != nil {
+		t.Fatalf("unmarshal default workflow run: %v", err)
+	}
+	defaultWire := marshalJSONMap(t, &defaultRunReq)
+	if _, has := defaultWire["skip_auto_release"]; has {
+		t.Fatalf("false skip_auto_release should be omitted from JSON, got %#v", defaultWire["skip_auto_release"])
+	}
+	var nullRunReq ColabOneWorkflowRunRequest
+	if err := json.Unmarshal([]byte(`{"workflow_id":"digital-human-longcat","skip_auto_release":null}`), &nullRunReq); err == nil {
+		t.Fatalf("explicit skip_auto_release: null should be rejected")
+	}
+}

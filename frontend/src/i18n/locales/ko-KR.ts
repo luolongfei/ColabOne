@@ -1397,6 +1397,14 @@ export const koKRMessages: ColabOneMessages = {
   "comfy.outputDriveSyncedTooltip": "Google 드라이브(ColabOne_Drive)에 동기화됨",
   "comfy.outputTagSavedInDrive": "드라이브 저장됨",
   "comfy.outputTagSyncedInDrive": "드라이브 동기화됨",
+  "comfy.outputTagShared": "외부 공유",
+  "comfy.outputTagSharedTooltip": "외부 공유 \"{label}\"에서 생성됨",
+  "comfy.outputTagSharedTooltipAnonymous": "외부 공유 링크에서 생성됨",
+  "comfy.saveToHostDriveBtn": "호스트 드라이브에 저장",
+  "comfy.savedToHostDriveBtn": "호스트 드라이브에 저장됨",
+  "comfy.noticeSavedToHostDrive": "호스트 드라이브에 저장했습니다",
+  "comfy.noticeAlreadyInHostDrive": "이 결과물은 이미 호스트 드라이브에 있습니다",
+  "comfy.shareWorkflowBtn": "워크플로 공유",
   "comfy.exportLocalNeedDriveApiTooltip": "기본 DriveFS 기록은 GPU 없이 직접 다운로드할 수 없습니다. 드라이브에서 보기를 이용하거나 무인 드라이브 모드를 켜세요",
   "comfy.deleteDriveOutputDesc": "Google 드라이브 연결 결과물 \"{name}\"을(를) 삭제할까요? (드라이브 API 사용 시 Google 드라이브 휴지통으로 이동합니다)",
   "comfy.driveModalConnectedAutoReleaseDesc": "Google 드라이브 \"{folder}\"에 마운트되었습니다{free}. 아래 버튼을 눌러 워크플로우 완료 후 자동 동기화 및 안전한 인스턴스 해제를 켤 수 있습니다.",
@@ -1471,6 +1479,8 @@ export const koKRMessages: ColabOneMessages = {
     "현재 구성({names})에 비상업/연구 라이선스 구성 요소가 포함되어 있습니다: {notices}",
   "comfy.preflightVramInsufficient":
     "GPU VRAM이 부족합니다(필요 {required} GB, 현재 {available} GB). 권장 GPU({gpu})로 전환하세요.",
+  "comfy.preflightVramInsufficientShare":
+    "현재 GPU VRAM이 부족합니다(필요 {required} GB, 현재 {available} GB, 권장 {gpu}). 공유자에게 연산 사양 조정을 요청해 주세요.",
   "comfy.preflightDiskInsufficient":
     "원격 디스크 공간이 부족합니다(약 {required} GB 필요, 현재 {available} GB 여유)",
   "comfy.preflightPackReady": "워크플로 팩과 모델이 준비되어 바로 실행할 수 있습니다",
@@ -1478,8 +1488,12 @@ export const koKRMessages: ColabOneMessages = {
     "첫 실행 시 원격에서 약 {size}의 모델과 노드 종속성을 자동 다운로드합니다",
   "comfy.videoPreviewTooLarge":
     "파일 용량이 큽니다({size}). 메모리 절약을 위해 아래 \"로컬로 내보내기\" 또는 \"드라이브로 저장\"으로 확인하세요.",
+  "comfy.sharePreviewTooLarge":
+    "파일 용량이 큽니다({size}). 메모리 절약을 위해 아래 \"로컬로 내보내기\"로 다운로드해 확인하세요.",
   "comfy.mediaPreviewError":
     "내장 플레이어에서 이 미디어를 재생할 수 없습니다. \"로컬로 내보내기\" 또는 \"드라이브로 저장\"으로 확인하세요.",
+  "comfy.shareMediaPreviewError":
+    "내장 플레이어에서 이 미디어를 재생할 수 없습니다. \"로컬로 내보내기\"로 다운로드해 확인하세요.",
   "comfy.errImportTooLarge": "워크플로 JSON 크기가 2 MB 상한을 초과했습니다",
   "comfy.errImportTooManyNodes": "워크플로 노드 수가 최대 500개를 초과했습니다",
   "comfy.errImportInvalidNodeId":
@@ -1541,6 +1555,8 @@ export const koKRMessages: ColabOneMessages = {
     "미리듣기를 누르면 선택한 엔진으로 원격 GPU에서 이 짧은 글을 합성하고 캐시하여 여러 음색과 모델의 표현력을 손쉽게 비교할 수 있습니다.",
   "comfy.voicePreviewHintOffline":
     "원격 GPU 인스턴스에 연결하면 각 엔진과 음색을 실시간으로 미리 들을 수 있습니다. 연결 전에도 추천 예문과 음색 설명을 먼저 둘러볼 수 있습니다.",
+  "comfy.voicePreviewHintOfflineShare":
+    "공유자가 연산 서비스를 시작하면 각 엔진과 음색을 실시간으로 미리 들을 수 있습니다. 그 전에도 추천 예문과 음색 설명을 먼저 둘러볼 수 있습니다.",
   "comfy.voicePreviewHintCustom":
     "사용자 지정 음색이 선택되어 있습니다. 아래에 업로드한 참조 음성 또는 텍스트 설명을 사용해 미리듣기를 합성합니다.",
   "comfy.voicePreviewCachedTag": "캐시 재사용",
@@ -2057,6 +2073,107 @@ export const koKRMessages: ColabOneMessages = {
   "webConsole.webOAuthManualHint":
     "원격 웹 모드에서는 수동 인증 로그인을 사용해 주세요. Google 인증 페이지를 연 뒤 반환된 내용을 아래에 붙여 넣으면 로그인이 완료됩니다.",
   "webConsole.webOpenCanvasBrowserOnly": "새 탭에서 캔버스 열기",
+  "webConsole.workflowShareSectionTitle": "워크플로 웹 공유",
+  "webConsole.workflowShareSectionDesc":
+    "독립된 워크플로 공유 링크를 생성합니다. 방문자는 선택한 워크플로만 실행하고 자신이 생성한 결과물만 확인할 수 있습니다.",
+  "webConsole.workflowShareManageBtn": "워크플로 공유 관리",
+  "webConsole.workflowShareActiveTag": "활성 공유 {count}개",
+
+  // Workflow Web Sharing
+  "workflowShare.modalTitle": "워크플로 공유",
+  "workflowShare.tabCreate": "새 공유 만들기",
+  "workflowShare.tabManage": "공유 관리",
+  "workflowShare.webConsoleOffTitle": "원격 웹 콘솔이 꺼져 있습니다",
+  "workflowShare.webConsoleOffDesc":
+    "워크플로 웹 공유는 원격 웹 콘솔의 접속 주소를 통해 제공됩니다. 공유 링크를 만들기 전에 먼저 웹 콘솔을 켜 주세요.",
+  "workflowShare.enableWebConsoleBtn": "웹 콘솔 바로 켜기",
+  "workflowShare.openWebConsoleSettingsBtn": "공개 도메인 설정으로 이동",
+  "workflowShare.noPublicOriginHint":
+    "고정 공개 도메인이 설정되지 않아 생성된 링크에 로컬 주소가 사용됩니다. 외부 사용자에게 공유하려면 설정에서 공개 도메인을 구성해 주세요.",
+  "workflowShare.publicOriginHint":
+    "공개 주소 {origin}을(를) 사용하여 공유 링크를 생성합니다.",
+  "workflowShare.selectWorkflowsLabel": "공유할 워크플로 선택",
+  "workflowShare.selectWorkflowsHint":
+    "링크를 연 방문자는 여기에서 선택한 워크플로만 보고 실행할 수 있습니다.",
+  "workflowShare.digitalHumanGroupSub":
+    "InfiniteTalk 장편 영상 버전 및 LongCat 96GB 플래그십 버전 포함",
+  "workflowShare.noWorkflowsHint": "현재 공유할 수 있는 워크플로가 없습니다.",
+  "workflowShare.labelField": "공유 메모 (선택)",
+  "workflowShare.labelPlaceholder": "예: 팀원 디지털 휴먼 테스트용",
+  "workflowShare.titleField": "방문자 페이지 제목 (선택)",
+  "workflowShare.titlePlaceholder": "비워 두면 기본 제목이 표시됩니다",
+  "workflowShare.ttlLabel": "공유 키 유효 기간",
+  "workflowShare.ttlHint":
+    "방문자가 유효 기간 내에 링크를 열면 브라우저에 장기 세션이 자동으로 유지됩니다. 이후 링크가 만료되더라도 직접 철회하기 전까지 해당 브라우저에서 계속 사용할 수 있습니다.",
+  "workflowShare.ttl24h": "24시간 (기본)",
+  "workflowShare.ttlOnce": "1회용",
+  "workflowShare.ttl7d": "7일",
+  "workflowShare.ttlForever": "무기한",
+  "workflowShare.createAndCopyBtn": "공유 링크 생성 및 복사",
+  "workflowShare.createdLinkTitle": "공유 링크가 생성되어 복사되었습니다",
+  "workflowShare.createdLinkTitleOnly": "공유 링크가 생성되었습니다",
+  "workflowShare.copyLinkBtn": "링크 복사",
+  "workflowShare.toastCreatedCopied":
+    "워크플로 공유 링크를 생성하여 클립보드에 복사했습니다",
+  "workflowShare.toastCreatedOnly":
+    "워크플로 공유가 생성되었습니다. 링크를 직접 복사해 주세요",
+  "workflowShare.toastLinkCopied": "공유 링크를 클립보드에 복사했습니다",
+  "workflowShare.toastRevoked":
+    "공유를 철회하고 연결된 방문자 세션을 모두 만료했습니다",
+  "workflowShare.toastDeleted": "공유 기록을 삭제했습니다",
+  "workflowShare.errSelectWorkflow":
+    "공유할 워크플로를 하나 이상 선택해 주세요",
+  "workflowShare.emptyShares": "아직 생성된 워크플로 공유가 없습니다",
+  "workflowShare.emptySharesDesc":
+    "'새 공유 만들기'에서 워크플로를 선택하면 독립된 테스트 링크를 생성할 수 있습니다.",
+  "workflowShare.statusActive": "활성",
+  "workflowShare.statusExpired": "만료됨",
+  "workflowShare.statusUsed": "사용됨",
+  "workflowShare.statusRevoked": "철회됨",
+  "workflowShare.defaultRemark": "이름 없는 공유",
+  "workflowShare.metaSessions": "활성 방문자 {count}명",
+  "workflowShare.metaOutputs": "결과물 {count}개",
+  "workflowShare.metaExpiresAt": "링크 만료: {time}",
+  "workflowShare.metaNeverExpires": "링크 무기한 유효",
+  "workflowShare.metaSingleUse": "일회용 링크",
+  "workflowShare.revokeBtn": "공유 철회",
+  "workflowShare.revokeConfirmTitle": "\"{name}\" 공유를 철회하시겠습니까?",
+  "workflowShare.revokeConfirmDesc":
+    "철회하면 이 링크는 즉시 만료되며, 이 링크로 접속한 모든 방문자도 더 이상 이용할 수 없습니다.",
+  "workflowShare.deleteRecordBtn": "기록 삭제",
+  "workflowShare.deleteConfirmActiveTitle": "공유 \"{name}\" 기록을 삭제할까요?",
+  "workflowShare.deleteConfirmActiveDesc":
+    "현재 로그인된 방문자 세션이 {count}개 남아 있으며, 기록을 삭제하면 해당 방문자의 접근 권한이 즉시 해제됩니다.",
+  "workflowShare.guestDefaultTitle": "워크플로 체험 공간",
+  "workflowShare.guestSubtitle":
+    "아래에서 워크플로를 선택해 파라미터를 설정하고 실행하세요. 생성된 결과물은 이 공유 내에서만 볼 수 있습니다.",
+  "workflowShare.guestStatusReady": "GPU 준비됨",
+  "workflowShare.guestStatusRunning": "생성 중",
+  "workflowShare.guestStatusBusyOther": "GPU 사용 중",
+  "workflowShare.guestStatusOffline": "서비스 오프라인",
+  "workflowShare.guestStatusReconnecting": "연결 끊김",
+  "workflowShare.guestOfflineBannerTitle": "연산 서비스가 아직 시작되지 않았습니다",
+  "workflowShare.guestOfflineBannerDesc":
+    "원격 GPU 인스턴스가 아직 시작되지 않아 워크플로를 실행할 수 없습니다. 공유자에게 시작을 요청한 뒤 다시 시도해 주세요.",
+  "workflowShare.guestDisconnectedTitle": "공유 서비스와 연결이 끊어졌습니다",
+  "workflowShare.guestDisconnectedDesc":
+    "자동으로 다시 연결을 시도하고 있습니다. 오랜 시간 복구되지 않으면 공유자에게 서비스가 켜져 있는지 확인해 주세요.",
+  "workflowShare.guestNetworkError":
+    "공유 서비스에 연결할 수 없습니다. 네트워크를 확인하거나 잠시 후 다시 시도해 주세요",
+  "workflowShare.guestStillExpiredToast":
+    "공유 링크가 여전히 만료 상태입니다. 공유자에게 새 링크를 요청해 주세요",
+  "workflowShare.guestBusyOtherBannerTitle": "현재 GPU가 다른 작업을 실행 중입니다",
+  "workflowShare.guestBusyOtherBannerDesc":
+    "잠시만 기다려 주세요. 현재 작업이 끝나면 생성 작업을 제출할 수 있습니다.",
+  "workflowShare.guestExpiredTitle": "이 워크플로 공유는 더 이상 유효하지 않습니다",
+  "workflowShare.guestExpiredDesc":
+    "이 공유 링크는 공유자가 철회했거나 만료되었을 수 있습니다. 공유자에게 새 링크를 요청해 주세요.",
+  "workflowShare.guestRefreshBtn": "상태 다시 확인",
+  "workflowShare.guestOutputsBtn": "생성 기록",
+  "workflowShare.guestEmptyWorkflows":
+    "이 공유에서 사용할 수 있는 워크플로가 없습니다",
+  "workflowShare.guestFooter": "ColabOne · 워크플로 공유 체험",
+  "workflowShare.guestWorkflowCount": "사용 가능한 워크플로 {count}개",
 
   // Live Studio (Real-time Interactive Digital Human)
   "live.sectionAria": "라이브 스튜디오",

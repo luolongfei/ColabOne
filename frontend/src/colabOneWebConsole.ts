@@ -72,6 +72,10 @@ const COLABONE_OUTPUT_ID_RE = /^[a-f0-9]{32}$/;
 
 let cachedWebSnapshotETag = "";
 let cachedWebSnapshotRaw = "";
+let webSnapshotReqSeq = 0;
+let webSnapshotAppliedSeq = 0;
+let webSnapshotEpoch = 0;
+let webAuthEpoch = 0;
 
 export function isColabOneDesktopRuntime(): boolean {
   return (
@@ -270,6 +274,11 @@ function normalizeCapabilitiesPayload(raw: unknown): ColabOneWebCapabilities {
 }
 
 function notifyColabOneWebAuthRequired(): void {
+  cachedWebSnapshotETag = "";
+  cachedWebSnapshotRaw = "";
+  webSnapshotAppliedSeq = webSnapshotReqSeq;
+  webSnapshotEpoch += 1;
+  webAuthEpoch += 1;
   colabOneWebSessionExpired.value = true;
   colabOneWebBackendReady.value = false;
   if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
@@ -281,7 +290,10 @@ function notifyColabOneWebAuthRequired(): void {
   }
 }
 
-async function extractWebResponseError(res: Response): Promise<string> {
+async function extractWebResponseError(
+  res: Response,
+  signal?: AbortSignal,
+): Promise<string> {
   try {
     const text = (await res.text()).trim();
     if (text) {
@@ -297,8 +309,17 @@ async function extractWebResponseError(res: Response): Promise<string> {
         return text;
       }
     }
-  } catch {
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw err;
+    }
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
     // Ignore body read failures and fall back to error header or status code.
+  }
+  if (signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
   }
   const encodedHeaderErr = (res.headers?.get("X-ColabOne-Error") || "").trim();
   if (encodedHeaderErr) {
@@ -317,6 +338,8 @@ async function extractWebResponseError(res: Response): Promise<string> {
 export function resetColabOneWebSnapshotCache(): void {
   cachedWebSnapshotETag = "";
   cachedWebSnapshotRaw = "";
+  webSnapshotAppliedSeq = webSnapshotReqSeq;
+  webSnapshotEpoch += 1;
 }
 
 export async function fetchColabOneWebCapabilities(): Promise<ColabOneWebCapabilities> {
@@ -328,6 +351,7 @@ export async function fetchColabOneWebCapabilities(): Promise<ColabOneWebCapabil
     return desktopCaps;
   }
 
+  const reqAuthEpoch = webAuthEpoch;
   const res = await fetch("/api/web/capabilities", {
     method: "GET",
     credentials: "same-origin",
@@ -346,18 +370,25 @@ export async function fetchColabOneWebCapabilities(): Promise<ColabOneWebCapabil
 
   const payload = (await res.json()) as unknown;
   const caps = normalizeCapabilitiesPayload(payload);
-  colabOneRuntimeCapabilities.value = caps;
-  colabOneWebSessionExpired.value = false;
-  colabOneWebBackendReady.value = caps.runtime === "web";
+  if (reqAuthEpoch === webAuthEpoch) {
+    colabOneRuntimeCapabilities.value = caps;
+    colabOneWebSessionExpired.value = false;
+    colabOneWebBackendReady.value = caps.runtime === "web";
+  }
   return caps;
 }
 
 export async function colabOneWebSnapshotRaw(): Promise<string> {
+  const reqSeq = ++webSnapshotReqSeq;
+  const epoch = webSnapshotEpoch;
+  const reqAuthEpoch = webAuthEpoch;
+  const sentETag = cachedWebSnapshotETag;
+  const sentRaw = cachedWebSnapshotRaw;
   const headers: Record<string, string> = {
     [COLABONE_WEB_CLIENT_HEADER]: COLABONE_WEB_CLIENT_VALUE,
   };
-  if (cachedWebSnapshotETag && cachedWebSnapshotRaw) {
-    headers["If-None-Match"] = cachedWebSnapshotETag;
+  if (sentETag && sentRaw) {
+    headers["If-None-Match"] = sentETag;
   }
 
   const res = await fetch("/api/snapshot", {
@@ -370,10 +401,12 @@ export async function colabOneWebSnapshotRaw(): Promise<string> {
     notifyColabOneWebAuthRequired();
     throw new Error("Unauthorized");
   }
-  if (res.status === 304 && cachedWebSnapshotRaw) {
-    colabOneWebSessionExpired.value = false;
-    colabOneWebBackendReady.value = true;
-    return cachedWebSnapshotRaw;
+  if (res.status === 304 && sentRaw) {
+    if (reqAuthEpoch === webAuthEpoch) {
+      colabOneWebSessionExpired.value = false;
+      colabOneWebBackendReady.value = true;
+    }
+    return sentRaw;
   }
   if (!res.ok) {
     throw new Error(await extractWebResponseError(res));
@@ -381,10 +414,15 @@ export async function colabOneWebSnapshotRaw(): Promise<string> {
 
   const raw = await res.text();
   const etag = (res.headers.get("ETag") || "").trim();
-  cachedWebSnapshotRaw = raw;
-  cachedWebSnapshotETag = etag;
-  colabOneWebSessionExpired.value = false;
-  colabOneWebBackendReady.value = true;
+  if (epoch === webSnapshotEpoch && reqSeq > webSnapshotAppliedSeq) {
+    webSnapshotAppliedSeq = reqSeq;
+    cachedWebSnapshotRaw = raw;
+    cachedWebSnapshotETag = etag;
+  }
+  if (reqAuthEpoch === webAuthEpoch) {
+    colabOneWebSessionExpired.value = false;
+    colabOneWebBackendReady.value = true;
+  }
   return raw;
 }
 
@@ -392,6 +430,7 @@ export async function colabOneWebCommandRaw(
   action: string,
   payload: Record<string, unknown> = {},
 ): Promise<string> {
+  const reqAuthEpoch = webAuthEpoch;
   const res = await fetch("/api/command", {
     method: "POST",
     credentials: "same-origin",
@@ -413,7 +452,9 @@ export async function colabOneWebCommandRaw(
     throw new Error(await extractWebResponseError(res));
   }
 
-  colabOneWebSessionExpired.value = false;
+  if (reqAuthEpoch === webAuthEpoch) {
+    colabOneWebSessionExpired.value = false;
+  }
   return res.text();
 }
 
@@ -441,8 +482,10 @@ export async function colabOneWebLogout(): Promise<void> {
 
 function sanitizeDownloadFilename(raw: string): string {
   const cleaned = raw
-    .replace(/[\r\n\0]/g, "")
+    .replace(/[\x00-\x1f\x7f]/g, "")
+    .trim()
     .replace(/^["']|["']$/g, "")
+    .trim()
     .split(/[\\/]/)
     .pop()
     ?.trim();
@@ -451,22 +494,29 @@ function sanitizeDownloadFilename(raw: string): string {
 
 function parseContentDispositionFilename(header: string | null): string {
   if (!header) return "";
-  const extMatch = header.match(/filename\*\s*=\s*(?:UTF-8''|utf-8'')([^;]+)/i);
+  const extMatch = header.match(
+    /(?:^|[;\s])filename\*\s*=\s*(?:UTF-8|utf-8)'[^']*'([^;]+)/i,
+  );
   if (extMatch?.[1]) {
     try {
-      const decoded = decodeURIComponent(extMatch[1].trim());
+      const decoded = decodeURIComponent(
+        extMatch[1].trim().replace(/^["']|["']$/g, ""),
+      );
       const safe = sanitizeDownloadFilename(decoded);
       if (safe) return safe;
     } catch {
       // Fall through to plain filename parameter.
     }
   }
-  const quotedMatch = header.match(/filename\s*=\s*"([^"]+)"/i);
+  const quotedMatch = header.match(
+    /(?:^|[;\s])filename\s*=\s*"((?:[^"\\]|\\.)+)"/i,
+  );
   if (quotedMatch?.[1]) {
-    const safe = sanitizeDownloadFilename(quotedMatch[1]);
+    const unescaped = quotedMatch[1].replace(/\\(.)/g, "$1");
+    const safe = sanitizeDownloadFilename(unescaped);
     if (safe) return safe;
   }
-  const bareMatch = header.match(/filename\s*=\s*([^;]+)/i);
+  const bareMatch = header.match(/(?:^|[;\s])filename\s*=\s*([^;]+)/i);
   if (bareMatch?.[1]) {
     const safe = sanitizeDownloadFilename(bareMatch[1]);
     if (safe) return safe;
@@ -480,6 +530,7 @@ export async function colabOneWebDownloadOutput(id: string): Promise<string> {
     throw new Error("Invalid output artifact ID");
   }
 
+  const reqAuthEpoch = webAuthEpoch;
   const downloadUrl = `/api/outputs/${cleanId}/download`;
   // Preflight via HEAD to verify auth, artifact metadata, and filename without
   // buffering potentially large (up to 512 MiB) videos into browser JS memory.
@@ -497,6 +548,10 @@ export async function colabOneWebDownloadOutput(id: string): Promise<string> {
   }
   if (!res.ok) {
     throw new Error(await extractWebResponseError(res));
+  }
+
+  if (reqAuthEpoch === webAuthEpoch) {
+    colabOneWebSessionExpired.value = false;
   }
 
   const filename =
@@ -520,11 +575,15 @@ export async function colabOneWebOutputPreviewURL(
   id: string,
   signal?: AbortSignal,
 ): Promise<string> {
+  if (signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
   const cleanId = String(id || "").trim().toLowerCase();
   if (!COLABONE_OUTPUT_ID_RE.test(cleanId)) {
     throw new Error("Invalid output artifact ID");
   }
 
+  const reqAuthEpoch = webAuthEpoch;
   const mediaUrl = `/api/outputs/${cleanId}/media`;
   const res = await fetch(mediaUrl, {
     method: "HEAD",
@@ -540,7 +599,10 @@ export async function colabOneWebOutputPreviewURL(
     throw new Error("Unauthorized");
   }
   if (!res.ok) {
-    throw new Error(await extractWebResponseError(res));
+    throw new Error(await extractWebResponseError(res, signal));
+  }
+  if (reqAuthEpoch === webAuthEpoch) {
+    colabOneWebSessionExpired.value = false;
   }
   return mediaUrl;
 }

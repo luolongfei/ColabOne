@@ -1,4 +1,8 @@
 import { colabOneCommand } from "./api";
+import {
+  colabOneWorkflowShareId,
+  isColabOneWorkflowShareActive,
+} from "./colabOneWorkflowShare";
 import { COLABONE_LOCALE_LIST, t, type ColabOneLocale } from "./i18n";
 import {
   hasLiveRuntimeGpu,
@@ -1948,15 +1952,30 @@ function resolveColabOneLocalStorage(storage?: Storage | null): Storage | null {
   }
 }
 
+function resolveColabOneDigitalHumanEngineStorageKey(): string | null {
+  if (isColabOneWorkflowShareActive()) {
+    const shareId = colabOneWorkflowShareId.value.trim();
+    if (!shareId) {
+      return null;
+    }
+    return `${COLABONE_STORAGE_KEYS.workflowShareDigitalHumanEnginePrefix}${shareId}`;
+  }
+  return COLABONE_STORAGE_KEYS.comfyDigitalHumanEngine;
+}
+
 export function readColabOnePreferredDigitalHumanEngine(
   storage?: Storage | null,
 ): string {
+  const key = resolveColabOneDigitalHumanEngineStorageKey();
+  if (!key) {
+    return "";
+  }
   const target = resolveColabOneLocalStorage(storage);
   if (!target) {
     return "";
   }
   try {
-    const raw = target.getItem(COLABONE_STORAGE_KEYS.comfyDigitalHumanEngine);
+    const raw = target.getItem(key);
     return typeof raw === "string" ? raw.trim() : "";
   } catch {
     return "";
@@ -1967,6 +1986,10 @@ export function writeColabOnePreferredDigitalHumanEngine(
   workflowId: string,
   storage?: Storage | null,
 ): void {
+  const key = resolveColabOneDigitalHumanEngineStorageKey();
+  if (!key) {
+    return;
+  }
   const target = resolveColabOneLocalStorage(storage);
   if (!target) {
     return;
@@ -1974,10 +1997,10 @@ export function writeColabOnePreferredDigitalHumanEngine(
   const trimmed = typeof workflowId === "string" ? workflowId.trim() : "";
   try {
     if (!trimmed) {
-      target.removeItem(COLABONE_STORAGE_KEYS.comfyDigitalHumanEngine);
+      target.removeItem(key);
       return;
     }
-    target.setItem(COLABONE_STORAGE_KEYS.comfyDigitalHumanEngine, trimmed);
+    target.setItem(key, trimmed);
   } catch {
     // Ignore storage quota or restricted storage errors.
   }
