@@ -356,6 +356,22 @@ def check(with_e2e: bool = False):
     _verify_mygo_bindings_up_to_date()
     run(["npm.cmd" if os.name == "nt" else "npm", "run", "build"], ROOT / "frontend")
     run(["go", "vet", "./..."], ROOT / "console")
+    # Also type-check and vet pure-Go internal packages for every target OS so
+    # platform-specific files (*_windows.go, *_other.go, *_darwin.go) cannot regress
+    # silently when developing on another host OS (e.g. Linux/WSL2 vs Windows).
+    host_os = _host_goos()
+    for target_os, target_arch in (
+        ("windows", "amd64"),
+        ("darwin", "arm64"),
+        ("linux", "amd64"),
+    ):
+        if target_os == host_os:
+            continue
+        cross_env = _clean_env()
+        cross_env["GOOS"] = target_os
+        cross_env["GOARCH"] = target_arch
+        cross_env["CGO_ENABLED"] = "0"
+        run(["go", "vet", "./internal/..."], ROOT / "console", env=cross_env)
     run(["go", "test", "./..."], ROOT / "console")
     run([sys.executable, "-m", "pytest", "-q", "tests"])
     run(["npm.cmd" if os.name == "nt" else "npm", "test"], ROOT / "frontend")

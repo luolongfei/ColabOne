@@ -4,6 +4,7 @@ package vault
 
 import (
 	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -235,8 +236,28 @@ func (b *ColabOneFileSecretBackend) quarantineCorruptKeyLocked() error {
 	return nil
 }
 
-func colabOneSecureVaultTempFile(tmp *os.File, _ string) error {
-	return tmp.Chmod(0o600)
+func colabOneCreateSecureVaultTempFile(dir, prefix string) (*os.File, error) {
+	var rnd [16]byte
+	for attempt := 0; attempt < 32; attempt++ {
+		if _, err := rand.Read(rnd[:]); err != nil {
+			return nil, err
+		}
+		candidate := filepath.Join(dir, prefix+hex.EncodeToString(rnd[:])+".tmp")
+		f, err := os.OpenFile(candidate, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			if errors.Is(err, os.ErrExist) {
+				continue
+			}
+			return nil, err
+		}
+		if err := f.Chmod(0o600); err != nil {
+			_ = f.Close()
+			_ = os.Remove(candidate)
+			return nil, err
+		}
+		return f, nil
+	}
+	return nil, errors.New("colabone vault: failed to allocate unique temporary vault file")
 }
 
 func colabOneSecureVaultFinalPath(_ string) error {

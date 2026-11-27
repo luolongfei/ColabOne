@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/coder/websocket"
@@ -1509,13 +1510,16 @@ func isRetryableConnectError(err error) bool {
 		errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
 	}
-	var netErr net.Error
-	if errors.As(err, &netErr) {
+	var opErr *net.OpError
+	var dnsErr *net.DNSError
+	if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
 		return true
 	}
-	var opErr *net.OpError
-	if errors.As(err, &opErr) {
-		return true
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		if _, isErrno := netErr.(syscall.Errno); !isErrno {
+			return true
+		}
 	}
 	low := strings.ToLower(err.Error())
 	for _, needle := range []string{

@@ -65,10 +65,45 @@ func colabOneRootDir() string {
 
 // runColabOneSelfTest validates the embedded remote service bundle, all catalog
 // manifests (`presets.json`, `comfyui.json`, `live_studio.json`,
-// `cloudflared.json`, `rclone.json`, `engine.json`), and core pure-Go packages
-// completely offline without touching the network or OS credential store.
+// `cloudflared.json`, `rclone.json`, `engine.json`), and a real OS-level
+// isolated local encrypted vault round-trip (encryption, OS ACL/DACL creation,
+// atomic replacement, cold reload/decryption, and deletion) completely offline
+// without touching the network, real user config directory, or OS keyring.
 func runColabOneSelfTest() error {
-	return validateColabOneServiceBundle(servicebundle.NewEmbeddedBundle())
+	if err := validateColabOneServiceBundle(servicebundle.NewEmbeddedBundle()); err != nil {
+		return err
+	}
+	return validateColabOneLocalVaultSelfTest()
+}
+
+func validateColabOneLocalVaultSelfTest() error {
+	tmpDir, err := os.MkdirTemp("", "colabone-selftest-vault-*")
+	if err != nil {
+		return fmt.Errorf("create self-test vault temp dir: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	v := vault.NewFileVault(tmpDir)
+	const probeKey = "selftest_probe"
+	if err := v.Set(probeKey, "v1-initial"); err != nil {
+		return fmt.Errorf("self-test vault initial write: %w", err)
+	}
+	// Overwrite exercises atomic RenameReplace over an existing protected vault.enc.
+	if err := v.Set(probeKey, "v2-updated"); err != nil {
+		return fmt.Errorf("self-test vault atomic overwrite: %w", err)
+	}
+	// Cold reload exercises real DPAPI/file-KEK unwrapping and AES-256-GCM verification.
+	cold := vault.NewFileVault(tmpDir)
+	if got := cold.GetString(probeKey, ""); got != "v2-updated" {
+		return fmt.Errorf("self-test vault cold read mismatch: got %q, want %q", got, "v2-updated")
+	}
+	if err := cold.Delete(probeKey); err != nil {
+		return fmt.Errorf("self-test vault delete: %w", err)
+	}
+	if _, ok := vault.NewFileVault(tmpDir).GetAny(probeKey); ok {
+		return errors.New("self-test vault key still present after delete")
+	}
+	return nil
 }
 
 func isValidColabOneSHA256Hex(raw string) bool {

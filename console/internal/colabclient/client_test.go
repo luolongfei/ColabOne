@@ -2079,3 +2079,32 @@ func TestContentsClientUploadBytesMultiChunkAndBoundaries(t *testing.T) {
 		assertIntSliceEqual(t, "chunks before chunk-2 HTTP 500 abort", seenChunks, []int{1, 2})
 	})
 }
+
+type fakeVaultStorageErr struct{ err error }
+
+func (e fakeVaultStorageErr) Error() string             { return e.err.Error() }
+func (e fakeVaultStorageErr) Unwrap() error             { return e.err }
+func (e fakeVaultStorageErr) IsVaultStorageError() bool { return true }
+
+func TestDoAuthorizedPreservesVaultStorageErrorWithoutWrappingAsPermanentAuth(t *testing.T) {
+	vaultErr := fakeVaultStorageErr{err: errors.New("colabone vault: disk permission denied")}
+	client := NewColabOneColabClient(func(context.Context) (string, error) {
+		return "", vaultErr
+	})
+	req, err := http.NewRequest(http.MethodGet, DefaultColabDomain+TunEndpoint+"/ccu-info", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.DoAuthorized(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected vault storage error, got nil")
+	}
+	var vse interface{ IsVaultStorageError() bool }
+	if !errors.As(err, &vse) || !vse.IsVaultStorageError() {
+		t.Fatalf("expected IsVaultStorageError()==true to pass through DoAuthorized, got %T: %v", err, err)
+	}
+	var authErr *ColabOneAuthError
+	if errors.As(err, &authErr) {
+		t.Fatalf("vault storage error must NOT be wrapped as ColabOneAuthError: %v", err)
+	}
+}

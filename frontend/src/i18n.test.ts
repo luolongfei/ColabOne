@@ -450,8 +450,9 @@ describe("ColabOne reactive translations across helpers", () => {
       "ComfyUI 工作流：进行中 · Flux Demo · 排队中（第 1 位）· 已用 12 秒",
       "ComfyUI 工作流：进行中 · Flux Demo · 远端 GPU 执行中 · 已用 28 秒",
       "ComfyUI 工作流：失败 · 提交工作流：Flux Demo · ComfyUI 执行失败：节点 7(KSampler): 未知执行错误",
-      // Persistent connection error banner
+      // Persistent connection & local vault error banners
       "连接检查失败：ConnectionError。客户端会自动重试，请检查网络连接。",
+      "本地加密凭据库读写失败：Access is denied.。请检查本机目录权限或安全软件拦截，客户端会自动重试。",
       // Settings summary & idle countdown
       "已保存设置（默认 GPU: T4 · 空闲释放: 30 分钟 · 下载并发: 16 线程 · 分配重试上限: 20 次 · 已更新 Hugging Face Token）",
       "GPU 分配最大尝试次数必须在 1 至 100 次之间",

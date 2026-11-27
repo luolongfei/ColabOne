@@ -3351,6 +3351,26 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
+    re: /^本地加密凭据库读写失败：(.+?)。请检查本机目录权限或安全软件拦截，客户端会自动重试。$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Local encrypted vault read/write failed: ${detail}. Check local folder permissions or security software; the client will retry automatically.`;
+        case "zh-TW":
+          return `本機加密憑證庫讀寫失敗：${detail}。請檢查本機目錄權限或安全軟體攔截，用戶端將自動重試。`;
+        case "zh-HK":
+          return `本機加密憑證庫讀寫失敗：${detail}。請檢查本機目錄權限或安全軟件攔截，程式會自動重試。`;
+        case "ja-JP":
+          return `ローカル暗号化ボールトの読み書きに失敗しました: ${detail}。ローカルフォルダの権限やセキュリティソフトの制限を確認してください。自動的に再試行します。`;
+        case "ko-KR":
+          return `로컬 암호화 금고 읽기/쓰기 실패: ${detail}. 로컬 폴더 권한이나 보안 소프트웨어 차단을 확인해 주세요. 클라이언트가 자동으로 재시도합니다.`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
     re: /^空闲自动释放倒计时剩余 (\d+) 秒；继续操作可重置倒计时$/,
     format: (m, loc) => {
       const sec = m[1];

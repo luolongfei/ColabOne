@@ -643,3 +643,44 @@ func TestColabOneFileVaultPostRenameSecureFailureInvalidatesCacheAndUnixFDChmod(
 		}
 	})
 }
+
+func TestColabOneFileVaultTagsStorageErrorsWithoutWrappingErrNotFound(t *testing.T) {
+	dir := t.TempDir()
+	backend := NewColabOneFileSecretBackend(filepath.Join(dir, ColabOneVaultFilename), ColabOneVaultService)
+
+	// Missing key returns plain ErrNotFound (never tagged as vault storage error).
+	_, err := backend.Get("colab")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Get missing key err = %v, want ErrNotFound", err)
+	}
+	var vse interface{ IsVaultStorageError() bool }
+	if errors.As(err, &vse) && vse.IsVaultStorageError() {
+		t.Fatalf("ErrNotFound must NOT be tagged as IsVaultStorageError(): %v", err)
+	}
+
+	// Corrupt vault read returns an error matching both ErrCorruptVault and IsVaultStorageError().
+	corruptDir := t.TempDir()
+	corruptPath := filepath.Join(corruptDir, ColabOneVaultFilename)
+	if err := os.WriteFile(corruptPath, []byte("{corrupt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	corruptBackend := NewColabOneFileSecretBackend(corruptPath, ColabOneVaultService)
+	_, err = corruptBackend.Get("colab")
+	if !errors.Is(err, ErrCorruptVault) {
+		t.Fatalf("corrupt Get err = %v, want ErrCorruptVault", err)
+	}
+	if !errors.As(err, &vse) || !vse.IsVaultStorageError() {
+		t.Fatalf("corrupt Get err must satisfy IsVaultStorageError(): %v", err)
+	}
+
+	// Directory at vault.enc path fails Set with IsVaultStorageError() == true.
+	dirTarget := filepath.Join(t.TempDir(), ColabOneVaultFilename)
+	if err := os.MkdirAll(dirTarget, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	dirBackend := NewColabOneFileSecretBackend(dirTarget, ColabOneVaultService)
+	err = dirBackend.Set("colab", []byte(`"v"`))
+	if err == nil || !errors.As(err, &vse) || !vse.IsVaultStorageError() {
+		t.Fatalf("directory Set err = %v, want IsVaultStorageError()==true", err)
+	}
+}

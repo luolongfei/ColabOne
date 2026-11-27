@@ -1256,7 +1256,11 @@ func (c *ColabOneController) applyAccountRefreshIfCurrent(
 		c.mu.Unlock()
 		return false
 	}
-	pendingLogs := c.updateWithSessionsLocked(map[string]any{"account": acct}, sessions, activeEP)
+	patch := map[string]any{"account": acct}
+	if isMonitorAccountError(asString(c.data["error"])) {
+		patch["error"] = ""
+	}
+	pendingLogs := c.updateWithSessionsLocked(patch, sessions, activeEP)
 	if lastAuth > 0 {
 		c.lastAuth = lastAuth
 	}

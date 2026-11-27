@@ -51,6 +51,45 @@ const (
 // or fails authenticated decryption.
 var ErrCorruptVault = errors.New("colabone vault: encrypted vault file is corrupted")
 
+// ColabOneVaultStorageError marks a local encrypted vault persistence or I/O
+// failure so higher layers (HTTP clients, auth refresh, background monitor)
+// never misclassify local disk/permission/DPAPI errors as Google OAuth expiry
+// or network connectivity failures.
+type ColabOneVaultStorageError struct {
+	Err error
+}
+
+func (e *ColabOneVaultStorageError) Error() string {
+	if e == nil || e.Err == nil {
+		return "colabone vault: local storage error"
+	}
+	return e.Err.Error()
+}
+
+func (e *ColabOneVaultStorageError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+// IsVaultStorageError structurally identifies local encrypted vault storage errors
+// across package boundaries.
+func (e *ColabOneVaultStorageError) IsVaultStorageError() bool {
+	return true
+}
+
+func wrapVaultStorageError(err error) error {
+	if err == nil || errors.Is(err, ErrNotFound) {
+		return err
+	}
+	var existing *ColabOneVaultStorageError
+	if errors.As(err, &existing) {
+		return err
+	}
+	return &ColabOneVaultStorageError{Err: err}
+}
+
 // colabOneSecureVaultFinalPathFn is a package-level seam for offline unit tests.
 var colabOneSecureVaultFinalPathFn = colabOneSecureVaultFinalPath
 
@@ -155,7 +194,7 @@ func (b *ColabOneFileSecretBackend) Get(key string) ([]byte, error) {
 	defer b.mu.Unlock()
 	if !b.loaded {
 		if err := b.loadLocked(); err != nil {
-			return nil, err
+			return nil, wrapVaultStorageError(err)
 		}
 	}
 	val, ok := b.entries[key]
@@ -181,11 +220,11 @@ func (b *ColabOneFileSecretBackend) Set(key string, value []byte) error {
 	if !b.loaded {
 		if err := b.loadLocked(); err != nil {
 			if !errors.Is(err, ErrCorruptVault) {
-				return err
+				return wrapVaultStorageError(err)
 			}
 			recoveringCorrupt = true
 			if qErr := b.quarantineCorruptFileLocked(); qErr != nil {
-				return qErr
+				return wrapVaultStorageError(qErr)
 			}
 			b.entries = make(map[string][]byte)
 		}
@@ -202,7 +241,7 @@ func (b *ColabOneFileSecretBackend) Set(key string, value []byte) error {
 		} else {
 			delete(b.entries, key)
 		}
-		return err
+		return wrapVaultStorageError(err)
 	}
 	b.loaded = true
 	return nil
@@ -224,10 +263,10 @@ func (b *ColabOneFileSecretBackend) Delete(key string) error {
 	if !b.loaded {
 		if err := b.loadLocked(); err != nil {
 			if !errors.Is(err, ErrCorruptVault) {
-				return err
+				return wrapVaultStorageError(err)
 			}
 			if qErr := b.quarantineCorruptFileLocked(); qErr != nil {
-				return qErr
+				return wrapVaultStorageError(qErr)
 			}
 			b.entries = make(map[string][]byte)
 			b.loaded = true
@@ -246,7 +285,7 @@ func (b *ColabOneFileSecretBackend) Delete(key string) error {
 		} else {
 			b.entries[key] = prev
 		}
-		return err
+		return wrapVaultStorageError(err)
 	}
 	return nil
 }
@@ -467,7 +506,7 @@ func (b *ColabOneFileSecretBackend) saveLocked() error {
 		return fmt.Errorf("colabone vault: encoded vault size %d exceeds maximum %d bytes", len(encoded), colabOneVaultMaxFileBytes)
 	}
 
-	tmp, err := os.CreateTemp(dir, ".vault-*.tmp")
+	tmp, err := colabOneCreateSecureVaultTempFile(dir, ".vault-")
 	if err != nil {
 		return err
 	}
@@ -483,9 +522,6 @@ func (b *ColabOneFileSecretBackend) saveLocked() error {
 		}
 	}()
 
-	if err := colabOneSecureVaultTempFile(tmp, tmpName); err != nil {
-		return err
-	}
 	if _, err := tmp.Write(encoded); err != nil {
 		return err
 	}

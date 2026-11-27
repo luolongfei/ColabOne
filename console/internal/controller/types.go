@@ -265,7 +265,9 @@ func errTypeName(err error) string {
 	}
 	var opErr *net.OpError
 	var dnsErr *net.DNSError
+	var transportErr interface{ IsTransportError() bool }
 	if errors.As(err, &opErr) || errors.As(err, &dnsErr) || isNonSyscallNetError(err) ||
+		(errors.As(err, &transportErr) && transportErr.IsTransportError()) ||
 		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return "ConnectionError"
 	}
@@ -303,6 +305,82 @@ func errTypeName(err error) string {
 		return exportedName
 	}
 	return "Error"
+}
+
+const (
+	monitorConnErrorPrefix  = "连接检查失败："
+	monitorVaultErrorPrefix = "本地加密凭据库读写失败："
+)
+
+func isVaultStorageError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var vse interface{ IsVaultStorageError() bool }
+	return errors.As(err, &vse) && vse.IsVaultStorageError()
+}
+
+func isPermanentAuthMonitorError(err error) bool {
+	if err == nil || isVaultStorageError(err) {
+		return false
+	}
+	var te interface{ IsTransportError() bool }
+	if errors.As(err, &te) && te.IsTransportError() {
+		return false
+	}
+	if httpStatusCode(err) == http.StatusUnauthorized {
+		return true
+	}
+	var pa interface{ IsPermanentAuthError() bool }
+	return errors.As(err, &pa) && pa.IsPermanentAuthError()
+}
+
+// formatMonitorAccountError separates local vault storage errors, permanent
+// Google OAuth expiry errors, and genuine network/upstream errors so background
+// checks never misreport local OS/vault failures or expired logins as network
+// issues. It returns the user-facing message and the retry backoff in seconds.
+func formatMonitorAccountError(err error) (string, float64) {
+	if isVaultStorageError(err) {
+		detail := strings.TrimSpace(activity.SafeMessage(err.Error()))
+		if detail == "" {
+			detail = errTypeName(err)
+		}
+		if runes := []rune(detail); len(runes) > 160 {
+			detail = string(runes[:159]) + "…"
+		}
+		return monitorVaultErrorPrefix + detail + "。请检查本机目录权限或安全软件拦截，客户端会自动重试。", 60
+	}
+	if isPermanentAuthMonitorError(err) {
+		msg := strings.TrimSpace(err.Error())
+		switch msg {
+		case "Google 授权已失效，请在设置中重新登录",
+			"Google 授权无法自动续期，请在设置中重新登录",
+			"Google 授权令牌地址不受信任，请在设置中重新登录",
+			"请先完成 Google 登录":
+			return msg, 60
+		default:
+			return "Google 授权已失效，请在设置中重新登录", 60
+		}
+	}
+	return monitorConnErrorPrefix + errTypeName(err) + "。客户端会自动重试，请检查网络连接。", 15
+}
+
+func isMonitorAccountError(msg string) bool {
+	if msg == "" {
+		return false
+	}
+	if strings.HasPrefix(msg, monitorConnErrorPrefix) || strings.HasPrefix(msg, monitorVaultErrorPrefix) {
+		return true
+	}
+	switch msg {
+	case "Google 授权已失效，请在设置中重新登录",
+		"Google 授权无法自动续期，请在设置中重新登录",
+		"Google 授权令牌地址不受信任，请在设置中重新登录",
+		"请先完成 Google 登录":
+		return true
+	default:
+		return false
+	}
 }
 
 // ColabOneEvent is a thread-safe resettable signal analogous to Python's threading.Event.

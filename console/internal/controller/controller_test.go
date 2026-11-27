@@ -9417,3 +9417,156 @@ func TestControllerDeleteRuntimeOnlyWorkflowSaveRollbackTtsCacheAndCUCorruptHard
 		t.Fatalf("expected timestamped .corrupt-<ts> backup when .corrupt already exists, matches=%v err=%v", tsMatches, err)
 	}
 }
+
+type mockMonitorVaultStorageErr struct{ err error }
+
+func (e mockMonitorVaultStorageErr) Error() string             { return e.err.Error() }
+func (e mockMonitorVaultStorageErr) Unwrap() error             { return e.err }
+func (e mockMonitorVaultStorageErr) IsVaultStorageError() bool { return true }
+
+type mockMonitorPermanentAuthErr struct{ msg string }
+
+func (e mockMonitorPermanentAuthErr) Error() string              { return e.msg }
+func (e mockMonitorPermanentAuthErr) IsPermanentAuthError() bool { return true }
+
+type mockMonitorTransportErr struct{ msg string }
+
+func (e mockMonitorTransportErr) Error() string          { return e.msg }
+func (e mockMonitorTransportErr) IsTransportError() bool { return true }
+
+func TestMonitorOnceSeparatesVaultAuthAndNetworkErrorsAndAvoidsBackoffFlashing(t *testing.T) {
+	ctx := context.Background()
+
+	// 1. Local vault storage error must NOT blame the network, must redact secrets,
+	//    must NOT flash/clear on skipped backoff ticks, and must clear once Account() recovers.
+	t.Run("vault storage error domain and backoff stability", func(t *testing.T) {
+		h := newTestHarness(t, false)
+		defer h.ctrl.Close()
+
+		var acctCalls int
+		failVault := true
+		h.provider.accountFn = func(context.Context) (map[string]any, error) {
+			acctCalls++
+			if failVault {
+				return nil, mockMonitorVaultStorageErr{
+					err: fmt.Errorf("colabone vault: CreateFile failed for ya29.secret-token-123456: %w", syscall.EACCES),
+				}
+			}
+			return map[string]any{"logged_in": true, "email": "user@example.com", "balance": 10.0, "rate": 0.0, "assignments": 0, "instances": []any{}}, nil
+		}
+
+		h.ctrl.MonitorOnce(ctx)
+		if acctCalls != 1 {
+			t.Fatalf("acctCalls = %d, want 1", acctCalls)
+		}
+		errMsg := asString(h.ctrl.Snapshot()["error"])
+		if !strings.HasPrefix(errMsg, "本地加密凭据库读写失败：") {
+			t.Fatalf("vault error msg = %q, want prefix 本地加密凭据库读写失败：", errMsg)
+		}
+		if strings.Contains(errMsg, "连接检查失败") || strings.Contains(errMsg, "网络连接") {
+			t.Fatalf("vault error must not blame network: %q", errMsg)
+		}
+		if strings.Contains(errMsg, "ya29.secret-token-123456") {
+			t.Fatalf("vault error leaked secret token: %q", errMsg)
+		}
+
+		// Subsequent monitor tick during backoff must skip Account(), keep error steady, and NOT log duplicates.
+		logsBefore := len(h.ctrl.activity.Snapshot())
+		h.ctrl.MonitorOnce(ctx)
+		if acctCalls != 1 {
+			t.Fatalf("expected Account() skipped during 60s vault backoff, got acctCalls=%d", acctCalls)
+		}
+		if gotAfterBackoff := asString(h.ctrl.Snapshot()["error"]); gotAfterBackoff != errMsg {
+			t.Fatalf("error cleared/changed prematurely during backoff: got %q, want %q", gotAfterBackoff, errMsg)
+		}
+		if len(h.ctrl.activity.Snapshot()) != logsBefore {
+			t.Fatalf("backoff tick should not append duplicate error logs")
+		}
+
+		// Once backoff expires and Account() succeeds, the vault error clears atomically.
+		failVault = false
+		h.ctrl.mu.Lock()
+		h.ctrl.lastAuth = 0
+		h.ctrl.mu.Unlock()
+		h.ctrl.MonitorOnce(ctx)
+		if gotRecovered := asString(h.ctrl.Snapshot()["error"]); gotRecovered != "" {
+			t.Fatalf("expected vault error cleared after Account() recovery, got %q", gotRecovered)
+		}
+	})
+
+	// 2. Permanent Google OAuth expiry must tell the user to re-login (never blame network)
+	//    and clear cleanly once Account() succeeds again.
+	t.Run("permanent auth error domain", func(t *testing.T) {
+		h := newTestHarness(t, false)
+		defer h.ctrl.Close()
+
+		expired := true
+		h.provider.accountFn = func(context.Context) (map[string]any, error) {
+			if expired {
+				return nil, mockMonitorPermanentAuthErr{msg: "Google 授权已失效，请在设置中重新登录"}
+			}
+			return map[string]any{"logged_in": true, "email": "user@example.com", "balance": 10.0, "rate": 0.0, "assignments": 0, "instances": []any{}}, nil
+		}
+
+		h.ctrl.MonitorOnce(ctx)
+		if got := asString(h.ctrl.Snapshot()["error"]); got != "Google 授权已失效，请在设置中重新登录" {
+			t.Fatalf("permanent auth error = %q, want exact auth-expired guidance", got)
+		}
+		// Backoff tick preserves error instead of clearing/flashing.
+		h.ctrl.MonitorOnce(ctx)
+		if got := asString(h.ctrl.Snapshot()["error"]); got != "Google 授权已失效，请在设置中重新登录" {
+			t.Fatalf("permanent auth error cleared prematurely during backoff: %q", got)
+		}
+		expired = false
+		h.ctrl.mu.Lock()
+		h.ctrl.lastAuth = 0
+		h.ctrl.mu.Unlock()
+		h.ctrl.MonitorOnce(ctx)
+		if got := asString(h.ctrl.Snapshot()["error"]); got != "" {
+			t.Fatalf("expected permanent auth error cleared after recovery, got %q", got)
+		}
+	})
+
+	// 3. Genuine transport error (including IsTransportError() like retryable refresh)
+	//    maps to ConnectionError, stays steady across backoff ticks without re-logging, and clears on recovery.
+	t.Run("genuine network transport error domain and zero backoff spam", func(t *testing.T) {
+		h := newTestHarness(t, false)
+		defer h.ctrl.Close()
+
+		offline := true
+		h.provider.accountFn = func(context.Context) (map[string]any, error) {
+			if offline {
+				return nil, mockMonitorTransportErr{msg: "Google 暂时无法续期，已保留本机登录，请稍后重试"}
+			}
+			return map[string]any{"logged_in": true, "email": "user@example.com", "balance": 10.0, "rate": 0.0, "assignments": 0, "instances": []any{}}, nil
+		}
+
+		h.ctrl.MonitorOnce(ctx)
+		want := "连接检查失败：ConnectionError。客户端会自动重试，请检查网络连接。"
+		if got := asString(h.ctrl.Snapshot()["error"]); got != want {
+			t.Fatalf("transport error = %q, want %q", got, want)
+		}
+		logsAfterFirst := len(h.ctrl.activity.Snapshot())
+		// Multiple backoff ticks and even another failed retry with the same error must NOT re-log duplicates.
+		h.ctrl.MonitorOnce(ctx)
+		if got := asString(h.ctrl.Snapshot()["error"]); got != want {
+			t.Fatalf("transport error flashed/cleared during backoff: %q", got)
+		}
+		h.ctrl.mu.Lock()
+		h.ctrl.lastAuth = 0
+		h.ctrl.mu.Unlock()
+		h.ctrl.MonitorOnce(ctx)
+		if len(h.ctrl.activity.Snapshot()) != logsAfterFirst {
+			t.Fatalf("repeated identical network failure logged duplicate activity entries: before=%d after=%d", logsAfterFirst, len(h.ctrl.activity.Snapshot()))
+		}
+
+		offline = false
+		h.ctrl.mu.Lock()
+		h.ctrl.lastAuth = 0
+		h.ctrl.mu.Unlock()
+		h.ctrl.MonitorOnce(ctx)
+		if got := asString(h.ctrl.Snapshot()["error"]); got != "" {
+			t.Fatalf("expected transport error cleared after recovery, got %q", got)
+		}
+	})
+}

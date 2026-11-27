@@ -19,6 +19,14 @@ describe("ColabOne toast duration & classification", () => {
         "连接检查失败：ConnectionError。客户端会自动重试，请检查网络连接。",
       ),
     ).toBe(true);
+    expect(
+      isPersistentColabOneError(
+        "本地加密凭据库读写失败：Access is denied.。请检查本机目录权限或安全软件拦截，客户端会自动重试。",
+      ),
+    ).toBe(true);
+    expect(
+      isPersistentColabOneError("Google 授权已失效，请在设置中重新登录"),
+    ).toBe(true);
     expect(isPersistentColabOneError("mygo: runtime not found")).toBe(true);
 
     expect(

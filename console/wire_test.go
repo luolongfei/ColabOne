@@ -709,4 +709,10 @@ func TestSelfTestValidatesAllEmbeddedCatalogsAndRejectsInvalid(t *testing.T) {
 			t.Fatalf("expected validateColabOneEngineCatalog to reject %s", bad)
 		}
 	}
+
+	// Self-test exercises both embedded service bundle validation and an isolated
+	// OS-level encrypted local vault round-trip (DPAPI/file-KEK + ACL/DACL + atomic replace).
+	if err := runColabOneSelfTest(); err != nil {
+		t.Fatalf("runColabOneSelfTest() failed: %v", err)
+	}
 }

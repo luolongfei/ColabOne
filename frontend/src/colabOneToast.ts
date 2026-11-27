@@ -38,6 +38,8 @@ export interface ColabOneToastManager {
 
 const PERSISTENT_ERROR_PATTERNS: readonly RegExp[] = [
   /^连接检查失败[：:]/,
+  /^本地加密凭据库读写失败[：:]/,
+  /^Google 授权(?:已失效|无法自动续期|令牌地址不受信任)/,
   /mygo:\s*runtime not found/i,
 ];
 

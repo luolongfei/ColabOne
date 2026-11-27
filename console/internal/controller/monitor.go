@@ -778,7 +778,6 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 	if c.provider == nil || c.isShuttingDown(ctx) {
 		return
 	}
-	hadConnError := false
 	now := nowUnixFloat()
 
 	c.mu.Lock()
@@ -793,16 +792,18 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 				return
 			}
 			if c.accountGuardMatches(acctGen, acctCreds) {
-				hadConnError = true
-				// Back off 15s instead of hammering every 2s and starving heartbeats.
+				errMsg, backoffSec := formatMonitorAccountError(err)
+				// Back off instead of hammering every 2s and starving heartbeats.
+				// The next Account() check runs when now - lastAuth > 30, so
+				// setting lastAuth = now + backoffSec - 30 waits backoffSec seconds.
 				c.mu.Lock()
 				if c.accountGen.Load() == acctGen {
-					c.lastAuth = now - 15
+					c.lastAuth = now + backoffSec - 30
 				}
 				c.mu.Unlock()
 				if c.accountGen.Load() == acctGen {
 					c.Update(map[string]any{
-						"error": "连接检查失败：" + errTypeName(err) + "。客户端会自动重试，请检查网络连接。",
+						"error": errMsg,
 					})
 				}
 			}
@@ -1212,16 +1213,6 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 				}
 			}
 		}
-	}
-
-	if !hadConnError && !c.isShuttingDown(ctx) {
-		var pendingLogs []pendingActivityLog
-		c.mu.Lock()
-		if strings.HasPrefix(asString(c.data["error"]), "连接检查失败：") {
-			pendingLogs = c.updateLocked(map[string]any{"error": ""})
-		}
-		c.mu.Unlock()
-		c.flushActivityLogs(pendingLogs)
 	}
 }
 

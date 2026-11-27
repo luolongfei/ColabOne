@@ -11,10 +11,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -2595,5 +2597,20 @@ func TestDeserializeBinaryWSMessageOverflowAndBoundsGuards(t *testing.T) {
 		if _, err := deserializeWSMessage(websocket.MessageBinary, frame); err == nil {
 			t.Fatalf("expected error for invalid offset=0x%x, got nil", badOff)
 		}
+	}
+}
+
+func TestIsRetryableConnectErrorExcludesBareSyscallErrno(t *testing.T) {
+	for _, localErr := range []error{
+		syscall.EACCES,
+		fmt.Errorf("local permission denied: %w", syscall.EACCES),
+		&os.PathError{Op: "open", Path: "vault.enc", Err: syscall.EACCES},
+	} {
+		if isRetryableConnectError(localErr) {
+			t.Fatalf("isRetryableConnectError(%T: %v) = true, want false", localErr, localErr)
+		}
+	}
+	if !isRetryableConnectError(&net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}) {
+		t.Fatal("expected *net.OpError to be classified as retryable connect error")
 	}
 }

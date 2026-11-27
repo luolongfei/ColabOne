@@ -160,6 +160,10 @@ func (c *ColabOneColabClient) DoAuthorized(ctx context.Context, req *http.Reques
 		if errors.As(err, &te) && te.IsTransportError() {
 			return nil, err
 		}
+		var vse interface{ IsVaultStorageError() bool }
+		if errors.As(err, &vse) && vse.IsVaultStorageError() {
+			return nil, err
+		}
 		return nil, &ColabOneAuthError{Err: err}
 	}
 	token = strings.TrimSpace(token)
