@@ -158,6 +158,10 @@ export const enUSMessages: ColabOneMessages = {
   "task.gpuWaitingStart": "Waiting for remote GPU",
   "task.elapsedLive": "Elapsed {duration}",
   "task.elapsedTotal": "Took {duration}",
+  "task.dockCollapse": "Collapse progress bar",
+  "task.dockCollapseShort": "Collapse",
+  "task.dockExpand": "Expand progress details",
+  "task.dockExpandAria": "Expand progress details: {title}",
 
   // Billing & Idle Release
   "billing.cuPerHour": "CU/hr",

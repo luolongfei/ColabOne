@@ -9,11 +9,15 @@ import {
 } from "ant-design-vue";
 import ColabOneTooltip from "./ColabOneTooltip.vue";
 import {
+  COLABONE_BILLING_COMPACT_RUN_BREAKPOINT,
   COLABONE_BILLING_TICKER_INTERVAL_MS,
   describeColabOneBilling,
   describeColabOneRunConsumption,
   formatCountdownClock,
   formatIdlePolicyLabel,
+  nextColabOneBillingTickerSlide,
+  resolveColabOneBillingTickerSlides,
+  type ColabOneBillingTickerSlide,
 } from "./billing";
 import ColabOneSkeleton from "./ColabOneSkeleton.vue";
 import { colabOneBillingSkeletonState } from "./skeletonState";
@@ -146,9 +150,14 @@ const isStaleData = computed(
 );
 
 const isCompactMobile = ref(false);
+const isRunColumnHidden = ref(false);
 let compactMobileMql: MediaQueryList | null = null;
+let runColumnHiddenMql: MediaQueryList | null = null;
 const onCompactMobileChange = (event: MediaQueryListEvent) => {
   isCompactMobile.value = event.matches;
+};
+const onRunColumnHiddenChange = (event: MediaQueryListEvent) => {
+  isRunColumnHidden.value = event.matches;
 };
 if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
   compactMobileMql = window.matchMedia("(max-width: 680px)");
@@ -157,6 +166,16 @@ if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
     compactMobileMql.addEventListener("change", onCompactMobileChange);
   } else if (typeof compactMobileMql.addListener === "function") {
     compactMobileMql.addListener(onCompactMobileChange);
+  }
+
+  runColumnHiddenMql = window.matchMedia(
+    `(max-width: ${COLABONE_BILLING_COMPACT_RUN_BREAKPOINT}px)`,
+  );
+  isRunColumnHidden.value = runColumnHiddenMql.matches;
+  if (typeof runColumnHiddenMql.addEventListener === "function") {
+    runColumnHiddenMql.addEventListener("change", onRunColumnHiddenChange);
+  } else if (typeof runColumnHiddenMql.addListener === "function") {
+    runColumnHiddenMql.addListener(onRunColumnHiddenChange);
   }
 }
 
@@ -207,16 +226,34 @@ const billingAriaLabel = computed(() => {
   });
 });
 
-const canRotateRateDuration = computed(
-  () =>
-    !skeleton.value.rate &&
-    runOverview.value.active &&
-    Boolean(runOverview.value.compactDurationText),
+const tickerSlides = computed<ColabOneBillingTickerSlide[]>(() =>
+  resolveColabOneBillingTickerSlides({
+    rateLoading: skeleton.value.rate,
+    runLoading: skeleton.value.run,
+    balanceLoading: skeleton.value.balance,
+    runActive: runOverview.value.active,
+    hasCompactDuration: Boolean(runOverview.value.compactDurationText),
+    inlineRunHidden: isRunColumnHidden.value,
+  }),
 );
 
-const activeTickerSlide = ref<"rate" | "duration">("rate");
-const tickerHasTransitioned = ref(false);
+const canRotateTicker = computed(() => tickerSlides.value.length > 1);
+
+const activeTickerSlide = ref<ColabOneBillingTickerSlide>("rate");
+const previousTickerSlide = ref<ColabOneBillingTickerSlide | null>(null);
 let tickerTimer: ReturnType<typeof setInterval> | null = null;
+
+function tickerSlideClasses(slide: ColabOneBillingTickerSlide) {
+  return {
+    "is-current": activeTickerSlide.value === slide,
+    "is-entering":
+      previousTickerSlide.value !== null && activeTickerSlide.value === slide,
+    "is-leaving":
+      previousTickerSlide.value === slide && activeTickerSlide.value !== slide,
+    "is-standby":
+      activeTickerSlide.value !== slide && previousTickerSlide.value !== slide,
+  };
+}
 
 function stopTicker() {
   if (tickerTimer !== null) {
@@ -231,23 +268,38 @@ function startTicker() {
     if (typeof document !== "undefined" && document.hidden) {
       return;
     }
-    tickerHasTransitioned.value = true;
-    activeTickerSlide.value =
-      activeTickerSlide.value === "rate" ? "duration" : "rate";
+    const current = activeTickerSlide.value;
+    const next = nextColabOneBillingTickerSlide(tickerSlides.value, current);
+    if (next !== current) {
+      previousTickerSlide.value = current;
+      activeTickerSlide.value = next;
+    }
   }, COLABONE_BILLING_TICKER_INTERVAL_MS);
 }
 
 watch(
-  canRotateRateDuration,
-  (enabled) => {
-    if (enabled) {
-      activeTickerSlide.value = "rate";
-      tickerHasTransitioned.value = false;
-      startTicker();
-    } else {
+  () => tickerSlides.value.join(","),
+  () => {
+    const slides = tickerSlides.value;
+    if (slides.length <= 1) {
       stopTicker();
-      activeTickerSlide.value = "rate";
-      tickerHasTransitioned.value = false;
+      activeTickerSlide.value = slides[0] ?? "rate";
+      previousTickerSlide.value = null;
+      return;
+    }
+    let resetActiveSlide = false;
+    if (!slides.includes(activeTickerSlide.value)) {
+      activeTickerSlide.value = slides[0];
+      previousTickerSlide.value = null;
+      resetActiveSlide = true;
+    } else if (
+      previousTickerSlide.value !== null &&
+      !slides.includes(previousTickerSlide.value)
+    ) {
+      previousTickerSlide.value = null;
+    }
+    if (tickerTimer === null || resetActiveSlide) {
+      startTicker();
     }
   },
   { immediate: true },
@@ -262,6 +314,14 @@ onUnmounted(() => {
       compactMobileMql.removeListener(onCompactMobileChange);
     }
     compactMobileMql = null;
+  }
+  if (runColumnHiddenMql) {
+    if (typeof runColumnHiddenMql.removeEventListener === "function") {
+      runColumnHiddenMql.removeEventListener("change", onRunColumnHiddenChange);
+    } else if (typeof runColumnHiddenMql.removeListener === "function") {
+      runColumnHiddenMql.removeListener(onRunColumnHiddenChange);
+    }
+    runColumnHiddenMql = null;
   }
 });
 </script>
@@ -408,31 +468,24 @@ onUnmounted(() => {
 
           <span
             class="co-billing-metric co-billing-rate"
-            :class="{ 'is-rotating': canRotateRateDuration }"
+            :class="{ 'is-rotating': canRotateTicker }"
           >
             <template v-if="skeleton.rate">
               <ColabOneSkeleton variant="text" :width="56" :height="12" inline />
               <span class="co-sr-only">{{ overview.rateText }}</span>
             </template>
             <span
-              v-else-if="canRotateRateDuration"
+              v-else-if="canRotateTicker"
               class="co-billing-rate-ticker"
               data-testid="billing-bar-rate-ticker"
               data-rotating="true"
+              :data-slide-count="tickerSlides.length"
               :data-active-slide="activeTickerSlide"
             >
               <span
                 :class="[
                   'co-billing-rate-slide co-billing-rate-slide-rate',
-                  {
-                    'is-current': activeTickerSlide === 'rate',
-                    'is-entering':
-                      tickerHasTransitioned && activeTickerSlide === 'rate',
-                    'is-leaving':
-                      tickerHasTransitioned && activeTickerSlide !== 'rate',
-                    'is-standby':
-                      !tickerHasTransitioned && activeTickerSlide !== 'rate',
-                  },
+                  tickerSlideClasses('rate'),
                 ]"
                 data-testid="billing-bar-rate-slide"
                 :data-active="activeTickerSlide === 'rate' ? 'true' : 'false'"
@@ -440,17 +493,36 @@ onUnmounted(() => {
                 >{{ overview.rateText }}</span
               >
               <span
+                v-if="tickerSlides.includes('consumed')"
+                :class="[
+                  'co-billing-rate-slide co-billing-rate-slide-consumed',
+                  { 'is-active': overview.active },
+                  tickerSlideClasses('consumed'),
+                ]"
+                data-testid="billing-bar-consumed-slide"
+                :data-active="
+                  activeTickerSlide === 'consumed' ? 'true' : 'false'
+                "
+                :aria-hidden="
+                  activeTickerSlide !== 'consumed' ? 'true' : undefined
+                "
+              >
+                <PhFlame
+                  class="co-run-flame-icon"
+                  :size="12"
+                  :weight="overview.active ? 'fill' : 'duotone'"
+                  aria-hidden="true"
+                />
+                <span class="co-billing-consumed-prefix">{{
+                  t("billing.barRunPrefix")
+                }}</span>
+                <b>{{ runOverview.consumedText }}</b>
+              </span>
+              <span
+                v-if="tickerSlides.includes('duration')"
                 :class="[
                   'co-billing-rate-slide co-billing-rate-slide-duration',
-                  {
-                    'is-current': activeTickerSlide === 'duration',
-                    'is-entering':
-                      tickerHasTransitioned && activeTickerSlide === 'duration',
-                    'is-leaving':
-                      tickerHasTransitioned && activeTickerSlide !== 'duration',
-                    'is-standby':
-                      !tickerHasTransitioned && activeTickerSlide !== 'duration',
-                  },
+                  tickerSlideClasses('duration'),
                 ]"
                 data-testid="billing-bar-duration-slide"
                 :data-active="
@@ -787,6 +859,21 @@ onUnmounted(() => {
     transform: translateY(-100%);
     opacity: 0;
   }
+}
+
+.co-billing-rate-slide-consumed {
+  color: var(--co-muted);
+  font-weight: 500;
+}
+
+.co-billing-rate-slide-consumed b {
+  color: var(--co-text);
+  font-weight: 600;
+}
+
+.co-billing-rate-slide-consumed.is-active .co-run-flame-icon,
+.co-billing-rate-slide-consumed.is-active b {
+  color: var(--co-warning-text);
 }
 
 .co-billing-rate-slide-duration {

@@ -153,6 +153,10 @@ export const zhCNMessages = {
   "task.gpuWaitingStart": "等待启动远端 GPU",
   "task.elapsedLive": "已耗时 {duration}",
   "task.elapsedTotal": "耗时 {duration}",
+  "task.dockCollapse": "收起进度条",
+  "task.dockCollapseShort": "收起",
+  "task.dockExpand": "展开进度详情",
+  "task.dockExpandAria": "展开进度详情：{title}",
 
   // Billing & Idle Release
   "billing.cuPerHour": "CU/小时",

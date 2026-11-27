@@ -6,6 +6,49 @@ export const COLABONE_DEFAULT_IDLE_MINUTES = 30;
 export const COLABONE_RUN_LIVE_INTERP_CAP_SEC = 90;
 export const COLABONE_RUN_STALE_OFFLINE_SEC = 900;
 export const COLABONE_BILLING_TICKER_INTERVAL_MS = 3000;
+export const COLABONE_BILLING_COMPACT_RUN_BREAKPOINT = 1080;
+
+export type ColabOneBillingTickerSlide = "rate" | "consumed" | "duration";
+
+export function resolveColabOneBillingTickerSlides(options: {
+  rateLoading: boolean;
+  runLoading: boolean;
+  balanceLoading: boolean;
+  runActive: boolean;
+  hasCompactDuration: boolean;
+  inlineRunHidden: boolean;
+}): ColabOneBillingTickerSlide[] {
+  if (options.rateLoading) {
+    return [];
+  }
+  const slides: ColabOneBillingTickerSlide[] = ["rate"];
+  if (
+    options.inlineRunHidden &&
+    options.runActive &&
+    !options.balanceLoading &&
+    !options.runLoading
+  ) {
+    slides.push("consumed");
+  }
+  if (options.runActive && options.hasCompactDuration) {
+    slides.push("duration");
+  }
+  return slides;
+}
+
+export function nextColabOneBillingTickerSlide(
+  slides: readonly ColabOneBillingTickerSlide[],
+  current: ColabOneBillingTickerSlide,
+): ColabOneBillingTickerSlide {
+  if (slides.length === 0) {
+    return "rate";
+  }
+  const idx = slides.indexOf(current);
+  if (idx < 0) {
+    return slides[0];
+  }
+  return slides[(idx + 1) % slides.length];
+}
 
 export interface IdleReleaseOption {
   value: number;

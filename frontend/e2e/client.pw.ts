@@ -9961,10 +9961,46 @@ test("BillingCard and BillingBar display real-time current-run CU consumption an
   await expect(barRun).toBeVisible();
   await expect(barRun).toContainText(/4\.5[56] CU/);
 
-  // 4b. Narrow viewport collapses inline top-bar run pill cleanly while preserving tooltip rows
+  // 4b. Narrow viewport (<= 1080px) hides inline run column and promotes run consumption into the 3-slide ticker
   await page.mouse.move(16, 16);
   await page.setViewportSize({ width: 1024, height: 800 });
   await expect(barRun).toBeHidden();
+  const barConsumedSlide = page.getByTestId("billing-bar-consumed-slide");
+  await expect(barRateTicker).toHaveAttribute("data-slide-count", "3");
+  await expect(barConsumedSlide).toContainText("本次");
+  await expect(barConsumedSlide).toContainText(/4\.5[56] CU/);
+  const narrowTickerBoxBefore = await barRateTicker.boundingBox();
+  expect(narrowTickerBoxBefore).not.toBeNull();
+  const narrowSlidesSeen = new Set<string>();
+  const firstNarrowSlide = await barRateTicker.getAttribute("data-active-slide");
+  if (firstNarrowSlide) narrowSlidesSeen.add(firstNarrowSlide);
+  const expectedNextMap: Record<string, string> = {
+    rate: "consumed",
+    consumed: "duration",
+    duration: "rate",
+  };
+  let curNarrowSlide = firstNarrowSlide || "rate";
+  for (let step = 0; step < 2; step += 1) {
+    const expectedNext = expectedNextMap[curNarrowSlide];
+    await expect(barRateTicker).toHaveAttribute(
+      "data-active-slide",
+      expectedNext,
+      { timeout: 4500 },
+    );
+    narrowSlidesSeen.add(expectedNext);
+    curNarrowSlide = expectedNext;
+  }
+  expect(Array.from(narrowSlidesSeen).sort()).toEqual([
+    "consumed",
+    "duration",
+    "rate",
+  ]);
+  const narrowTickerBoxAfter = await barRateTicker.boundingBox();
+  expect(narrowTickerBoxAfter).not.toBeNull();
+  expect(
+    Math.abs(narrowTickerBoxAfter!.width - narrowTickerBoxBefore!.width),
+  ).toBeLessThanOrEqual(4);
+
   await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
   await page.locator(".co-billing-strip").hover();
   await expect(page.locator(".ant-tooltip:visible")).toContainText("本次消耗");
@@ -9972,6 +10008,9 @@ test("BillingCard and BillingBar display real-time current-run CU consumption an
   await page.mouse.move(16, 16);
   await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
   await page.setViewportSize({ width: 1440, height: 900 });
+  await expect(barRun).toBeVisible();
+  await expect(barRateTicker).toHaveAttribute("data-slide-count", "2");
+  await expect(barConsumedSlide).toHaveCount(0);
 
   // 5. Stopping instances transitions to preserved Last Run inline readout on BillingCard and hides top-bar badge
   await navItem(page, "远端设备").click();

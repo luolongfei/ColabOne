@@ -158,6 +158,10 @@ export const koKRMessages: ColabOneMessages = {
   "task.gpuWaitingStart": "원격 GPU 시작 대기 중",
   "task.elapsedLive": "경과 {duration}",
   "task.elapsedTotal": "소요 {duration}",
+  "task.dockCollapse": "진행률 표시줄 접기",
+  "task.dockCollapseShort": "접기",
+  "task.dockExpand": "진행 상세 펼치기",
+  "task.dockExpandAria": "진행 상세 펼치기: {title}",
 
   // Billing & Idle Release
   "billing.cuPerHour": "CU/시간",

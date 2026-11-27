@@ -1448,3 +1448,260 @@ test("mobile iPhone viewports keep running status bar in 2 compact rows and prev
     await page.locator(".co-model-drawer-root .ant-drawer-close").click();
   }
 });
+
+test("mobile task dock defaults collapsed with thin progress bar and billing ticker rotates rate, run cost, and duration", async ({
+  page,
+}) => {
+  const nowSec = Date.now() / 1000;
+  let activeTaskId = "task-wf-1";
+  let activeTaskKind = "comfyui_run";
+  let activeTaskProgress = 0.13;
+  let activeTaskMessage =
+    "下载模型 2/6 · qwen3vl_32b_minimax_h3_int8_convrot.safetensors";
+  let activeTaskHasDownload = true;
+
+  const buildSnapshot = () => {
+    const base = makeBaseSnapshot(true);
+    return {
+      ...base,
+      account: {
+        ...base.account,
+        logged_in: true,
+        balance: 1858.97,
+        rate: 11.2,
+        assignments: 1,
+        checked_at: nowSec,
+        current_run: {
+          active: true,
+          started_at: nowSec - 252,
+          start_balance: 1859.75,
+          end_balance: 1858.97,
+          consumed: 0.78,
+          unsettled: 0,
+          topup: 0,
+          last_sample_at: nowSec,
+          last_rate: 11.2,
+          peak_rate: 11.2,
+          max_instances: 1,
+          samples: 12,
+        },
+      },
+      runtime: {
+        ...base.runtime,
+        gpu: {
+          name: "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+          total_mib: 98304,
+          used_mib: 4200,
+        },
+        location: {
+          country: "IN",
+          country_name: "India",
+          region: "Mumbai",
+          zone: "asia-south1-a",
+        },
+        idle: {
+          phase: "active",
+          remaining_seconds: 1800,
+          timeout_seconds: 1800,
+          countdown_seconds: 60,
+          server_time: Math.floor(nowSec),
+        },
+        tasks: activeTaskId
+          ? [
+              {
+                id: activeTaskId,
+                kind: activeTaskKind,
+                state: "running",
+                progress: activeTaskProgress,
+                message: activeTaskMessage,
+                created_at: Math.floor(nowSec - 252),
+                ...(activeTaskHasDownload
+                  ? {
+                      download: {
+                        phase: "downloading",
+                        speed_bps: 222.3 * 1024 ** 2,
+                        downloaded_bytes: 42.4 * 1024 ** 3,
+                        total_bytes: 87.7 * 1024 ** 3,
+                        eta_seconds: 209,
+                        connections: 16,
+                        threads: 16,
+                        file_index: 2,
+                        file_count: 6,
+                      },
+                    }
+                  : {}),
+              },
+            ]
+          : [],
+      },
+    };
+  };
+
+  await page.route("**/api/web/capabilities", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runtime: "web",
+        version: "0.1.24",
+        can_open_native_canvas_window: false,
+        can_standalone_log_window: false,
+        can_manage_web_console: false,
+        can_manage_close_behavior: false,
+        can_manage_shortcuts: false,
+        can_self_update: false,
+        can_migrate: false,
+        can_reveal_host_secrets: false,
+        can_loopback_oauth: false,
+        can_download_output: true,
+      }),
+    });
+  });
+
+  await page.route("**/api/snapshot", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: { ETag: `"mobile-dock-${activeTaskId}-${activeTaskProgress}"` },
+      body: JSON.stringify(buildSnapshot()),
+    });
+  });
+
+  await page.route("**/api/command", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true }),
+    });
+  });
+
+  await page.route("**/api/telemetry**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ samples: [] }),
+    });
+  });
+
+  // 1. Mobile viewport (375x812): dock defaults collapsed, stays ultra-compact, and expands/collapses cleanly
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.goto("/");
+
+  const dock = page.getByTestId("dock-task");
+  await expect(dock).toBeVisible();
+  await expect(dock).toHaveAttribute("data-collapsed", "true");
+  await expect(page.getByTestId("dock-task-expand-btn")).toBeVisible();
+  await expect(page.getByTestId("dock-task-mini-percent")).toHaveText("13%");
+  await expect(page.getByTestId("dock-task-mini-stat")).toContainText("222.3 MiB/s");
+
+  const collapsedMetrics = await page.evaluate(() => {
+    const dockRect = document
+      .querySelector('[data-testid="dock-task"]')
+      ?.getBoundingClientRect();
+    const fill = document.querySelector(
+      ".co-task-mini-progress-fill",
+    ) as HTMLElement | null;
+    return {
+      height: dockRect ? Math.round(dockRect.height) : 0,
+      fillWidth: fill?.style.width ?? "",
+      docOverflow: document.documentElement.scrollWidth - window.innerWidth,
+    };
+  });
+  expect(collapsedMetrics.height).toBeGreaterThan(28);
+  expect(collapsedMetrics.height).toBeLessThanOrEqual(56);
+  expect(collapsedMetrics.fillWidth).toBe("13%");
+  expect(collapsedMetrics.docOverflow).toBeLessThanOrEqual(0);
+
+  // Expanding reveals full progress stats, cancel button, and collapse button
+  await page.getByTestId("dock-task-expand-btn").click();
+  await expect(dock).toHaveAttribute("data-collapsed", "false");
+  await expect(page.getByTestId("dock-task-collapse-btn")).toBeVisible();
+  await expect(page.getByTestId("dock-task-elapsed")).toBeVisible();
+  await expect(dock).toContainText("42.4 GB / 87.7 GB");
+  await expect(dock).toContainText("16/16 个连接");
+  await expect(dock.getByRole("button", { name: /取\s*消/ })).toBeVisible();
+
+  const expandedBox = await dock.boundingBox();
+  expect(expandedBox).not.toBeNull();
+  expect(expandedBox!.height).toBeGreaterThan(collapsedMetrics.height + 50);
+
+  // Collapsing back restores the compact single-row bar
+  await page.getByTestId("dock-task-collapse-btn").click();
+  await expect(dock).toHaveAttribute("data-collapsed", "true");
+
+  // Re-expanding and starting a brand-new task resets back to default collapsed on mobile
+  await page.getByTestId("dock-task-expand-btn").click();
+  await expect(dock).toHaveAttribute("data-collapsed", "false");
+  activeTaskId = "task-wf-2";
+  activeTaskProgress = 0.42;
+  activeTaskMessage = "采样渲染 8/20";
+  await page.locator(".co-nav-circle-btn").first().click();
+  await expect(dock).toHaveAttribute("data-collapsed", "true");
+  await expect(page.getByTestId("dock-task-mini-percent")).toHaveText("42%");
+
+  // 2. Mobile billing strip keeps 2-row compact header and rotates rate, session consumption, and duration every 3s
+  const statusBarMetrics = await page.evaluate(() => {
+    const bar = document.querySelector(".co-status-bar")?.getBoundingClientRect();
+    const loc = document.querySelector(".co-location-chip")?.getBoundingClientRect();
+    const idle = document.querySelector(".co-idle-timer")?.getBoundingClientRect();
+    return {
+      barHeight: bar ? Math.round(bar.height) : 0,
+      sameRow: Boolean(loc && idle && Math.abs(loc.top - idle.top) <= 6),
+      docOverflow: document.documentElement.scrollWidth - window.innerWidth,
+    };
+  });
+  expect(statusBarMetrics.barHeight).toBeLessThanOrEqual(74);
+  expect(statusBarMetrics.sameRow).toBe(true);
+  expect(statusBarMetrics.docOverflow).toBeLessThanOrEqual(0);
+
+  const ticker = page.getByTestId("billing-bar-rate-ticker");
+  const consumedSlide = page.getByTestId("billing-bar-consumed-slide");
+  await expect(ticker).toBeVisible();
+  await expect(ticker).toHaveAttribute("data-slide-count", "3");
+  await expect(page.getByTestId("billing-bar-run")).toBeHidden();
+  await expect(consumedSlide).toContainText("本次");
+  await expect(consumedSlide).toContainText(/0\.7[89] CU/);
+  await expect(ticker).toHaveAttribute("data-active-slide", "consumed", {
+    timeout: 7000,
+  });
+  await expect(consumedSlide).toHaveAttribute("data-active", "true");
+
+  // 3. Indeterminate non-percentage task with whitespace-only message falls back cleanly to task title & compact elapsed
+  activeTaskId = "task-load-1";
+  activeTaskKind = "load";
+  activeTaskProgress = 0;
+  activeTaskMessage = "   ";
+  activeTaskHasDownload = false;
+  await page.locator(".co-nav-circle-btn").first().click();
+  await expect(dock).toHaveAttribute("data-collapsed", "true");
+  await expect(page.getByTestId("dock-task-expand-btn")).toContainText(
+    "正在装载模型到远端显存",
+  );
+  await expect(page.getByTestId("dock-task-mini-percent")).toHaveCount(0);
+  await expect(page.getByTestId("dock-task-mini-stat")).toContainText("4 分");
+  await expect(
+    dock.locator(".co-task-mini-progress-fill.is-indeterminate"),
+  ).toBeVisible();
+
+  // Resizing across the 680px breakpoint without manual override follows viewport default automatically
+  await page.setViewportSize({ width: 1280, height: 860 });
+  await expect(dock).toHaveAttribute("data-collapsed", "false");
+  await page.setViewportSize({ width: 375, height: 812 });
+  await expect(dock).toHaveAttribute("data-collapsed", "true");
+
+  // 4. Desktop viewport (1280x860): new task defaults expanded and still offers collapse/expand toggle
+  activeTaskId = "task-wf-3";
+  activeTaskKind = "comfyui_run";
+  activeTaskProgress = 0.64;
+  activeTaskMessage = "下载模型 4/6 · model.safetensors";
+  activeTaskHasDownload = true;
+  await page.setViewportSize({ width: 1280, height: 860 });
+  await page.goto("/");
+  await expect(dock).toHaveAttribute("data-collapsed", "false");
+  await expect(page.getByTestId("dock-task-collapse-btn")).toBeVisible();
+  await page.getByTestId("dock-task-collapse-btn").click();
+  await expect(dock).toHaveAttribute("data-collapsed", "true");
+  await expect(page.getByTestId("dock-task-mini-percent")).toHaveText("64%");
+  await page.getByTestId("dock-task-expand-btn").click();
+  await expect(dock).toHaveAttribute("data-collapsed", "false");
+});

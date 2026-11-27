@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  COLABONE_BILLING_COMPACT_RUN_BREAKPOINT,
   COLABONE_BILLING_TICKER_INTERVAL_MS,
   COLABONE_DEFAULT_IDLE_MINUTES,
   COLABONE_IDLE_RELEASE_OPTIONS,
@@ -13,6 +14,8 @@ import {
   formatRemainingBalanceTime,
   friendlyErrorMessage,
   isTransientIpcError,
+  nextColabOneBillingTickerSlide,
+  resolveColabOneBillingTickerSlides,
 } from "./billing";
 import { createColabOneSnapshot, type ColabOneSnapshot } from "./types";
 
@@ -525,6 +528,83 @@ describe("describeColabOneRunConsumption", () => {
 describe("COLABONE_BILLING_TICKER_INTERVAL_MS, formatColabOneCompactRunDuration & formatColabOneRunClock", () => {
   it("rotates the topbar billing ticker every 3 seconds", () => {
     expect(COLABONE_BILLING_TICKER_INTERVAL_MS).toBe(3000);
+    expect(COLABONE_BILLING_COMPACT_RUN_BREAKPOINT).toBe(1080);
+  });
+
+  it("includes run consumption in the billing ticker whenever the standalone run column is hidden on narrow screens", () => {
+    // Wide desktop (> 1080px): standalone run column is visible, ticker rotates rate and duration only
+    expect(
+      resolveColabOneBillingTickerSlides({
+        rateLoading: false,
+        runLoading: false,
+        balanceLoading: false,
+        runActive: true,
+        hasCompactDuration: true,
+        inlineRunHidden: false,
+      }),
+    ).toEqual(["rate", "duration"]);
+
+    // Narrow viewport (<= 1080px, including mobile): standalone run column is hidden, ticker rotates all 3 items
+    const narrowSlides = resolveColabOneBillingTickerSlides({
+      rateLoading: false,
+      runLoading: false,
+      balanceLoading: false,
+      runActive: true,
+      hasCompactDuration: true,
+      inlineRunHidden: true,
+    });
+    expect(narrowSlides).toEqual(["rate", "consumed", "duration"]);
+
+    // Cycles cleanly through rate, consumed, duration, and back to rate
+    expect(nextColabOneBillingTickerSlide(narrowSlides, "rate")).toBe("consumed");
+    expect(nextColabOneBillingTickerSlide(narrowSlides, "consumed")).toBe("duration");
+    expect(nextColabOneBillingTickerSlide(narrowSlides, "duration")).toBe("rate");
+
+    // Still rotates rate + consumed on narrow screens even before duration is available
+    expect(
+      resolveColabOneBillingTickerSlides({
+        rateLoading: false,
+        runLoading: false,
+        balanceLoading: false,
+        runActive: true,
+        hasCompactDuration: false,
+        inlineRunHidden: true,
+      }),
+    ).toEqual(["rate", "consumed"]);
+
+    // Suppresses consumed slide while balance/run skeleton is still loading
+    expect(
+      resolveColabOneBillingTickerSlides({
+        rateLoading: false,
+        runLoading: true,
+        balanceLoading: false,
+        runActive: true,
+        hasCompactDuration: true,
+        inlineRunHidden: true,
+      }),
+    ).toEqual(["rate", "duration"]);
+
+    // Idle or loading states do not rotate
+    expect(
+      resolveColabOneBillingTickerSlides({
+        rateLoading: false,
+        runLoading: false,
+        balanceLoading: false,
+        runActive: false,
+        hasCompactDuration: false,
+        inlineRunHidden: true,
+      }),
+    ).toEqual(["rate"]);
+    expect(
+      resolveColabOneBillingTickerSlides({
+        rateLoading: true,
+        runLoading: false,
+        balanceLoading: false,
+        runActive: true,
+        hasCompactDuration: true,
+        inlineRunHidden: true,
+      }),
+    ).toEqual([]);
   });
 
   it("formats compact topbar run durations with zero-padded sub-units for stable ticker width", () => {

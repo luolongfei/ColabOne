@@ -155,6 +155,10 @@ export const zhHKMessages: ColabOneMessages = {
   "task.gpuWaitingStart": "等待啟動遠端 GPU",
   "task.elapsedLive": "已耗時 {duration}",
   "task.elapsedTotal": "耗時 {duration}",
+  "task.dockCollapse": "收起進度列",
+  "task.dockCollapseShort": "收起",
+  "task.dockExpand": "展開進度詳情",
+  "task.dockExpandAria": "展開進度詳情：{title}",
 
   // Billing & Idle Release
   "billing.cuPerHour": "CU/小時",

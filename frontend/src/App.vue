@@ -67,7 +67,9 @@ import {
   PhAppWindow,
   PhArrowSquareOut,
   PhArrowsClockwise,
+  PhCaretDown,
   PhCaretRight,
+  PhCaretUp,
   PhCheck,
   PhClock,
   PhCloud,
@@ -137,6 +139,7 @@ import {
 import {
   COLABONE_IDLE_RELEASE_OPTIONS,
   describeColabOneBilling,
+  formatColabOneCompactRunDuration,
   formatCountdownClock,
   formatIdlePolicyLabel,
   friendlyErrorMessage,
@@ -1404,19 +1407,168 @@ const activeTaskElapsedLabel = computed(() => {
         locale: colabOneLocaleCode.value,
       });
 });
-const dockTaskElapsedLabel = computed(() => {
-  const secs = resolveColabOneTaskElapsedSeconds(
+const dockTaskElapsedSeconds = computed(() =>
+  resolveColabOneTaskElapsedSeconds(
     dockTask.value,
     state.value.runtime,
     clockNow.value,
     snapshotAt.value,
-  );
+  ),
+);
+const dockTaskElapsedLabel = computed(() => {
+  const secs = dockTaskElapsedSeconds.value;
   return secs === null
     ? ""
     : formatColabOneDuration(secs, {
         precision: "integer",
         locale: colabOneLocaleCode.value,
       });
+});
+const dockTaskCompactElapsedLabel = computed(() => {
+  const secs = dockTaskElapsedSeconds.value;
+  return secs === null
+    ? ""
+    : formatColabOneCompactRunDuration(secs, colabOneLocaleCode.value);
+});
+const COLABONE_COMPACT_DOCK_BREAKPOINT = 680;
+const isCompactTaskDockViewport = ref(
+  viewportWidth.value <= COLABONE_COMPACT_DOCK_BREAKPOINT,
+);
+let compactTaskDockMql: MediaQueryList | null = null;
+const onCompactTaskDockMqlChange = (event: MediaQueryListEvent) => {
+  isCompactTaskDockViewport.value = event.matches;
+};
+if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
+  compactTaskDockMql = window.matchMedia(
+    `(max-width: ${COLABONE_COMPACT_DOCK_BREAKPOINT}px)`,
+  );
+  isCompactTaskDockViewport.value = compactTaskDockMql.matches;
+  if (typeof compactTaskDockMql.addEventListener === "function") {
+    compactTaskDockMql.addEventListener("change", onCompactTaskDockMqlChange);
+  } else if (typeof compactTaskDockMql.addListener === "function") {
+    compactTaskDockMql.addListener(onCompactTaskDockMqlChange);
+  }
+} else {
+  watch(
+    () => viewportWidth.value <= COLABONE_COMPACT_DOCK_BREAKPOINT,
+    (isCompact) => {
+      isCompactTaskDockViewport.value = isCompact;
+    },
+  );
+}
+const dockTaskKey = computed(() => {
+  const current = dockTask.value;
+  if (!current) {
+    return "";
+  }
+  return current.id || `${current.kind}:${current.created_at ?? ""}`;
+});
+const dockTaskHasProgress = computed(() => {
+  const kind = dockTask.value?.kind;
+  return (
+    kind === "download" ||
+    kind === "comfyui_start" ||
+    kind === "comfyui_run" ||
+    kind === "comfyui_tts_preview"
+  );
+});
+const dockTaskPercent = computed(() => {
+  const raw = dockTask.value?.progress;
+  if (typeof raw !== "number" || !Number.isFinite(raw)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, Math.round(raw * 100)));
+});
+const dockTaskMessageText = computed(() =>
+  dockTask.value?.message ? tb(dockTask.value.message).trim() : "",
+);
+const dockTaskMiniSecondary = computed(() => {
+  const dl = dockTask.value?.download;
+  if (dl) {
+    if (dl.phase === "verifying") {
+      return t("device.downloadVerifying");
+    }
+    if (typeof dl.speed_bps === "number" && Number.isFinite(dl.speed_bps) && dl.speed_bps > 0) {
+      return `${(dl.speed_bps / 1024 ** 2).toFixed(1)} MiB/s`;
+    }
+    if (
+      typeof dl.total_bytes === "number" &&
+      Number.isFinite(dl.total_bytes) &&
+      dl.total_bytes > 0
+    ) {
+      const downloaded =
+        typeof dl.downloaded_bytes === "number" &&
+        Number.isFinite(dl.downloaded_bytes)
+          ? Math.max(0, dl.downloaded_bytes)
+          : 0;
+      return `${bytes(downloaded)} / ${bytes(dl.total_bytes)}`;
+    }
+  }
+  return dockTaskCompactElapsedLabel.value || "";
+});
+const dockTaskCompactSummary = computed(() => {
+  if (!dockTask.value) {
+    return "";
+  }
+  const title = taskBarTitle(dockTask.value.kind);
+  const msg = dockTaskMessageText.value;
+  const base = msg ? `${title} · ${msg}` : title;
+  return dockTaskHasProgress.value ? `${base} (${dockTaskPercent.value}%)` : base;
+});
+const dockTaskCollapsed = ref(false);
+const dockTaskCollapseOverrideKey = ref<string | null>(null);
+const dockTaskExpandBtnRef = ref<HTMLButtonElement | null>(null);
+const dockTaskCollapseBtnRef = ref<ComponentPublicInstance | null>(null);
+
+function setDockTaskCollapsed(collapsed: boolean) {
+  const activeEl =
+    typeof document !== "undefined"
+      ? (document.activeElement as HTMLElement | null)
+      : null;
+  let restoreFocus = false;
+  if (activeEl && activeEl.closest(".co-task-dock")) {
+    try {
+      restoreFocus = activeEl.matches(":focus-visible");
+    } catch {
+      restoreFocus = false;
+    }
+  }
+  dockTaskCollapsed.value = collapsed;
+  dockTaskCollapseOverrideKey.value = dockTaskKey.value || null;
+  if (restoreFocus) {
+    void nextTick(() => {
+      const target = collapsed
+        ? dockTaskExpandBtnRef.value
+        : ((dockTaskCollapseBtnRef.value?.$el as HTMLElement | null) ?? null);
+      if (typeof target?.focus === "function") {
+        target.focus({ preventScroll: true });
+      }
+    });
+  }
+}
+
+watch(
+  dockTaskKey,
+  (nextKey, prevKey) => {
+    if (!nextKey) {
+      dockTaskCollapsed.value = false;
+      dockTaskCollapseOverrideKey.value = null;
+      return;
+    }
+    if (nextKey !== prevKey) {
+      dockTaskCollapseOverrideKey.value = null;
+      dockTaskCollapsed.value = isCompactTaskDockViewport.value;
+    }
+  },
+  { immediate: true },
+);
+
+watch(isCompactTaskDockViewport, (isCompact) => {
+  const key = dockTaskKey.value;
+  if (!key || dockTaskCollapseOverrideKey.value === key) {
+    return;
+  }
+  dockTaskCollapsed.value = isCompact;
 });
 const idleRemaining = computed(() =>
   Math.max(
@@ -4397,6 +4549,17 @@ onUnmounted(() => {
     window.cancelAnimationFrame(drawerHeaderMeasureFrame);
     drawerHeaderMeasureFrame = null;
   }
+  if (compactTaskDockMql) {
+    if (typeof compactTaskDockMql.removeEventListener === "function") {
+      compactTaskDockMql.removeEventListener(
+        "change",
+        onCompactTaskDockMqlChange,
+      );
+    } else if (typeof compactTaskDockMql.removeListener === "function") {
+      compactTaskDockMql.removeListener(onCompactTaskDockMqlChange);
+    }
+    compactTaskDockMql = null;
+  }
   window.removeEventListener("resize", updateToastLayout);
   window.removeEventListener("resize", updateSettingsFloatingSave);
   clearInterval(clockTimer);
@@ -7334,14 +7497,102 @@ onUnmounted(() => {
         </div>
 
         <!-- Pinned Active Remote Task Progress Bar (excludes API inference, handled inline per request) -->
-        <div v-if="dockTask" class="co-task-dock">
-          <ACard size="small" class="co-task-card co-task-bar">
-            <div class="co-task-row">
-              <ASpin size="small" />
+        <div
+          v-if="dockTask"
+          :class="['co-task-dock', { 'is-collapsed': dockTaskCollapsed }]"
+          data-testid="dock-task"
+          :data-collapsed="dockTaskCollapsed ? 'true' : 'false'"
+        >
+          <ACard
+            size="small"
+            :class="[
+              'co-task-card co-task-bar',
+              { 'is-collapsed': dockTaskCollapsed },
+            ]"
+          >
+            <button
+              v-if="dockTaskCollapsed"
+              ref="dockTaskExpandBtnRef"
+              type="button"
+              class="co-task-mini-bar"
+              data-testid="dock-task-expand-btn"
+              :aria-expanded="false"
+              :aria-label="
+                t('task.dockExpandAria', { title: dockTaskCompactSummary })
+              "
+              @click="setDockTaskCollapsed(false)"
+            >
+              <span class="co-task-mini-row">
+                <ASpin
+                  size="small"
+                  class="co-task-mini-spin"
+                  aria-hidden="true"
+                />
+                <span class="co-task-mini-copy">
+                  <strong
+                    :class="[
+                      'co-task-mini-title',
+                      {
+                        'has-msg': Boolean(dockTaskMessageText),
+                        'is-mobile-hidden': Boolean(dockTaskMessageText),
+                      },
+                    ]"
+                  >
+                    {{ taskBarTitle(dockTask.kind) }}
+                  </strong>
+                  <span
+                    v-if="dockTaskMessageText"
+                    class="co-task-mini-sep"
+                    aria-hidden="true"
+                    >·</span
+                  >
+                  <span v-if="dockTaskMessageText" class="co-task-mini-msg">
+                    {{ dockTaskMessageText }}
+                  </span>
+                </span>
+                <span class="co-task-mini-meta">
+                  <span
+                    v-if="dockTaskMiniSecondary"
+                    class="co-task-mini-stat co-tabular"
+                    data-testid="dock-task-mini-stat"
+                  >
+                    {{ dockTaskMiniSecondary }}
+                  </span>
+                  <span
+                    v-if="dockTaskHasProgress"
+                    class="co-task-mini-percent co-tabular"
+                    data-testid="dock-task-mini-percent"
+                  >
+                    {{ dockTaskPercent }}%
+                  </span>
+                  <span class="co-task-mini-chevron" aria-hidden="true">
+                    <PhCaretUp :size="13" weight="bold" />
+                  </span>
+                </span>
+              </span>
+              <span class="co-task-mini-progress-track" aria-hidden="true">
+                <span
+                  :class="[
+                    'co-task-mini-progress-fill',
+                    { 'is-indeterminate': !dockTaskHasProgress },
+                  ]"
+                  :style="
+                    dockTaskHasProgress
+                      ? { width: `${dockTaskPercent}%` }
+                      : undefined
+                  "
+                />
+              </span>
+            </button>
+
+            <div v-else class="co-task-row">
+              <ASpin size="small" class="co-task-spin" />
               <div class="co-task-main">
                 <div class="co-task-head">
                   <strong>{{ taskBarTitle(dockTask.kind) }}</strong>
-                  <span class="co-muted">{{ tb(dockTask.message) }}</span>
+                  <span v-if="dockTaskMessageText" class="co-muted co-task-msg">{{
+                    dockTaskMessageText
+                  }}</span>
                   <span
                     v-if="dockTaskElapsedLabel"
                     class="co-task-elapsed co-tabular"
@@ -7381,25 +7632,44 @@ onUnmounted(() => {
                   </span>
                 </div>
                 <AProgress
-                  v-if="
-                    dockTask.kind === 'download' ||
-                    dockTask.kind === 'comfyui_start' ||
-                    dockTask.kind === 'comfyui_run' ||
-                    dockTask.kind === 'comfyui_tts_preview'
-                  "
-                  :percent="Math.round((dockTask.progress || 0) * 100)"
+                  v-if="dockTaskHasProgress"
+                  :percent="dockTaskPercent"
                   size="small"
                   status="active"
                 />
               </div>
-              <AButton
-                danger
-                size="small"
-                :disabled="busy"
-                @click="act('task.cancel', { id: dockTask.id })"
-              >
-                {{ t("common.cancel") }}
-              </AButton>
+              <div class="co-task-actions">
+                <ColabOneTooltip
+                  :title="t('task.dockCollapse')"
+                  :disabled="isCompactTaskDockViewport"
+                  placement="top"
+                >
+                  <AButton
+                    ref="dockTaskCollapseBtnRef"
+                    size="small"
+                    class="co-task-collapse-btn"
+                    data-testid="dock-task-collapse-btn"
+                    :aria-expanded="true"
+                    :aria-label="t('task.dockCollapse')"
+                    @click="setDockTaskCollapsed(true)"
+                  >
+                    <span class="co-task-collapse-inner">
+                      <PhCaretDown :size="13" weight="bold" aria-hidden="true" />
+                      <span class="co-task-collapse-label">{{
+                        t("task.dockCollapseShort")
+                      }}</span>
+                    </span>
+                  </AButton>
+                </ColabOneTooltip>
+                <AButton
+                  danger
+                  size="small"
+                  :disabled="busy"
+                  @click="act('task.cancel', { id: dockTask.id })"
+                >
+                  {{ t("common.cancel") }}
+                </AButton>
+              </div>
             </div>
           </ACard>
         </div>
@@ -9704,6 +9974,10 @@ onUnmounted(() => {
   border-top: 1px solid var(--co-border-secondary);
 }
 
+.co-task-dock.is-collapsed {
+  padding: 6px var(--co-container-pad);
+}
+
 .co-task-card {
   max-width: calc(var(--co-container-max) - 2 * var(--co-container-pad));
   margin: 0 auto;
@@ -9711,10 +9985,187 @@ onUnmounted(() => {
   background: var(--co-subtle);
 }
 
+.co-task-card.is-collapsed {
+  overflow: hidden;
+  border-radius: 10px;
+}
+
+.co-task-card.is-collapsed :deep(.ant-card-body) {
+  padding: 0;
+}
+
+.co-task-mini-bar {
+  position: relative;
+  display: block;
+  width: 100%;
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
+  padding: 8px 10px 10px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color 0.14s ease;
+}
+
+.co-task-mini-bar:hover {
+  background: var(--co-soft-hover);
+}
+
+.co-task-mini-bar:active {
+  background: var(--co-hover);
+}
+
+.co-task-mini-bar:focus-visible {
+  outline: 2px solid var(--co-focus);
+  outline-offset: -2px;
+  border-radius: inherit;
+}
+
+.co-task-mini-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  line-height: 1.25;
+}
+
+.co-task-mini-spin {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  transform: scale(0.84);
+}
+
+.co-task-mini-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.co-task-mini-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--co-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.co-task-mini-title.has-msg {
+  flex: 0 1 auto;
+  max-width: 46%;
+}
+
+.co-task-mini-sep {
+  color: var(--co-muted);
+  flex-shrink: 0;
+}
+
+.co-task-mini-msg {
+  font-size: 12.5px;
+  color: var(--co-secondary-text);
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.co-task-mini-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.co-task-mini-stat {
+  font-size: 11.5px;
+  color: var(--co-muted);
+  white-space: nowrap;
+}
+
+.co-task-mini-percent {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--co-accent-strong);
+  white-space: nowrap;
+}
+
+.co-task-mini-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 9999px;
+  background: var(--co-surface);
+  border: 1px solid var(--co-border-secondary);
+  color: var(--co-secondary-text);
+  flex-shrink: 0;
+  transition:
+    color 0.14s ease,
+    border-color 0.14s ease,
+    background-color 0.14s ease;
+}
+
+.co-task-mini-bar:hover .co-task-mini-chevron {
+  color: var(--co-accent-strong);
+  border-color: var(--co-accent);
+  background: var(--co-selected);
+}
+
+.co-task-mini-progress-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: var(--co-track);
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.co-task-mini-progress-fill {
+  display: block;
+  height: 100%;
+  background: var(--co-accent);
+  border-radius: 0 2px 2px 0;
+  transition: width 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.co-task-mini-progress-fill.is-indeterminate {
+  width: 34%;
+  border-radius: 2px;
+  animation: co-task-mini-indeterminate 1.4s ease-in-out infinite;
+}
+
+@keyframes co-task-mini-indeterminate {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(310%);
+  }
+}
+
 .co-task-row {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.co-task-spin {
+  flex-shrink: 0;
 }
 
 .co-task-main {
@@ -9731,6 +10182,11 @@ onUnmounted(() => {
   gap: 8px;
   flex-wrap: wrap;
   font-size: 13px;
+}
+
+.co-task-msg {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .co-task-elapsed {
@@ -9755,6 +10211,31 @@ onUnmounted(() => {
   flex-wrap: wrap;
   font-size: 12px;
   color: var(--co-secondary-text);
+}
+
+.co-task-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.co-task-collapse-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding-inline: 6px;
+}
+
+.co-task-collapse-inner {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  line-height: 1;
+}
+
+.co-task-collapse-label {
+  display: none;
 }
 
 /* Modals */
@@ -10419,9 +10900,71 @@ onUnmounted(() => {
     padding: 8px var(--co-container-pad);
   }
 
+  .co-task-dock.is-collapsed {
+    padding: 5px var(--co-container-pad);
+  }
+
+  .co-task-dock.is-collapsed .co-task-card {
+    border-radius: 10px;
+  }
+
+  .co-task-mini-bar {
+    padding: 7px 10px 9px;
+  }
+
+  .co-task-mini-row {
+    gap: 6px;
+  }
+
+  .co-task-mini-title.is-mobile-hidden,
+  .co-task-mini-sep {
+    display: none;
+  }
+
+  .co-task-mini-title,
+  .co-task-mini-msg {
+    font-size: 12px;
+    font-weight: 560;
+    color: var(--co-text);
+  }
+
+  .co-task-mini-stat {
+    font-size: 11px;
+    max-width: 108px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .co-task-mini-percent {
+    font-size: 11.5px;
+  }
+
   .co-task-row {
     flex-wrap: wrap;
+    align-items: flex-start;
     gap: 8px;
+  }
+
+  .co-task-spin {
+    margin-top: 2px;
+  }
+
+  .co-task-elapsed {
+    margin-left: 0;
+  }
+
+  .co-task-actions {
+    width: 100%;
+    justify-content: space-between;
+    padding-top: 2px;
+  }
+
+  .co-task-collapse-btn {
+    padding-inline: 9px;
+  }
+
+  .co-task-collapse-label {
+    display: inline;
   }
 
   .co-modal-footer {
@@ -10500,8 +11043,15 @@ onUnmounted(() => {
 @media (prefers-reduced-motion: reduce) {
   .co-nav-circle-btn.is-spinning svg,
   .co-brand-version.is-update-ready .co-nav-update-dot,
-  .co-brand-version.is-update-downloading .co-nav-update-dot {
+  .co-brand-version.is-update-downloading .co-nav-update-dot,
+  .co-task-mini-progress-fill.is-indeterminate {
     animation: none;
+  }
+
+  .co-task-mini-progress-fill.is-indeterminate {
+    width: 100%;
+    opacity: 0.45;
+    transform: none;
   }
 }
 </style>

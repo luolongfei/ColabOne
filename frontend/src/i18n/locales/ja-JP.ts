@@ -158,6 +158,10 @@ export const jaJPMessages: ColabOneMessages = {
   "task.gpuWaitingStart": "リモート GPU の起動待ち",
   "task.elapsedLive": "経過 {duration}",
   "task.elapsedTotal": "所要 {duration}",
+  "task.dockCollapse": "進捗バーを折りたたむ",
+  "task.dockCollapseShort": "折りたたむ",
+  "task.dockExpand": "進捗詳細を展開",
+  "task.dockExpandAria": "進捗詳細を展開：{title}",
 
   // Billing & Idle Release
   "billing.cuPerHour": "CU/時",
