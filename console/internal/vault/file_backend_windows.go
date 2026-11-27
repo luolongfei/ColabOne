@@ -195,10 +195,13 @@ func colabOneDPAPIUnprotect(wrapped, entropy []byte) ([]byte, error) {
 func colabOneSecureVaultTempFile(f *os.File, tmpPath string) error {
 	if f != nil {
 		if procVaultReOpenFile.Find() == nil {
+			// SetSecurityInfo with PROTECTED_DACL_SECURITY_INFORMATION queries the
+			// existing security descriptor before updating the DACL, so the reopened
+			// handle requires both READ_CONTROL and WRITE_DAC.
 			h, _, callErr := procVaultReOpenFile.Call(
 				f.Fd(),
-				uintptr(windows.WRITE_DAC),
-				uintptr(windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE),
+				uintptr(windows.READ_CONTROL|windows.WRITE_DAC),
+				uintptr(windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE),
 				0,
 			)
 			runtime.KeepAlive(f)
@@ -210,11 +213,9 @@ func colabOneSecureVaultTempFile(f *os.File, tmpPath string) error {
 			if errors.Is(callErr, winErrorInvalidFunction) || errors.Is(callErr, winErrorNotSupported) {
 				return nil
 			}
-			return fmt.Errorf("colabone vault: ReOpenFile(WRITE_DAC) failed: %w", callErr)
+			return fmt.Errorf("colabone vault: ReOpenFile(READ_CONTROL|WRITE_DAC) failed: %w", callErr)
 		}
-		err := colabOneApplyCurrentUserDACLHandle(f.Fd())
-		runtime.KeepAlive(f)
-		return err
+		return colabOneApplyCurrentUserDACL(tmpPath)
 	}
 	return colabOneApplyCurrentUserDACL(tmpPath)
 }

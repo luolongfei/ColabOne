@@ -1071,7 +1071,7 @@ def _copy_wheel_atomic(src: Path, dst: Path) -> Path:
     dst.parent.mkdir(parents=True, exist_ok=True)
     src_fd = os.open(
         src,
-        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
     )
     try:
         src_st = os.fstat(src_fd)
@@ -1087,6 +1087,7 @@ def _copy_wheel_atomic(src: Path, dst: Path) -> Path:
         | os.O_CREAT
         | os.O_EXCL
         | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_BINARY", 0)
     )
     try:
         with reader:

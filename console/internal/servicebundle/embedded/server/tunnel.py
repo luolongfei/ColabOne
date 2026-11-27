@@ -101,7 +101,7 @@ def ensure_binary(root, catalog, cancel, note):
         try:
             fd = os.open(
                 str(target),
-                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
             )
             st = os.fstat(fd)
             if not stat.S_ISREG(st.st_mode) or st.st_size <= 0:
@@ -138,7 +138,11 @@ def ensure_binary(root, catalog, cancel, note):
                     digest, size, started = hashlib.sha256(), 0, time.monotonic()
                     p_fd = os.open(
                         str(partial),
-                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                        os.O_WRONLY
+                        | os.O_CREAT
+                        | os.O_EXCL
+                        | getattr(os, "O_NOFOLLOW", 0)
+                        | getattr(os, "O_BINARY", 0),
                         0o600,
                     )
                     try:

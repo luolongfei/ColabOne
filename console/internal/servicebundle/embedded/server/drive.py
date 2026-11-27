@@ -130,7 +130,7 @@ def _stream_write_file(src: Path, target: Path) -> None:
         raise OSError("refusing symlink target")
     src_fd = os.open(
         src,
-        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
     )
     try:
         src_st = os.fstat(src_fd)
@@ -144,7 +144,11 @@ def _stream_write_file(src: Path, target: Path) -> None:
         with reader:
             fd = os.open(
                 target,
-                os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_TRUNC
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_BINARY", 0),
                 0o666,
             )
             try:
@@ -282,6 +286,7 @@ def _write_private_bytes(path: Path, data: bytes) -> None:
         | os.O_CREAT
         | os.O_EXCL
         | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_BINARY", 0)
     )
     fd = os.open(path, flags, 0o600)
     try:
@@ -321,7 +326,7 @@ def stage_rclone_config(stage_path: Path, data_root: Path) -> Path | None:
     try:
         stage_fd = os.open(
             stage_path,
-            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
         )
         try:
             stage_st = os.fstat(stage_fd)
@@ -373,7 +378,7 @@ def _is_valid_cached_rclone_binary(
     try:
         bin_fd = os.open(
             str(binary),
-            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
         )
         st = os.fstat(bin_fd)
         if not stat.S_ISREG(st.st_mode) or st.st_size <= 0:
@@ -384,7 +389,7 @@ def _is_valid_cached_rclone_binary(
             if digest_sidecar.exists():
                 sc_fd = os.open(
                     str(digest_sidecar),
-                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
                 )
                 try:
                     sc_st = os.fstat(sc_fd)
@@ -449,7 +454,11 @@ def ensure_rclone_binary(
     def _open_exclusive_staging(path: Path):
         fd = os.open(
             str(path),
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_BINARY", 0),
             0o600,
         )
         try:

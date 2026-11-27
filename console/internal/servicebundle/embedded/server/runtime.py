@@ -1991,7 +1991,9 @@ class ColabOneRuntime:
                         return ""
                     log_fd = os.open(
                         str(log),
-                        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                        os.O_RDONLY
+                        | getattr(os, "O_NOFOLLOW", 0)
+                        | getattr(os, "O_BINARY", 0),
                     )
                     st = os.fstat(log_fd)
                     if not stat.S_ISREG(st.st_mode):

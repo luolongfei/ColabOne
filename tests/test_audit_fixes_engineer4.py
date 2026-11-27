@@ -297,7 +297,7 @@ def test_tunnel_public_addresses_ipv4_first_and_probe_failover(monkeypatch, tmp_
     sym_root.mkdir()
     outside = tmp_path / "outside"
     outside.mkdir()
-    (sym_root / "bin").symlink_to(outside)
+    (sym_root / "bin").symlink_to(outside, target_is_directory=True)
     with pytest.raises(ValueError, match="符号链接"):
         tunnel.ensure_binary(sym_root, ROOT / "catalog", threading.Event(), lambda *a: None)
 
@@ -536,7 +536,7 @@ def test_drive_trash_enoent_symlinks_export_lock_and_private_bytes(tmp_path, mon
     bad_mount.mkdir()
     outside = tmp_path / "outside_drive"
     outside.mkdir()
-    (bad_mount / "ColabOne_Drive").symlink_to(outside)
+    (bad_mount / "ColabOne_Drive").symlink_to(outside, target_is_directory=True)
     drv.mount_root = bad_mount
     with pytest.raises(ValueError, match="符号链接"):
         drv.remove_remote_workflow("wf1")
@@ -2158,12 +2158,14 @@ def test_round3_build_bundle_release_and_contract_parser_hardening(tmp_path):
     assert "maxRetries: 5" in mjs_text
     assert "renameWithRetry" in mjs_text
 
-    # 2. run-win-dev.sh chmods staged exe, sweeps .ColabOne.exe.new.*, checks dst_tp.is_dir(), and unlinks backup.
-    win_sh = (ROOT / "work" / "run-win-dev.sh").read_text(encoding="utf-8")
-    assert "os.chmod(staged_exe, 0o755)" in win_sh
-    assert ".ColabOne.exe.new.*" in win_sh
-    assert "dst_tp.is_dir()" in win_sh
-    assert "backup.unlink()" in win_sh
+    # 2. run-win-dev.sh (local untracked dev helper) chmods staged exe, sweeps .ColabOne.exe.new.*, checks dst_tp.is_dir(), and unlinks backup.
+    win_sh_path = ROOT / "work" / "run-win-dev.sh"
+    if win_sh_path.exists():
+        win_sh = win_sh_path.read_text(encoding="utf-8")
+        assert "os.chmod(staged_exe, 0o755)" in win_sh
+        assert ".ColabOne.exe.new.*" in win_sh
+        assert "dst_tp.is_dir()" in win_sh
+        assert "backup.unlink()" in win_sh
 
     # 3. tools/install.py & sync_service_bundle.py handle read-only parent dirs without chmodding symlink targets.
     ro_tree = tmp_path / "ro_tree"
@@ -2180,7 +2182,9 @@ def test_round3_build_bundle_release_and_contract_parser_hardening(tmp_path):
     try:
         install_tool._rmtree_best_effort(ro_tree)
         assert not ro_tree.exists()
-        assert stat_mod.S_IMODE(external_secret.stat().st_mode) == 0o444
+        assert not (external_secret.stat().st_mode & stat_mod.S_IWRITE)
+        if os.name == "posix":
+            assert stat_mod.S_IMODE(external_secret.stat().st_mode) == 0o444
     finally:
         if external_secret.exists():
             os.chmod(external_secret, 0o644)
@@ -2300,7 +2304,7 @@ def test_round3_runtime_clip_cleanup_preserves_preexisting_and_delete_live_white
         real_trash = tmp_path / "ext_trash"
         real_trash.mkdir()
         (real_trash / "wf_sym.json").write_text("{}", encoding="utf-8")
-        (wf_dir / ".trash").symlink_to(real_trash)
+        (wf_dir / ".trash").symlink_to(real_trash, target_is_directory=True)
         wf_calls: list[str] = []
         monkeypatch.setattr(rt.drive, "remove_remote_workflow", lambda wid: wf_calls.append(wid) or True)
         rt._on_workflow_deleted("wf_sym")
@@ -2324,7 +2328,7 @@ def test_round3_runtime_clip_cleanup_preserves_preexisting_and_delete_live_white
         outside_file = tmp_path / "outside.mp4"
         outside_file.write_bytes(b"outside")
         sym_sub = rt.comfy.io_out_dir / "sym_sub"
-        sym_sub.symlink_to(tmp_path)
+        sym_sub.symlink_to(tmp_path, target_is_directory=True)
         newly_created = rt.comfy.io_out_dir / "sub_ok" / "new_clip.mov"
 
         def _fake_upload(fname, fpath):
