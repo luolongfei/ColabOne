@@ -3629,7 +3629,7 @@ def test_live_studio_auto_provisioning_progress_and_worker_env(tmp_path: Path, m
     (base_model_dir / "blobs" / "b1").write_bytes(b"weights")
     base_snap = base_model_dir / "snapshots" / "fd4b254389122332181a7c3db7f27e918eec64e3"
     base_snap.mkdir(parents=True, exist_ok=True)
-    os.symlink("../../blobs/b1", base_snap / "model.safetensors")
+    os.symlink(os.path.join("..", "..", "blobs", "b1"), base_snap / "model.safetensors")
     assert (
         mgr._resolve_component_model_dir(
             "streaming_tts", "qwen3_tts", require_live_compatible=True
@@ -3701,7 +3701,7 @@ def test_live_studio_auto_provisioning_progress_and_worker_env(tmp_path: Path, m
             (mdir / "blobs" / "w0").write_bytes(b"safetensor-bytes")
             sdir = mdir / "snapshots" / (revision or "rev1")
             sdir.mkdir(parents=True, exist_ok=True)
-            os.symlink("../../blobs/w0", sdir / "model.safetensors")
+            os.symlink(os.path.join("..", "..", "blobs", "w0"), sdir / "model.safetensors")
             return sdir
         assert local_dir is not None
         local_dir.mkdir(parents=True, exist_ok=True)

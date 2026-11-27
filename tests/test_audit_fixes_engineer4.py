@@ -617,7 +617,7 @@ def test_vm_update_hardening_guards_and_rollback(tmp_path, monkeypatch):
     service_dir = content_dir / "colabone"
     (service_dir / "server").mkdir(parents=True)
     (service_dir / "server" / "app.py").write_text("# old app\n", encoding="utf-8")
-    (service_dir / "server" / "requirements.txt").write_text("# same reqs\n", encoding="utf-8")
+    (service_dir / "server" / "requirements.txt").write_bytes(b"# same reqs\n")
 
     bundle = content_dir / "colabone-update.zip"
     with zipfile.ZipFile(bundle, "w") as zf:
@@ -1686,7 +1686,7 @@ def test_vm_update_symlink_log_launch_err_precedence_and_rename_fail_restart(
     service_dir = content_dir / "colabone"
     (service_dir / "server").mkdir(parents=True)
     (service_dir / "server" / "app.py").write_text("# old\n", encoding="utf-8")
-    (service_dir / "server" / "requirements.txt").write_text("# same\n", encoding="utf-8")
+    (service_dir / "server" / "requirements.txt").write_bytes(b"# same\n")
 
     bundle = content_dir / "colabone-update.zip"
     with zipfile.ZipFile(bundle, "w") as zf:
