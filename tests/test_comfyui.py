@@ -882,6 +882,7 @@ def test_comfy_run_route_uploads_inputs_saves_output_and_snapshot_hides_canvas_t
             "comfyui_workflow_auto_release",
             "comfyui_live_studio",
             "comfyui_fashion_tryon",
+            "comfyui_fashion_pose_studio",
             "comfyui_share_guard",
             "idle_release_modes",
         ]

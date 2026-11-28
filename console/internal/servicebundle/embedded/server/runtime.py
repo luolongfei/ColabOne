@@ -655,6 +655,7 @@ class ColabOneRuntime:
                 "comfyui_workflow_auto_release",
                 "comfyui_live_studio",
                 "comfyui_fashion_tryon",
+                "comfyui_fashion_pose_studio",
                 "comfyui_share_guard",
                 "idle_release_modes",
             ],

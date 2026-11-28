@@ -722,6 +722,38 @@ func TestColabOneDesktopShareRuntimeOnlyMediaAndControllerGuards(t *testing.T) {
 	}
 	mu.Unlock()
 
+	// Old remote with comfyui_fashion_tryon (lacking comfyui_fashion_pose_studio) must reject pose_shots / pose_ref_1.
+	if _, err := ctrl.Command(ctx, "comfyui.run", map[string]any{
+		"workflow_id": "fashion-tryon-h3",
+		"overrides":   map[string]any{"pipeline.pose_shots": `[{"kind":"preset","preset_id":"pose_27"}]`},
+	}); err == nil || !strings.Contains(err.Error(), "姿势工作台") {
+		t.Fatalf("fashion-tryon-h3 pose_shots without comfyui_fashion_pose_studio expected upgrade hint, got %v", err)
+	}
+	if _, err := ctrl.Command(ctx, "comfyui.run", map[string]any{
+		"workflow_id": "fashion-tryon-h3",
+		"inputs":      map[string]any{"pipeline.pose_ref_1": "0123456789abcdef0123456789abcdef"},
+	}); err == nil || !strings.Contains(err.Error(), "姿势工作台") {
+		t.Fatalf("fashion-tryon-h3 pose_ref_1 without comfyui_fashion_pose_studio expected upgrade hint, got %v", err)
+	}
+	mu.Lock()
+	caps = append(caps, "comfyui_fashion_pose_studio")
+	mu.Unlock()
+	ctrl.Update(map[string]any{
+		"runtime": map[string]any{
+			"state":        "ready",
+			"id":           "ep-test",
+			"protocol":     7,
+			"capabilities": caps,
+		},
+	})
+	if _, err := ctrl.Command(ctx, "comfyui.run", map[string]any{
+		"workflow_id": "fashion-tryon-h3",
+		"overrides":   map[string]any{"pipeline.pose_shots": `[{"kind":"preset","preset_id":"pose_27"}]`},
+		"inputs":      map[string]any{"pipeline.pose_ref_1": "0123456789abcdef0123456789abcdef"},
+	}); err != nil {
+		t.Fatalf("fashion-tryon-h3 pose studio with comfyui_fashion_pose_studio failed: %v", err)
+	}
+
 	// (e) TTS preview: skip_local_cache=true writes nothing to disk; >512 KiB cached hit with has_ref_audio
 	// does NOT write a preset-only requestKey into tts-preview-cache/index.json!
 	if _, err := ctrl.Command(ctx, "comfyui.tts.preview", map[string]any{

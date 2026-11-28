@@ -4564,6 +4564,7 @@ describe("Guest output share locale isolation and cold-load bootstrap", () => {
       await import("./colabOneFashionPoseCatalog");
     const leakRe = /[\u3400-\u9fff\uf900-\ufaff（）「」，。：；“”《》【】、]/;
     const dynamicPoseSamples = [
+      "当前远端服务版本暂不支持姿势工作台与姿势参考图功能，请先点击顶部「立即热更新」升级远端服务后再试",
       "出图姿势清单不能为空，请至少选择 1 个姿势、上传姿势参考图或填写文字描述",
       "第 2/6 张 · 参考姿势 · street_look_01 · MiniMax-H3 极速采样 · 采样 3/6",
       "第 2/6 张 · 参考姿势 · street_look_01 · 采样 3/6",

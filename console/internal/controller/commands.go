@@ -18,11 +18,31 @@ import (
 const (
 	colabOneTtsPreviewUpgradeHint   = "当前远端服务版本暂不支持 TTS 音色试听，请先点击顶部「立即热更新」升级远端服务后再试"
 	colabOneLongCatNativeUpgradeHint = "当前远端实例服务版本较旧，暂不支持原生 LongCat-Video-Avatar 1.6 管线，请先点击「热更新服务」或重新启动 GPU 实例"
-	colabOneFashionTryonUpgradeHint = "当前远端服务版本暂不支持 AI 模特换装棚拍工作流，请先点击顶部「立即热更新」升级远端服务后再试"
+	colabOneFashionTryonUpgradeHint      = "当前远端服务版本暂不支持 AI 模特换装棚拍工作流，请先点击顶部「立即热更新」升级远端服务后再试"
+	colabOneFashionPoseStudioUpgradeHint = "当前远端服务版本暂不支持姿势工作台与姿势参考图功能，请先点击顶部「立即热更新」升级远端服务后再试"
 	colabOneTtsPreviewChunkBytes    = 512 * 1024
 	colabOneMaxTtsPreviewBytes      = 16 * 1024 * 1024
 	colabOneMaxTtsPreviewChunks     = 256
 )
+
+func requestUsesFashionPoseStudio(req map[string]any) bool {
+	if overrides := asMap(req["overrides"]); overrides != nil {
+		if strings.TrimSpace(asString(overrides["pipeline.pose_shots"])) != "" {
+			return true
+		}
+		if strings.EqualFold(strings.TrimSpace(asString(overrides["pipeline.shot_pack"])), "kids_4") {
+			return true
+		}
+	}
+	if inputs := asMap(req["inputs"]); inputs != nil {
+		for k, v := range inputs {
+			if strings.HasPrefix(k, "pipeline.pose_ref_") && strings.TrimSpace(asString(v)) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 func (c *ColabOneController) hasExportedDriveOutput(identity string) bool {
 	cleanID := strings.ToLower(strings.TrimSpace(identity))
@@ -813,6 +833,9 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		}
 		if c.builtinTemplatePipelineKind(wfID) == "fashion_tryon" && c.readyRemoteLacksCapability("comfyui_fashion_tryon") {
 			return nil, errors.New(colabOneFashionTryonUpgradeHint)
+		}
+		if c.builtinTemplatePipelineKind(wfID) == "fashion_tryon" && requestUsesFashionPoseStudio(req) && c.readyRemoteLacksCapability("comfyui_fashion_pose_studio") {
+			return nil, errors.New(colabOneFashionPoseStudioUpgradeHint)
 		}
 		if err := c.ensureRemoteWorkflow(ctx, wfID); err != nil {
 			return nil, err

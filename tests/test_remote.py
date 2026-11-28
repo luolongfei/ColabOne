@@ -109,6 +109,7 @@ def test_status_and_snapshot_report_protocol_7_and_comfyui_capabilities(
             "comfyui_workflow_auto_release",
             "comfyui_live_studio",
             "comfyui_fashion_tryon",
+            "comfyui_fashion_pose_studio",
             "comfyui_share_guard",
             "idle_release_modes",
         ]
