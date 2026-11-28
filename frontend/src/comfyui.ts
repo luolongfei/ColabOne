@@ -1,5 +1,15 @@
 import { colabOneCommand } from "./api";
 import {
+  COLABONE_FASHION_MAX_POSE_REFS,
+  COLABONE_FASHION_MAX_POSE_SHOTS,
+  COLABONE_FASHION_POSE_REF_SLOT_KEYS,
+  COLABONE_FASHION_POSE_SHOTS_KEY,
+  parseColabOneFashionPoseShots,
+  pruneColabOneFashionPoseShotsForMedia,
+  resolveColabOneFashionPoseShotsFromValues,
+  serializeColabOneFashionPoseShots,
+} from "./colabOneFashionPoseCatalog";
+import {
   colabOneWorkflowShareId,
   isColabOneWorkflowShareActive,
 } from "./colabOneWorkflowShare";
@@ -1653,6 +1663,17 @@ export function isColabOneVoiceRefTextRequired(
   return false;
 }
 
+export {
+  COLABONE_FASHION_MAX_POSE_REFS,
+  COLABONE_FASHION_MAX_POSE_SHOTS,
+  COLABONE_FASHION_POSE_REF_SLOT_KEYS,
+  COLABONE_FASHION_POSE_SHOTS_KEY,
+  parseColabOneFashionPoseShots,
+  pruneColabOneFashionPoseShotsForMedia,
+  resolveColabOneFashionPoseShotsFromValues,
+  serializeColabOneFashionPoseShots,
+};
+
 export const COLABONE_FASHION_MAX_REFS_PER_GROUP = 6;
 
 export const COLABONE_FASHION_MODEL_SLOT_KEYS = [
@@ -1676,12 +1697,26 @@ export const COLABONE_FASHION_GARMENT_SLOT_KEYS = [
 export const COLABONE_FASHION_MODEL_ROLES_KEY = "pipeline.model_photo_roles";
 export const COLABONE_FASHION_GARMENT_ROLES_KEY = "pipeline.garment_photo_roles";
 
+const COLABONE_FASHION_POSE_TOGGLE_KEYS = [
+  "pipeline.pose_1_enabled",
+  "pipeline.pose_2_enabled",
+  "pipeline.pose_3_enabled",
+  "pipeline.pose_4_enabled",
+  "pipeline.pose_5_enabled",
+  "pipeline.pose_6_enabled",
+] as const;
+
 export const COLABONE_FASHION_MANAGED_FIELD_KEYS: ReadonlySet<string> =
   new Set<string>([
     ...COLABONE_FASHION_MODEL_SLOT_KEYS,
     COLABONE_FASHION_MODEL_ROLES_KEY,
     ...COLABONE_FASHION_GARMENT_SLOT_KEYS,
     COLABONE_FASHION_GARMENT_ROLES_KEY,
+    COLABONE_FASHION_POSE_SHOTS_KEY,
+    ...COLABONE_FASHION_POSE_REF_SLOT_KEYS,
+    "pipeline.shot_pack",
+    ...COLABONE_FASHION_POSE_TOGGLE_KEYS,
+    "pipeline.custom_pose_prompts",
   ]);
 
 export type ColabOneFashionPhotoGroupKind = "model" | "garment";
@@ -1923,6 +1958,21 @@ export function pickColabOneNextFashionSlotKeys(
   return picked;
 }
 
+export function pickColabOneNextFashionPoseRefSlotKeys(
+  occupiedSlotKeys: readonly string[],
+  count: number,
+): string[] {
+  const occupied = new Set<string>(occupiedSlotKeys);
+  const picked: string[] = [];
+  for (const key of COLABONE_FASHION_POSE_REF_SLOT_KEYS) {
+    if (picked.length >= count) break;
+    if (!occupied.has(key)) {
+      picked.push(key);
+    }
+  }
+  return picked;
+}
+
 const COLABONE_FASHION_BF16_THRESHOLD_MIB = 65_536;
 const COLABONE_FASHION_MIN_VRAM_BF16_MIB = 65_536;
 const COLABONE_FASHION_MIN_VRAM_INT8_MIB = 22_528;
@@ -1934,14 +1984,6 @@ const COLABONE_FASHION_INT8_MINIMAX_BYTES =
   20_979_314_802 + 15_687_142_551 + 1_168_505_312;
 const COLABONE_FASHION_INT8_RMBG3_BYTES =
   8_408_562_474 + 4_858_559_240 + 336_211_292;
-const COLABONE_FASHION_POSE_TOGGLE_KEYS = [
-  "pipeline.pose_1_enabled",
-  "pipeline.pose_2_enabled",
-  "pipeline.pose_3_enabled",
-  "pipeline.pose_4_enabled",
-  "pipeline.pose_5_enabled",
-  "pipeline.pose_6_enabled",
-] as const;
 
 export interface ColabOneFashionPreflightSpec {
   precision: "bf16" | "int8";
@@ -1992,9 +2034,21 @@ export function resolveColabOneFashionPreflight(
 export function isColabOneFashionCustomPosesEmpty(
   wf: WorkflowTemplate | undefined | null,
   values: Record<string, string | number | boolean> | undefined | null,
+  activePoseRefSlotKeys?: readonly string[] | ReadonlySet<string>,
 ): boolean {
   if (!wf || wf.pipeline?.kind !== "fashion_tryon") {
     return false;
+  }
+  const rawStructured = hasOwn(values, COLABONE_FASHION_POSE_SHOTS_KEY)
+    ? values?.[COLABONE_FASHION_POSE_SHOTS_KEY]
+    : undefined;
+  const parsedStructured = parseColabOneFashionPoseShots(rawStructured);
+  if (parsedStructured !== null) {
+    const resolved = resolveColabOneFashionPoseShotsFromValues(
+      values,
+      activePoseRefSlotKeys,
+    );
+    return resolved.length === 0;
   }
   const customPrompts = hasOwn(values, "pipeline.custom_pose_prompts")
     ? String(values?.["pipeline.custom_pose_prompts"] ?? "").trim()

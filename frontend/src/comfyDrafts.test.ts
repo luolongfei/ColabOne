@@ -1950,4 +1950,82 @@ describe("createColabOneDraftStatusController", () => {
     ).rejects.toThrow("字段值无效");
     expect(storage.getItem(COLABONE_STORAGE_KEYS.comfyDrafts)).toBe(existingRaw);
   });
+
+  it("prunes missing pose_ref slots from fashion pipeline.pose_shots during draft restore while preserving valid shots", () => {
+    const poseFields: WorkflowField[] = [
+      makeField({ key: "pipeline.pose_shots", field_type: "text", default: "" }),
+      makeField({ key: "pipeline.pose_ref_1", field_type: "image", default: "" }),
+      makeField({ key: "pipeline.pose_ref_2", field_type: "image", default: "" }),
+    ];
+    const validMedia: Record<string, ColabOneWorkflowDraftMediaMeta> = {
+      "pipeline.pose_ref_1": {
+        id: "1".repeat(32),
+        filename: "ref1.png",
+        kind: "image",
+        mime: "image/png",
+        size: 1024,
+        sha256: "a".repeat(64),
+        updated_at: 1700000000,
+      },
+    };
+    const merged = mergeColabOneWorkflowDraftFields(
+      poseFields,
+      {
+        "pipeline.pose_shots": JSON.stringify([
+          { kind: "preset", preset_id: "pose_1" },
+          {
+            kind: "reference",
+            slot_key: "pipeline.pose_ref_1",
+            view: "side",
+            note: "自然抬头",
+            borrow_scene_lighting: true,
+          },
+          {
+            kind: "reference",
+            slot_key: "pipeline.pose_ref_2",
+            view: "front",
+            note: "stale missing media",
+            borrow_scene_lighting: false,
+          },
+          { kind: "text", prompt: "轻盈转身", view: "side" },
+        ]),
+        "pipeline.pose_ref_1": "ref1.png",
+        "pipeline.pose_ref_2": "ghost_deleted.png",
+      },
+      "zh-CN",
+      validMedia,
+    );
+    expect(merged["pipeline.pose_ref_1"]).toBe("ref1.png");
+    expect(merged["pipeline.pose_ref_2"]).toBe("");
+    expect(JSON.parse(String(merged["pipeline.pose_shots"]))).toEqual([
+      { kind: "preset", preset_id: "pose_1" },
+      {
+        kind: "reference",
+        slot_key: "pipeline.pose_ref_1",
+        view: "side",
+        note: "自然抬头",
+        borrow_scene_lighting: true,
+      },
+      { kind: "text", prompt: "轻盈转身", view: "side" },
+    ]);
+
+    // When all shots were missing pose_refs, pruned queue resets to "" (falls back to default pack cleanly)
+    const prunedAll = mergeColabOneWorkflowDraftFields(
+      poseFields,
+      {
+        "pipeline.pose_shots": JSON.stringify([
+          {
+            kind: "reference",
+            slot_key: "pipeline.pose_ref_2",
+            view: "auto",
+            note: "",
+            borrow_scene_lighting: false,
+          },
+        ]),
+      },
+      "zh-CN",
+      {},
+    );
+    expect(prunedAll["pipeline.pose_shots"]).toBe("");
+  });
 });

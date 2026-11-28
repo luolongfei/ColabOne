@@ -613,15 +613,23 @@ func TestComfyCatalogFileAndValidation(t *testing.T) {
 			}
 			basicCount := 0
 			advancedCount := 0
+			hasPoseShots := false
+			poseRefCount := 0
 			for _, f := range tpl.Fields {
 				if f.Group == "basic" {
 					basicCount++
 				} else if f.Group == "advanced" {
 					advancedCount++
 				}
+				if f.Key == "pipeline.pose_shots" {
+					hasPoseShots = true
+				}
+				if strings.HasPrefix(f.Key, "pipeline.pose_ref_") {
+					poseRefCount++
+				}
 			}
-			if basicCount != 17 || advancedCount < 15 {
-				t.Fatalf("fashion-tryon-h3 field groups basic=%d advanced=%d, want 17 basic (6 model + roles + 6 garment + roles + 3 selects) and >=15 advanced", basicCount, advancedCount)
+			if basicCount != 24 || advancedCount < 15 || !hasPoseShots || poseRefCount != 6 {
+				t.Fatalf("fashion-tryon-h3 field groups basic=%d advanced=%d hasPoseShots=%v poseRefCount=%d, want 24 basic (6 model + roles + 6 garment + roles + pose_shots + 6 pose_refs + 3 selects), >=15 advanced, pose_shots, and 6 pose_ref slots", basicCount, advancedCount, hasPoseShots, poseRefCount)
 			}
 		}
 	}

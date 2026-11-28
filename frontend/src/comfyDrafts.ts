@@ -7,11 +7,14 @@ import {
 import {
   COLABONE_FASHION_GARMENT_ROLES_KEY,
   COLABONE_FASHION_MODEL_ROLES_KEY,
+  COLABONE_FASHION_POSE_REF_SLOT_KEYS,
+  COLABONE_FASHION_POSE_SHOTS_KEY,
   COLABONE_VOICE_PRESET_ID_RE,
   clampColabOneNumericFieldValue,
   defaultFieldValues,
   getColabOneFashionSlotKeys,
   isColabOnePresetVisualPrompt,
+  pruneColabOneFashionPoseShotsForMedia,
   reconcileColabOneFashionPhotoList,
   serializeColabOneFashionPhotoMeta,
 } from "./comfyui";
@@ -627,6 +630,21 @@ export function mergeColabOneWorkflowDraftFields(
             roles,
           });
         }
+        continue;
+      }
+      if (field.key === COLABONE_FASHION_POSE_SHOTS_KEY) {
+        const activePoseRefKeys = COLABONE_FASHION_POSE_REF_SLOT_KEYS.filter(
+          (slotKey) =>
+            Boolean(
+              validMedia &&
+                hasOwn(validMedia, slotKey) &&
+                validMedia[slotKey]?.filename,
+            ),
+        );
+        merged[field.key] = pruneColabOneFashionPoseShotsForMedia(
+          raw,
+          activePoseRefKeys,
+        );
         continue;
       }
       if (

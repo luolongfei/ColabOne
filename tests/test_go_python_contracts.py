@@ -1886,4 +1886,52 @@ def test_web_capabilities_origin_bind_mode_lan_urls_parity():
         )
 
 
+def test_fashion_pose_catalog_python_frontend_contracts():
+    from server.fashion_tryon import (
+        COLABONE_FASHION_BUILTIN_POSES,
+        COLABONE_FASHION_MAX_POSE_REFS,
+        COLABONE_FASHION_MAX_POSE_SHOTS,
+        COLABONE_FASHION_POSE_REF_SLOT_KEYS,
+        COLABONE_FASHION_POSE_SHOTS_KEY,
+    )
+
+    pose_catalog_ts = (
+        ROOT / "frontend" / "src" / "colabOneFashionPoseCatalog.ts"
+    ).read_text(encoding="utf-8")
+    catalog_json = json.loads(
+        (ROOT / "catalog" / "comfyui.json").read_text(encoding="utf-8")
+    )
+    fashion_tpl = next(
+        tpl for tpl in catalog_json["templates"] if tpl["id"] == "fashion-tryon-h3"
+    )
+    fashion_field_keys = {f["key"] for f in fashion_tpl["fields"]}
+
+    # 1. Limits and slot keys stay identical between Python, TS, and catalog/comfyui.json.
+    assert f"COLABONE_FASHION_MAX_POSE_SHOTS = {COLABONE_FASHION_MAX_POSE_SHOTS}" in pose_catalog_ts
+    assert f"COLABONE_FASHION_MAX_POSE_REFS = {COLABONE_FASHION_MAX_POSE_REFS}" in pose_catalog_ts
+    assert f'COLABONE_FASHION_POSE_SHOTS_KEY = "{COLABONE_FASHION_POSE_SHOTS_KEY}"' in pose_catalog_ts
+    assert COLABONE_FASHION_POSE_SHOTS_KEY in fashion_field_keys
+    for slot_key in COLABONE_FASHION_POSE_REF_SLOT_KEYS:
+        assert f'"{slot_key}"' in pose_catalog_ts
+        assert slot_key in fashion_field_keys
+
+    # 2. All 30 pose presets share identical IDs, categories, views, and zh-CN fallback labels.
+    ts_presets = re.findall(
+        r'id:\s*"(pose_\d+)",\s*category:\s*"([a-z]+)",\s*view:\s*"([a-z]+)",\s*labelKey:\s*"comfy\.fashionPosePreset_(pose_\d+)",\s*fallbackLabel:\s*"([^"]+)"',
+        pose_catalog_ts,
+        re.DOTALL,
+    )
+    assert len(ts_presets) == len(COLABONE_FASHION_BUILTIN_POSES) == 30
+    ts_by_id = {p[0]: p for p in ts_presets}
+    py_by_id = {
+        p["id"]: (p["id"], p["category"], p["view"], p["id"], p["label"])
+        for p in COLABONE_FASHION_BUILTIN_POSES
+    }
+    assert ts_by_id == py_by_id, (
+        "Fashion pose preset catalog drifted between server/fashion_tryon.py and "
+        "frontend/src/colabOneFashionPoseCatalog.ts"
+    )
+
+
+
 

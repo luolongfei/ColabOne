@@ -2800,6 +2800,49 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
+    re: /^第 (\d+)\/(\d+) 张 · (参考姿势 · [^·]+?) · (.+)$/s,
+    format: (m, loc) => {
+      const idx = m[1]!;
+      const total = m[2]!;
+      const shotLabel = translateInner(m[3]!.trim(), loc);
+      const rest = translateInner(m[4]!.trim(), loc);
+      switch (loc) {
+        case "en-US":
+          return `Shot ${idx}/${total} · ${shotLabel} · ${rest}`;
+        case "zh-TW":
+        case "zh-HK":
+          return `第 ${idx}/${total} 張 · ${shotLabel} · ${rest}`;
+        case "ja-JP":
+          return `${idx}/${total} 枚目 · ${shotLabel} · ${rest}`;
+        case "ko-KR":
+          return `${idx}/${total}컷 · ${shotLabel} · ${rest}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^第 (\d+)\/(\d+) 张 · (参考姿势 · [^·]+)$/,
+    format: (m, loc) => {
+      const idx = m[1]!;
+      const total = m[2]!;
+      const shotLabel = translateInner(m[3]!.trim(), loc);
+      switch (loc) {
+        case "en-US":
+          return `Shot ${idx}/${total} · ${shotLabel}`;
+        case "zh-TW":
+        case "zh-HK":
+          return `第 ${idx}/${total} 張 · ${shotLabel}`;
+        case "ja-JP":
+          return `${idx}/${total} 枚目 · ${shotLabel}`;
+        case "ko-KR":
+          return `${idx}/${total}컷 · ${shotLabel}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
     re: /^第 (\d+)\/(\d+) 张 · ([^·]+?) · (.+)$/s,
     format: (m, loc) => {
       const idx = m[1]!;
@@ -2856,6 +2899,63 @@ const PATTERN_RULES: PatternRule[] = [
           return `カスタムポーズ ${idx}`;
         case "ko-KR":
           return `사용자 지정 포즈 ${idx}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^参考图姿势 (\d+)$/,
+    format: (m, loc) => {
+      const idx = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Pose Reference ${idx}`;
+        case "zh-TW":
+        case "zh-HK":
+          return `參考圖姿勢 ${idx}`;
+        case "ja-JP":
+          return `参考画像ポーズ ${idx}`;
+        case "ko-KR":
+          return `참고 이미지 포즈 ${idx}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^文字姿势 (\d+)$/,
+    format: (m, loc) => {
+      const idx = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Text Pose ${idx}`;
+        case "zh-TW":
+        case "zh-HK":
+          return `文字姿勢 ${idx}`;
+        case "ja-JP":
+          return `テキストポーズ ${idx}`;
+        case "ko-KR":
+          return `텍스트 포즈 ${idx}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^参考姿势 · (.+)$/,
+    format: (m, loc) => {
+      const name = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Pose Ref · ${name}`;
+        case "zh-TW":
+        case "zh-HK":
+          return `參考姿勢 · ${name}`;
+        case "ja-JP":
+          return `参考ポーズ · ${name}`;
+        case "ko-KR":
+          return `참고 포즈 · ${name}`;
         default:
           return m[0];
       }
@@ -3086,7 +3186,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^(模特参考图|服装参考图|棚拍场景参考图|输入图片)「(.+?)」不能是符号链接$/,
+    re: /^(模特参考图|服装参考图|棚拍场景参考图|姿势参考图|输入图片)「(.+?)」不能是符号链接$/,
     format: (m, loc) => {
       const label = translateFashionImageLabel(m[1]!, m[2]!, loc);
       switch (loc) {
@@ -3106,7 +3206,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^(模特参考图|服装参考图|棚拍场景参考图|输入图片)「(.+?)」文件不存在或已失效，请重新上传$/,
+    re: /^(模特参考图|服装参考图|棚拍场景参考图|姿势参考图|输入图片)「(.+?)」文件不存在或已失效，请重新上传$/,
     format: (m, loc) => {
       const label = translateFashionImageLabel(m[1]!, m[2]!, loc);
       switch (loc) {
@@ -3126,7 +3226,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^(模特参考图|服装参考图|棚拍场景参考图|输入图片)「(.+?)」仅支持 PNG、JPEG 或 WebP 图片格式（当前为 (.+?)）$/,
+    re: /^(模特参考图|服装参考图|棚拍场景参考图|姿势参考图|输入图片)「(.+?)」仅支持 PNG、JPEG 或 WebP 图片格式（当前为 (.+?)）$/,
     format: (m, loc) => {
       const label = translateFashionImageLabel(m[1]!, m[2]!, loc);
       const rawExt = m[3]!;
@@ -3158,7 +3258,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^(模特参考图|服装参考图|棚拍场景参考图|输入图片)「(.+?)」图片文件为空，请重新上传$/,
+    re: /^(模特参考图|服装参考图|棚拍场景参考图|姿势参考图|输入图片)「(.+?)」图片文件为空，请重新上传$/,
     format: (m, loc) => {
       const label = translateFashionImageLabel(m[1]!, m[2]!, loc);
       switch (loc) {
@@ -3178,7 +3278,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^(模特参考图|服装参考图|棚拍场景参考图|输入图片)「(.+?)」文件不可读取，请重新上传$/,
+    re: /^(模特参考图|服装参考图|棚拍场景参考图|姿势参考图|输入图片)「(.+?)」文件不可读取，请重新上传$/,
     format: (m, loc) => {
       const label = translateFashionImageLabel(m[1]!, m[2]!, loc);
       switch (loc) {
@@ -3198,7 +3298,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^(模特参考图|服装参考图|棚拍场景参考图|输入图片)「(.+?)」仅支持有效的 PNG、JPEG 或 WebP 图片文件$/,
+    re: /^(模特参考图|服装参考图|棚拍场景参考图|姿势参考图|输入图片)「(.+?)」仅支持有效的 PNG、JPEG 或 WebP 图片文件$/,
     format: (m, loc) => {
       const label = translateFashionImageLabel(m[1]!, m[2]!, loc);
       switch (loc) {
@@ -3218,7 +3318,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^(模特参考图|服装参考图|棚拍场景参考图|输入图片)「(.+?)」(?:图片)?尺寸无效(，请重新上传)?$/,
+    re: /^(模特参考图|服装参考图|棚拍场景参考图|姿势参考图|输入图片)「(.+?)」(?:图片)?尺寸无效(，请重新上传)?$/,
     format: (m, loc) => {
       const label = translateFashionImageLabel(m[1]!, m[2]!, loc);
       const reupload = Boolean(m[3]);
@@ -3249,7 +3349,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^(模特参考图|服装参考图|棚拍场景参考图|输入图片)「(.+?)」(?:图片)?分辨率超过上限（最多 1600 万像素）$/,
+    re: /^(模特参考图|服装参考图|棚拍场景参考图|姿势参考图|输入图片)「(.+?)」(?:图片)?分辨率超过上限（最多 1600 万像素）$/,
     format: (m, loc) => {
       const label = translateFashionImageLabel(m[1]!, m[2]!, loc);
       switch (loc) {
@@ -3269,7 +3369,7 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
-    re: /^(模特参考图|服装参考图|棚拍场景参考图|输入图片)「(.+?)」(?:图片)?已损坏或无法解码，请重新上传有效的 PNG、JPEG 或 WebP 图片$/,
+    re: /^(模特参考图|服装参考图|棚拍场景参考图|姿势参考图|输入图片)「(.+?)」(?:图片)?已损坏或无法解码，请重新上传有效的 PNG、JPEG 或 WebP 图片$/,
     format: (m, loc) => {
       const label = translateFashionImageLabel(m[1]!, m[2]!, loc);
       switch (loc) {
@@ -3303,6 +3403,25 @@ const PATTERN_RULES: PatternRule[] = [
           return `衣装細部クローズアップ「${filename}」は切り抜きを自動スキップし、マクロ質感をそのまま保持します`;
         case "ko-KR":
           return `의상 디테일 클로즈업 "${filename}"은 매크로 질감 보존을 위해 누끼를 자동 건너뛰었습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^第 (\d+) 张定妆主图已锁定为视觉锚点，正在保持同人同衣同光影展开其余姿势$/,
+    format: (m, loc) => {
+      const idx = m[1]!;
+      switch (loc) {
+        case "en-US":
+          return `Hero Shot ${idx} locked as visual anchor; expanding remaining poses with matching identity, outfit, and studio lighting`;
+        case "zh-TW":
+        case "zh-HK":
+          return `第 ${idx} 張定妝主圖已鎖定為視覺錨點，正在保持同人同衣同光影展開其餘姿勢`;
+        case "ja-JP":
+          return `${idx} 枚目のメイン画像を視覚アンカーとして固定しました。同一モデル・衣装・照明のまま残りのポーズを生成しています`;
+        case "ko-KR":
+          return `${idx}번째 메인 컷을 시각 앵커로 고정했습니다. 동일한 모델, 의상, 조명을 유지하며 나머지 포즈를 생성하는 중입니다`;
         default:
           return m[0];
       }
@@ -14579,6 +14698,27 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
+    re: /^采样 (\d+)\/(\d+)$/,
+    format: (m, loc) => {
+      const step = m[1]!;
+      const maxSteps = m[2]!;
+      switch (loc) {
+        case "en-US":
+          return `Step ${step}/${maxSteps}`;
+        case "zh-TW":
+          return `取樣 ${step}/${maxSteps}`;
+        case "zh-HK":
+          return `採樣 ${step}/${maxSteps}`;
+        case "ja-JP":
+          return `ステップ ${step}/${maxSteps}`;
+        case "ko-KR":
+          return `스텝 ${step}/${maxSteps}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
     re: /^(.+) · ([^·]+)$/,
     when: (text) => {
       const idx = text.lastIndexOf(" · ");
@@ -19191,6 +19331,21 @@ function translateFashionImageLabel(
           return `スタジオ背景参考写真「${filename}」`;
         case "ko-KR":
           return `스튜디오 배경 참고 사진 "${filename}"`;
+        default:
+          return `${kind}「${filename}」`;
+      }
+    case "姿势参考图":
+      switch (loc) {
+        case "en-US":
+          return `Pose reference photo "${filename}"`;
+        case "zh-TW":
+          return `姿勢參考圖「${filename}」`;
+        case "zh-HK":
+          return `姿勢參考圖「${filename}」`;
+        case "ja-JP":
+          return `ポーズ参考画像「${filename}」`;
+        case "ko-KR":
+          return `포즈 참고 이미지 "${filename}"`;
         default:
           return `${kind}「${filename}」`;
       }

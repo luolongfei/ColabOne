@@ -30,6 +30,13 @@ import ColabOneDriveExportModal, {
 import ColabOneFashionPhotoGroup, {
   type ColabOneFashionPhotoItem,
 } from "./ColabOneFashionPhotoGroup.vue";
+import ColabOneFashionPoseStudio, {
+  type ColabOneFashionPoseRefItem,
+} from "./ColabOneFashionPoseStudio.vue";
+import {
+  inferColabOneFashionPoseView,
+  type ColabOneFashionPoseShot,
+} from "./colabOneFashionPoseCatalog";
 import ColabOneOutputGalleryModal, {
   type ColabOneGalleryModalItem,
 } from "./ColabOneOutputGalleryModal.vue";
@@ -143,7 +150,11 @@ import {
 import {
   COLABONE_DIGITAL_HUMAN_GROUP_KEY,
   COLABONE_FASHION_MANAGED_FIELD_KEYS,
+  COLABONE_FASHION_MAX_POSE_REFS,
+  COLABONE_FASHION_MAX_POSE_SHOTS,
   COLABONE_FASHION_MAX_REFS_PER_GROUP,
+  COLABONE_FASHION_POSE_REF_SLOT_KEYS,
+  COLABONE_FASHION_POSE_SHOTS_KEY,
   buildColabOneStudioWorkflowEntries,
   buildColabOneWorkflowOverrides,
   defaultFieldValues,
@@ -168,13 +179,16 @@ import {
   parseColabOneFashionPhotoMeta,
   parseWorkflowImportJSON,
   partitionWorkflowFields,
+  pickColabOneNextFashionPoseRefSlotKeys,
   pickColabOneNextFashionSlotKeys,
+  pruneColabOneFashionPoseShotsForMedia,
   readColabOnePreferredDigitalHumanEngine,
   reconcileColabOneFashionPhotoList,
   remapColabOnePresetPromptFieldsForLocale,
   resolveColabOneAudioSource,
   resolveColabOneDigitalHumanGpuContext,
   resolveColabOneFallbackVoicePreset,
+  resolveColabOneFashionPoseShotsFromValues,
   resolveColabOneFashionPreflight,
   resolveColabOneInitialDigitalHumanWorkflowId,
   resolveColabOneLongCatNativeSamplingMode,
@@ -184,6 +198,7 @@ import {
   resolveColabOneVoicePreviewDefaultText,
   resolveSelectedTtsEngine,
   serializeColabOneFashionPhotoMeta,
+  serializeColabOneFashionPoseShots,
   transferColabOneDigitalHumanFields,
   verifyAndDecodeColabOneBase64AudioUrl,
   workflowModelsTotalBytes,
@@ -759,6 +774,9 @@ const fashionGroupUploadChains: Record<
   model: Promise.resolve(),
   garment: Promise.resolve(),
 };
+const reservedPoseRefTokens = new Map<string, symbol>();
+let poseRefUploadChain: Promise<void> = Promise.resolve();
+const fashionPoseResetSeq = ref(0);
 let fashionBatchErrorSeq = 0;
 const hasUploadingField = computed(
   () =>
@@ -943,13 +961,469 @@ const standardPrimaryFields = computed(() => {
   }
   return list.filter((field) => !COLABONE_FASHION_MANAGED_FIELD_KEYS.has(field.key));
 });
+const standardAdvancedFields = computed(() => {
+  const list = fieldPartitions.value.advanced;
+  if (!isFashionTryOnWorkflow.value) {
+    return list;
+  }
+  return list.filter((field) => !COLABONE_FASHION_MANAGED_FIELD_KEYS.has(field.key));
+});
 
 function clearAllReservedFashionSlots() {
   reservedFashionTokens.model.clear();
   reservedFashionTokens.garment.clear();
+  reservedPoseRefTokens.clear();
+  fashionPoseResetSeq.value += 1;
   if (Object.keys(reservedFashionNames.value).length > 0) {
     reservedFashionNames.value = {};
   }
+}
+
+function releaseReservedPoseRefSlot(slotKey: string, token: symbol) {
+  if (reservedPoseRefTokens.get(slotKey) !== token) {
+    return;
+  }
+  reservedPoseRefTokens.delete(slotKey);
+  if (slotKey in reservedFashionNames.value) {
+    const next = { ...reservedFashionNames.value };
+    delete next[slotKey];
+    reservedFashionNames.value = next;
+  }
+}
+
+function settledPoseRefSlotKeys(): string[] {
+  return COLABONE_FASHION_POSE_REF_SLOT_KEYS.filter(
+    (key) =>
+      !isFashionSlotUploading(key) &&
+      (Boolean(uploadedInputIds.value[key]) ||
+        Boolean(pendingUploads.value[key]) ||
+        Boolean(draftMediaMeta.value[key]) ||
+        Boolean(localPreviews.value[key])),
+  );
+}
+
+function activePoseRefSlotKeys(): string[] {
+  return COLABONE_FASHION_POSE_REF_SLOT_KEYS.filter(
+    (key) =>
+      isFashionSlotUploading(key) ||
+      Boolean(uploadedInputIds.value[key]) ||
+      Boolean(pendingUploads.value[key]) ||
+      Boolean(draftMediaMeta.value[key]) ||
+      Boolean(localPreviews.value[key]),
+  );
+}
+
+const fashionPoseRefItems = computed<ColabOneFashionPoseRefItem[]>(() => {
+  if (!isFashionTryOnWorkflow.value) {
+    return [];
+  }
+  return activePoseRefSlotKeys().map((key) => ({
+    key,
+    filename:
+      uploadedNames.value[key] ||
+      uploadingNames.value[key] ||
+      reservedFashionNames.value[key] ||
+      pendingUploads.value[key]?.filename ||
+      draftMediaMeta.value[key]?.filename ||
+      String(fieldValues.value[key] || "") ||
+      key,
+    previewUrl: localPreviews.value[key],
+    uploading: isFashionSlotUploading(key),
+    uploadedRemote: Boolean(uploadedInputIds.value[key]),
+    hasPending: Boolean(pendingUploads.value[key]),
+    hasDraft: Boolean(draftMediaMeta.value[key]),
+  }));
+});
+
+const fashionPoseShots = computed<ColabOneFashionPoseShot[]>(() => {
+  if (!isFashionTryOnWorkflow.value) {
+    return [];
+  }
+  return resolveColabOneFashionPoseShotsFromValues(
+    fieldValues.value,
+    activePoseRefSlotKeys(),
+  );
+});
+
+function handleFashionUpdatePoseShots(nextShots: ColabOneFashionPoseShot[]) {
+  const wf = selectedWorkflow.value;
+  if (!wf || !isFashionTryOnWorkflow.value || submittingRun.value) return;
+  const serialized = serializeColabOneFashionPoseShots(nextShots);
+  fieldValues.value[COLABONE_FASHION_POSE_SHOTS_KEY] = serialized;
+  // Clear superseded hidden legacy fields once structured pose_shots takes over so
+  // old hidden values can never resurrect if pose_ref media is later pruned.
+  if ("pipeline.custom_pose_prompts" in fieldValues.value) {
+    fieldValues.value["pipeline.custom_pose_prompts"] = "";
+  }
+  if ("pipeline.shot_pack" in fieldValues.value) {
+    fieldValues.value["pipeline.shot_pack"] = "full_6";
+  }
+  for (let i = 1; i <= 6; i += 1) {
+    const toggleKey = `pipeline.pose_${i}_enabled`;
+    if (toggleKey in fieldValues.value) {
+      fieldValues.value[toggleKey] = true;
+    }
+  }
+  const referencedSlots = new Set<string>();
+  for (const shot of nextShots) {
+    if (shot.kind === "reference") {
+      referencedSlots.add(shot.slot_key);
+    }
+  }
+  for (const slotKey of settledPoseRefSlotKeys()) {
+    if (!referencedSlots.has(slotKey)) {
+      const slotField = wf.fields.find((f) => f.key === slotKey);
+      if (slotField) {
+        clearMediaField(slotField);
+      }
+    }
+  }
+  draftDirty = true;
+  scheduleDraftSave(true);
+}
+
+async function handleFashionAddPoseRefFiles(
+  files: File[],
+  replaceIndex: number | null,
+) {
+  const wf = selectedWorkflow.value;
+  if (
+    !wf ||
+    !isFashionTryOnWorkflow.value ||
+    submittingRun.value ||
+    !files.length
+  ) {
+    return;
+  }
+  const validFiles: File[] = [];
+  const validationErrors: string[] = [];
+  const seenValidationErrors = new Set<string>();
+  const addValidationError = (msg: string) => {
+    if (msg && !seenValidationErrors.has(msg)) {
+      seenValidationErrors.add(msg);
+      validationErrors.push(msg);
+    }
+  };
+  for (const file of files) {
+    if (!IMAGE_EXT_RE.test(file.name)) {
+      addValidationError(t("comfy.errUnsupportedImageFormat"));
+      continue;
+    }
+    if (file.size <= 0) {
+      addValidationError(t("comfy.errEmptyFile"));
+      continue;
+    }
+    if (file.size > MAX_IMAGE_INPUT_BYTES) {
+      addValidationError(t("comfy.errImageTooLarge"));
+      continue;
+    }
+    validFiles.push(file);
+  }
+  if (validationErrors.length > 0) {
+    fashionBatchErrorSeq += 1;
+    reportError(validationErrors.join(" · "));
+  }
+  if (validFiles.length === 0) {
+    return;
+  }
+
+  const loadGen = draftLoadGen;
+  const batchStartErrorSeq = fashionBatchErrorSeq;
+  const occupied = Array.from(
+    new Set<string>([
+      ...activePoseRefSlotKeys(),
+      ...reservedPoseRefTokens.keys(),
+    ]),
+  );
+  const currentShots = fashionPoseShots.value;
+  const currentShotCount = currentShots.length;
+  const validReplaceIdx =
+    replaceIndex !== null &&
+    replaceIndex >= 0 &&
+    replaceIndex < currentShotCount
+      ? replaceIndex
+      : null;
+  const replaceTargetSignature =
+    validReplaceIdx !== null
+      ? JSON.stringify(currentShots[validReplaceIdx])
+      : null;
+  const maxByQueue =
+    validReplaceIdx !== null
+      ? Math.max(1, COLABONE_FASHION_MAX_POSE_SHOTS - currentShotCount + 1)
+      : Math.max(0, COLABONE_FASHION_MAX_POSE_SHOTS - currentShotCount);
+
+  if (maxByQueue <= 0) {
+    emit(
+      "notify",
+      t("comfy.fashionPoseQueueFullToast", {
+        max: COLABONE_FASHION_MAX_POSE_SHOTS,
+      }),
+      "info",
+    );
+    return;
+  }
+
+  const requestedCount = Math.min(validFiles.length, maxByQueue);
+  let targetSlots = pickColabOneNextFashionPoseRefSlotKeys(
+    occupied,
+    requestedCount,
+  );
+  if (targetSlots.length === 0 && validReplaceIdx !== null) {
+    const targetShot = currentShots[validReplaceIdx];
+    if (targetShot && targetShot.kind === "reference") {
+      const sameSlotCount = currentShots.filter(
+        (s) => s.kind === "reference" && s.slot_key === targetShot.slot_key,
+      ).length;
+      if (
+        sameSlotCount === 1 &&
+        !isFashionSlotUploading(targetShot.slot_key) &&
+        !reservedPoseRefTokens.has(targetShot.slot_key)
+      ) {
+        targetSlots = [targetShot.slot_key];
+      }
+    }
+  }
+  if (targetSlots.length === 0) {
+    emit(
+      "notify",
+      t("comfy.fashionMaxFullToast", { max: COLABONE_FASHION_MAX_POSE_REFS }),
+      "info",
+    );
+    return;
+  }
+
+  const acceptedFiles = validFiles.slice(0, targetSlots.length);
+  const overflowReason: "none" | "queue" | "refs" =
+    validFiles.length <= acceptedFiles.length
+      ? "none"
+      : targetSlots.length < requestedCount
+        ? "refs"
+        : "queue";
+  const fieldByKey = new Map(wf.fields.map((f) => [f.key, f]));
+
+  const reservations: Array<{ slotKey: string; file: File; token: symbol }> = [];
+  const nextReservedNames = { ...reservedFashionNames.value };
+  for (let i = 0; i < acceptedFiles.length; i += 1) {
+    const slotKey = targetSlots[i];
+    const file = acceptedFiles[i];
+    const token = Symbol(slotKey);
+    reservedPoseRefTokens.set(slotKey, token);
+    nextReservedNames[slotKey] = file.name;
+    reservations.push({ slotKey, file, token });
+  }
+  reservedFashionNames.value = nextReservedNames;
+
+  const runBatch = async () => {
+    const batchErrors = [...validationErrors];
+    const seenBatchErrors = new Set<string>(validationErrors);
+    const addBatchError = (msg: string | undefined) => {
+      const cleaned = typeof msg === "string" ? msg.trim() : "";
+      if (cleaned && !seenBatchErrors.has(cleaned)) {
+        seenBatchErrors.add(cleaned);
+        batchErrors.push(cleaned);
+      }
+    };
+    let uploadedCount = 0;
+    let stagedCount = 0;
+    let firstUploadedName = "";
+    let firstStagedName = "";
+    let queueOverflowedMidBatch = false;
+    let pendingReplaceIdx = validReplaceIdx;
+
+    try {
+      for (const { slotKey, file, token } of reservations) {
+        if (
+          disposed ||
+          loadGen !== draftLoadGen ||
+          selectedWorkflowId.value !== wf.id
+        ) {
+          return;
+        }
+        const slotField = fieldByKey.get(slotKey);
+        if (!slotField) {
+          releaseReservedPoseRefSlot(slotKey, token);
+          continue;
+        }
+        try {
+          const res = await handleMediaFile(slotField, file, {
+            silentNotice: true,
+          });
+          if (
+            disposed ||
+            loadGen !== draftLoadGen ||
+            selectedWorkflowId.value !== wf.id
+          ) {
+            return;
+          }
+          if (res.error) {
+            addBatchError(res.error);
+          }
+          releaseReservedPoseRefSlot(slotKey, token);
+          if (!res.ok) {
+            continue;
+          }
+          const liveSettled = settledPoseRefSlotKeys();
+          if (!liveSettled.includes(slotKey)) {
+            continue;
+          }
+          const inferred = inferColabOneFashionPoseView(file.name, "auto");
+          const initialView =
+            inferred === "back" || inferred === "detail" ? inferred : "auto";
+          const newShot: ColabOneFashionPoseShot = {
+            kind: "reference",
+            slot_key: slotKey,
+            view: initialView,
+            note: "",
+            borrow_scene_lighting: false,
+          };
+          const liveShots = [
+            ...resolveColabOneFashionPoseShotsFromValues(
+              fieldValues.value,
+              activePoseRefSlotKeys(),
+            ),
+          ];
+          let placed = false;
+          const existingSlotIdx = liveShots.findIndex(
+            (s) => s.kind === "reference" && s.slot_key === slotKey,
+          );
+          if (existingSlotIdx >= 0) {
+            liveShots[existingSlotIdx] = newShot;
+            pendingReplaceIdx = null;
+            placed = true;
+          } else if (pendingReplaceIdx !== null) {
+            let resolvedReplaceIdx = -1;
+            if (
+              pendingReplaceIdx >= 0 &&
+              pendingReplaceIdx < liveShots.length &&
+              (replaceTargetSignature === null ||
+                JSON.stringify(liveShots[pendingReplaceIdx]) ===
+                  replaceTargetSignature)
+            ) {
+              resolvedReplaceIdx = pendingReplaceIdx;
+            } else if (replaceTargetSignature !== null) {
+              resolvedReplaceIdx = liveShots.findIndex(
+                (s) => JSON.stringify(s) === replaceTargetSignature,
+              );
+            }
+            pendingReplaceIdx = null;
+            if (resolvedReplaceIdx >= 0) {
+              liveShots[resolvedReplaceIdx] = newShot;
+              placed = true;
+            } else if (liveShots.length < COLABONE_FASHION_MAX_POSE_SHOTS) {
+              liveShots.push(newShot);
+              placed = true;
+            }
+          } else if (liveShots.length < COLABONE_FASHION_MAX_POSE_SHOTS) {
+            liveShots.push(newShot);
+            placed = true;
+          }
+          if (!placed) {
+            queueOverflowedMidBatch = true;
+            const stillReferenced = liveShots.some(
+              (s) => s.kind === "reference" && s.slot_key === slotKey,
+            );
+            if (!stillReferenced) {
+              clearMediaField(slotField);
+            }
+            continue;
+          }
+          if (res.uploaded) {
+            uploadedCount += 1;
+            if (!firstUploadedName) firstUploadedName = file.name;
+          } else if (res.staged) {
+            stagedCount += 1;
+            if (!firstStagedName) firstStagedName = file.name;
+          }
+          handleFashionUpdatePoseShots(liveShots);
+        } finally {
+          releaseReservedPoseRefSlot(slotKey, token);
+        }
+      }
+
+      if (
+        disposed ||
+        loadGen !== draftLoadGen ||
+        selectedWorkflowId.value !== wf.id
+      ) {
+        return;
+      }
+
+      const settledCount = uploadedCount + stagedCount;
+      if (
+        batchErrors.length === 0 &&
+        settledCount > 0 &&
+        fashionBatchErrorSeq === batchStartErrorSeq
+      ) {
+        emit("clearError");
+      }
+      if (uploadedCount > 0) {
+        const displayName =
+          settledCount > 1
+            ? `${firstUploadedName} (+${settledCount - 1})`
+            : firstUploadedName;
+        emit(
+          "notify",
+          t("comfy.noticeUploadedRemote", { name: displayName }),
+          "success",
+        );
+      } else if (stagedCount > 0) {
+        const displayName =
+          stagedCount > 1
+            ? `${firstStagedName} (+${stagedCount - 1})`
+            : firstStagedName;
+        emit(
+          "notify",
+          t("comfy.noticeStagedUpload", { name: displayName }),
+          "info",
+        );
+      }
+      if (queueOverflowedMidBatch && settledCount === 0) {
+        emit(
+          "notify",
+          t("comfy.fashionPoseQueueFullToast", {
+            max: COLABONE_FASHION_MAX_POSE_SHOTS,
+          }),
+          "info",
+        );
+      } else if (
+        (overflowReason === "queue" || queueOverflowedMidBatch) &&
+        settledCount > 0
+      ) {
+        emit(
+          "notify",
+          t("comfy.fashionPoseQueueReachedToast", {
+            max: COLABONE_FASHION_MAX_POSE_SHOTS,
+            added: settledCount,
+          }),
+          "info",
+        );
+      } else if (overflowReason === "refs" && settledCount > 0) {
+        emit(
+          "notify",
+          t("comfy.fashionMaxReachedToast", {
+            max: COLABONE_FASHION_MAX_POSE_REFS,
+            added: settledCount,
+          }),
+          "info",
+        );
+      }
+      if (batchErrors.length > 0) {
+        fashionBatchErrorSeq += 1;
+        reportError(batchErrors.join(" · "));
+      }
+    } finally {
+      for (const { slotKey, token } of reservations) {
+        releaseReservedPoseRefSlot(slotKey, token);
+      }
+    }
+  };
+
+  const chained = poseRefUploadChain.then(runBatch, runBatch);
+  poseRefUploadChain = chained.then(
+    () => undefined,
+    () => undefined,
+  );
+  return chained;
 }
 
 function releaseReservedFashionSlot(
@@ -1103,6 +1577,17 @@ function pruneFashionPhotoRoles(
     });
     if (String(currentRaw ?? "") !== nextRaw) {
       fieldValues.value[rolesFieldKey] = nextRaw;
+      changed = true;
+    }
+  }
+  const currentPoseRaw = fieldValues.value[COLABONE_FASHION_POSE_SHOTS_KEY];
+  if (typeof currentPoseRaw === "string" && currentPoseRaw.trim()) {
+    const nextPoseRaw = pruneColabOneFashionPoseShotsForMedia(
+      currentPoseRaw,
+      activePoseRefSlotKeys(),
+    );
+    if (currentPoseRaw !== nextPoseRaw) {
+      fieldValues.value[COLABONE_FASHION_POSE_SHOTS_KEY] = nextPoseRaw;
       changed = true;
     }
   }
@@ -6186,25 +6671,23 @@ async function runWorkflow() {
     return;
   }
 
-  if (isColabOneFashionCustomPosesEmpty(wf, fieldValues.value)) {
-    reportError(
-      tb("自定义姿态模式下至少需要勾选 1 个姿势（或在高级设置中填写自定义姿势）"),
-    );
-    if (!advancedExpanded.value) {
-      advancedExpanded.value = true;
-    }
+  if (
+    isColabOneFashionCustomPosesEmpty(
+      wf,
+      fieldValues.value,
+      settledPoseRefSlotKeys(),
+    )
+  ) {
+    reportError(t("comfy.fashionPoseEmptyError"));
     await nextTick();
     if (!disposed) {
-      const poseField = wf.fields.find((f) => f.key === "pipeline.pose_1_enabled");
-      const targetEl = poseField
-        ? document.getElementById(fieldInputId(poseField))
-        : null;
+      const targetEl = document.getElementById("co-fashion-pose-studio");
       if (targetEl) {
         const prefersReducedMotion =
           typeof window !== "undefined" &&
           typeof window.matchMedia === "function" &&
           window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-        (targetEl.closest(".co-comfy-field") || targetEl).scrollIntoView?.({
+        targetEl.scrollIntoView?.({
           behavior: prefersReducedMotion ? "auto" : "smooth",
           block: "center",
         });
@@ -11137,6 +11620,16 @@ defineExpose({
                     (key, role) => handleFashionChangeRole('garment', key, role)
                   "
                 />
+                <ColabOneFashionPoseStudio
+                  :shots="fashionPoseShots"
+                  :pose-ref-items="fashionPoseRefItems"
+                  :disabled="submittingRun"
+                  :active="paramDrawerOpen"
+                  :reset-seq="fashionPoseResetSeq"
+                  studio-id="co-fashion-pose-studio"
+                  @update:shots="handleFashionUpdatePoseShots"
+                  @add-ref-files="handleFashionAddPoseRefFiles"
+                />
               </template>
               <ComfyWorkflowField
                 v-for="field in standardPrimaryFields"
@@ -11186,7 +11679,7 @@ defineExpose({
 
             <!-- Collapsible Advanced Settings Panel (collapsed by default) -->
             <div
-              v-if="fieldPartitions.advanced.length || hasWorkflowSpecs"
+              v-if="standardAdvancedFields.length || hasWorkflowSpecs"
               class="co-comfy-advanced-panel"
               :class="{ 'is-open': advancedExpanded }"
             >
@@ -11235,11 +11728,11 @@ defineExpose({
                 class="co-comfy-advanced-body"
               >
                 <div
-                  v-if="fieldPartitions.advanced.length"
+                  v-if="standardAdvancedFields.length"
                   class="co-comfy-advanced-grid"
                 >
                   <ComfyWorkflowField
-                    v-for="field in fieldPartitions.advanced"
+                    v-for="field in standardAdvancedFields"
                     :key="field.key"
                     :field="field"
                     :value="fieldValues[field.key]"

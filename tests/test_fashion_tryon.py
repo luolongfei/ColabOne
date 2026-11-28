@@ -15,9 +15,14 @@ from common.comfyui import ComfyCatalog, WorkflowRunRequest
 from server.comfyui import ColabOneComfyWorkflowStore
 from server.fashion_tryon import (
     COLABONE_FASHION_BF16_THRESHOLD_MIB,
+    COLABONE_FASHION_BUILTIN_POSES,
     COLABONE_FASHION_GARMENT_SLOT_KEYS,
+    COLABONE_FASHION_MAX_POSE_SHOTS,
     COLABONE_FASHION_MAX_REFS_PER_GROUP,
     COLABONE_FASHION_MODEL_SLOT_KEYS,
+    COLABONE_FASHION_POSE_BY_ID,
+    COLABONE_FASHION_POSE_REF_SLOT_KEYS,
+    COLABONE_FASHION_POSE_SHOTS_KEY,
     ColabOneFashionTryOnRunner,
     auto_trim_ecommerce_borders,
     build_minimax_h3_tryon_prompt_text,
@@ -66,6 +71,8 @@ def test_catalog_contains_valid_non_commercial_fashion_tryon_template():
         "pipeline.model_photo_roles",
         *COLABONE_FASHION_GARMENT_SLOT_KEYS,
         "pipeline.garment_photo_roles",
+        COLABONE_FASHION_POSE_SHOTS_KEY,
+        *COLABONE_FASHION_POSE_REF_SLOT_KEYS,
         "pipeline.scene_preset",
         "pipeline.shot_pack",
         "pipeline.aspect_preset",
@@ -75,6 +82,10 @@ def test_catalog_contains_valid_non_commercial_fashion_tryon_template():
     assert by_key["2.image"].required is True
     assert by_key["pipeline.model_photo_2"].required is False
     assert by_key["pipeline.garment_photo_6"].required is False
+    assert by_key[COLABONE_FASHION_POSE_SHOTS_KEY].required is False
+    assert by_key[COLABONE_FASHION_POSE_SHOTS_KEY].default == ""
+    assert by_key["pipeline.pose_ref_1"].required is False
+    assert by_key["pipeline.pose_ref_6"].required is False
     assert by_key["pipeline.scene_preset"].default == "studio_light_gray"
     assert by_key["pipeline.shot_pack"].default == "full_6"
     assert by_key["pipeline.aspect_preset"].default == "3x4_2k"
@@ -1265,4 +1276,303 @@ def test_fashion_tryon_pack_routing_vram_eviction_finally_matte_fallback_io_clea
     assert "N" * 2000 in tryon_prompt and "N" * 2001 not in tryon_prompt
     assert "S" * 2000 in tryon_prompt and "S" * 2001 not in tryon_prompt
     assert "POSE & COMPOSITION:" in tryon_prompt
+
+
+def test_builtin_30_pose_catalog_and_mixed_pose_shots_queue(tmp_path):
+    assert len(COLABONE_FASHION_BUILTIN_POSES) == 30
+    assert len(COLABONE_FASHION_POSE_BY_ID) == 30
+    categories = {p["category"] for p in COLABONE_FASHION_BUILTIN_POSES}
+    assert categories == {"front", "side", "back", "dynamic", "seated", "detail", "kids"}
+    for p in COLABONE_FASHION_BUILTIN_POSES:
+        assert p["id"].startswith("pose_")
+        assert p["view"] in {"front", "side", "back", "detail"}
+        assert p["label"].strip()
+        assert p["prompt"].strip()
+
+    # Kids 4-shot quick pack works cleanly.
+    kids_shots = plan_colabone_fashion_shots({"pipeline.shot_pack": "kids_4"})
+    assert [s["id"] for s in kids_shots] == ["pose_27", "pose_28", "pose_29", "pose_30"]
+
+    # Explicitly empty structured queue raises clear error.
+    with pytest.raises(ValueError, match="出图姿势清单不能为空"):
+        plan_colabone_fashion_shots({COLABONE_FASHION_POSE_SHOTS_KEY: "[]"})
+
+    # Mixed queue: preset + reference (isolated) + reference (borrow lighting, back view) + text.
+    ref1 = tmp_path / "street_walk.png"
+    ref2 = tmp_path / "back_look.png"
+    ref1.write_bytes(_make_png(48, 64, (110, 120, 130)))
+    ref2.write_bytes(_make_png(48, 64, (130, 140, 150)))
+    input_map = {
+        "pipeline.pose_ref_1": ("street_walk.png", ref1),
+        "pipeline.pose_ref_2": ("back_look.png", ref2),
+    }
+    mixed_spec = [
+        {"kind": "preset", "preset_id": "pose_27"},
+        {
+            "kind": "reference",
+            "slot_key": "pipeline.pose_ref_1",
+            "view": "front",
+            "note": "自然微笑看镜头",
+            "borrow_scene_lighting": False,
+        },
+        {
+            "kind": "reference",
+            "slot_key": "pipeline.pose_ref_2",
+            "view": "back",
+            "note": "",
+            "borrow_scene_lighting": True,
+        },
+        {
+            "kind": "text",
+            "prompt": "双手轻提裙摆微微歪头笑",
+            "view": "front",
+        },
+        # Missing reference slot should be pruned gracefully when input_map is supplied.
+        {
+            "kind": "reference",
+            "slot_key": "pipeline.pose_ref_6",
+            "view": "auto",
+            "borrow_scene_lighting": False,
+        },
+    ]
+    planned = plan_colabone_fashion_shots(
+        {COLABONE_FASHION_POSE_SHOTS_KEY: json.dumps(mixed_spec, ensure_ascii=False)},
+        input_map=input_map,
+    )
+    assert len(planned) == 4
+    assert planned[0]["kind"] == "preset" and planned[0]["filename_stem"].startswith("01_")
+    assert planned[1]["kind"] == "reference" and planned[1]["pose_ref_slot"] == "pipeline.pose_ref_1"
+    assert planned[1]["borrow_scene_lighting"] is False
+    assert "自然微笑看镜头" in planned[1]["prompt"]
+    assert planned[2]["kind"] == "reference" and planned[2]["view"] == "back"
+    assert planned[2]["borrow_scene_lighting"] is True
+    assert planned[3]["kind"] == "text" and planned[3]["filename_stem"].startswith("04_")
+
+    # Hard cap at 12 shots.
+    too_many = [{"kind": "preset", "preset_id": f"pose_{i}"} for i in range(1, 20)]
+    capped = plan_colabone_fashion_shots(
+        {COLABONE_FASHION_POSE_SHOTS_KEY: json.dumps(too_many)}
+    )
+    assert len(capped) == COLABONE_FASHION_MAX_POSE_SHOTS
+
+
+def test_pose_ref_prompt_isolation_vs_lighting_borrow_and_runner_15_ref_budget(tmp_path):
+    # Prompt isolation vs lighting borrowing clauses.
+    shot_iso = {
+        "view": "front",
+        "prompt": "Match pose reference.",
+    }
+    p_iso = build_minimax_h3_tryon_prompt_text(
+        shot=shot_iso,
+        ref_roles=[(1, "hero", "front"), (2, "model", "front"), (3, "garment_front", "front"), (4, "pose_ref", "front")],
+        scene_preset="studio_light_gray",
+    )
+    assert "POSE & FRAMING REFERENCE ONLY (HARD ISOLATION)" in p_iso
+    assert "<Picture 4>" in p_iso
+    assert "UNIFIED SCENE & LIGHTING:" in p_iso
+    assert "COMPLETELY IGNORE AND DISCARD" in p_iso
+
+    p_light = build_minimax_h3_tryon_prompt_text(
+        shot={"view": "back", "prompt": "Match back pose and mood."},
+        ref_roles=[(1, "hero", "front"), (2, "model", "front"), (3, "garment_back", "back"), (4, "pose_ref_lighting", "back")],
+        scene_preset="studio_light_gray",
+    )
+    assert "POSE, FRAMING & ATMOSPHERE REFERENCE:" in p_light
+    assert "BACK VIEW GARMENT FIDELITY" in p_light
+    assert "lighting mood and scene ambiance to adapt naturally to <Picture 4>" in p_light
+    assert "UNIFIED SCENE & LIGHTING:" not in p_light
+
+    # Full runner test with max refs (6 models + 6 garments + 1 scene + 1 pose_ref + 1 hero = 15 <= 16).
+    io_in = tmp_path / "io_in"
+    io_out = tmp_path / "io_out"
+    io_in.mkdir()
+    io_out.mkdir()
+    store = ColabOneComfyWorkflowStore(tmp_path / "store")
+    raw_cat = json.loads((ROOT / "catalog" / "comfyui.json").read_text(encoding="utf-8"))
+    wf = next(t for t in raw_cat["templates"] if t["id"] == "fashion-tryon-h3")
+
+    resolved_inputs: list[tuple[str, str, Path]] = []
+    for i, mkey in enumerate(COLABONE_FASHION_MODEL_SLOT_KEYS, 1):
+        mp = tmp_path / f"m{i}.png"
+        mp.write_bytes(_make_png(40, 60, (200, 180, 170)))
+        resolved_inputs.append((mkey, f"m{i}.png", mp))
+    for i, gkey in enumerate(COLABONE_FASHION_GARMENT_SLOT_KEYS, 1):
+        gp = tmp_path / f"g{i}.png"
+        gp.write_bytes(_make_png(40, 60, (120, 150, 210)))
+        resolved_inputs.append((gkey, f"g{i}.png", gp))
+    sp = tmp_path / "scene.png"
+    sp.write_bytes(_make_png(40, 60, (235, 235, 235)))
+    resolved_inputs.append(("pipeline.scene_ref_photo", "scene.png", sp))
+
+    pr1 = tmp_path / "pose1.png"
+    pr2 = tmp_path / "pose2.png"
+    pr1.write_bytes(_make_png(40, 60, (90, 90, 100)))
+    pr2.write_bytes(_make_png(40, 60, (80, 80, 95)))
+    resolved_inputs.append(("pipeline.pose_ref_1", "pose1.png", pr1))
+    resolved_inputs.append(("pipeline.pose_ref_2", "pose2.png", pr2))
+
+    garment_roles = json.dumps(
+        {
+            "order": list(COLABONE_FASHION_GARMENT_SLOT_KEYS),
+            "roles": {
+                "2.image": "front",
+                "pipeline.garment_photo_2": "front",
+                "pipeline.garment_photo_3": "side",
+                "pipeline.garment_photo_4": "flatlay",
+                "pipeline.garment_photo_5": "detail",
+                "pipeline.garment_photo_6": "back",
+            },
+        }
+    )
+    pose_shots = json.dumps(
+        [
+            {"kind": "reference", "slot_key": "pipeline.pose_ref_1", "view": "front", "borrow_scene_lighting": True},
+            {"kind": "preset", "preset_id": "pose_1"},
+            {"kind": "reference", "slot_key": "pipeline.pose_ref_2", "view": "back", "borrow_scene_lighting": False},
+        ]
+    )
+
+    captured_graphs: list[dict] = []
+    comfy = MagicMock()
+    comfy.base_url = "http://127.0.0.1:8188"
+    comfy.store = store
+    comfy.io_in_dir = io_in
+    comfy.io_out_dir = io_out
+    comfy.is_running.return_value = True
+    comfy._loaded_pack_signature = ""
+    comfy.lock = None
+    comfy.packs = SimpleNamespace(
+        check_preflight=lambda _wf: None,
+        ensure_pack=lambda *a, **kw: False,
+        needs_pip_restart=lambda: False,
+        active_pack_signature="",
+    )
+    comfy.runtime = SimpleNamespace(
+        gpu_info=lambda: {"total_mib": 24576},
+        http=SimpleNamespace(post=lambda *a, **kw: SimpleNamespace(status_code=200)),
+    )
+
+    def _upload(fn, fp):
+        dst = io_in / fn
+        dst.write_bytes(Path(fp).read_bytes())
+        return fn
+
+    comfy._upload_input_file.side_effect = _upload
+
+    def _exec(t, wf_arg, prompt_payload, **kwargs):
+        captured_graphs.append(prompt_payload)
+        out_dir = Path(kwargs["output_dir"])
+        out_png = out_dir / f"gen_{len(captured_graphs)}.png"
+        out_png.write_bytes(_make_png(64, 96, (170, 175, 180)))
+        return [{"path": str(out_png), "filename": out_png.name, "subfolder": "", "type": "output", "prompt_id": f"p{len(captured_graphs)}"}]
+
+    comfy._execute_single_prompt.side_effect = _exec
+    task = SimpleNamespace(
+        id="t-pose-refs",
+        progress=0.0,
+        outputs=[],
+        lock=None,
+        check=lambda: None,
+        note=lambda msg, level="info": None,
+    )
+
+    recs = ColabOneFashionTryOnRunner(comfy).run(
+        task,
+        wf,
+        WorkflowRunRequest(
+            workflow_id="fashion-tryon-h3",
+            overrides={
+                "pipeline.garment_cleanup": "off",
+                "pipeline.garment_photo_roles": garment_roles,
+                COLABONE_FASHION_POSE_SHOTS_KEY: pose_shots,
+                "pipeline.anchor_hero_shot": True,
+            },
+            inputs={},
+        ),
+        resolved_inputs,
+    )
+    assert len(recs) == 3
+    assert len(captured_graphs) == 3
+    # Shot 1 had borrow_scene_lighting=True -> should NOT lock Hero Master for Shot 2.
+    shot1_cond = captured_graphs[0]["30"]["inputs"]
+    shot2_cond = captured_graphs[1]["30"]["inputs"]
+    shot3_cond = captured_graphs[2]["30"]["inputs"]
+    assert "POSE, FRAMING & ATMOSPHERE REFERENCE:" in shot1_cond["prompt"]
+    assert "editorial fashion lookbook photograph" in shot1_cond["prompt"]
+    assert "colabone_hero_master.png" not in json.dumps(captured_graphs[1])
+    # Shot 2 (pose_1, front, no lighting borrow) anchors Hero Master for Shot 3 (back pose_ref_2).
+    assert "colabone_hero_master.png" in json.dumps(captured_graphs[2])
+    assert "POSE & FRAMING REFERENCE ONLY (HARD ISOLATION)" in shot3_cond["prompt"]
+    assert "BACK VIEW GARMENT FIDELITY" in shot3_cond["prompt"]
+    # Verify ref count never exceeds MiniMax-H3-Image's 16-ref limit.
+    for graph in captured_graphs:
+        ref_nodes = [k for k, v in graph.items() if v.get("class_type") == "LoadImage"]
+        assert len(ref_nodes) <= 16
+    # All temporary uploaded pose refs and hero anchor must be cleaned up.
+    assert list(io_in.iterdir()) == []
+
+
+def test_pose_view_word_boundaries_and_middot_label_sanitization(tmp_path):
+    from server.fashion_tryon import (
+        COLABONE_FASHION_POSE_SHOTS_KEY,
+        _infer_pose_view_from_text,
+    )
+
+    # Word-boundary view inference must not misclassify unrelated substrings like rearrange/background/outside.
+    assert _infer_pose_view_from_text("rearrange_pose.png") == "front"
+    assert _infer_pose_view_from_text("white_background.png") == "front"
+    assert _infer_pose_view_from_text("outside_walk.png") == "front"
+    assert _infer_pose_view_from_text("pose_back.png") == "back"
+    assert _infer_pose_view_from_text("studio_rear_view.png") == "back"
+    assert _infer_pose_view_from_text("side_profile.png") == "side"
+    assert _infer_pose_view_from_text("collar_closeup.png") == "detail"
+
+    # Filenames containing middots must be sanitized in shot labels so progress i18n splits stay unambiguous.
+    ref_p = tmp_path / "杂志 · 街拍.png"
+    ref_p.write_bytes(_make_png(64, 64, (120, 130, 140)))
+    shots = plan_colabone_fashion_shots(
+        {
+            COLABONE_FASHION_POSE_SHOTS_KEY: json.dumps(
+                [
+                    {
+                        "kind": "reference",
+                        "slot_key": "pipeline.pose_ref_1",
+                        "view": "auto",
+                        "note": "",
+                        "borrow_scene_lighting": False,
+                    }
+                ]
+            )
+        },
+        input_map={"pipeline.pose_ref_1": ("杂志 · 街拍.png", ref_p)},
+    )
+    assert len(shots) == 1
+    assert shots[0]["label"] == "参考姿势 · 杂志 街拍"
+    assert shots[0]["label"].count("·") == 1
+
+    # Non-string garbage fields inside pose_shots JSON must never stringify into prompt text.
+    sanitized_shots = plan_colabone_fashion_shots(
+        {
+            COLABONE_FASHION_POSE_SHOTS_KEY: json.dumps(
+                [
+                    {"kind": "text", "prompt": ["should", "ignore"], "view": 123},
+                    {
+                        "kind": "reference",
+                        "slot_key": "pipeline.pose_ref_1",
+                        "view": ["bad"],
+                        "note": {"bad": True},
+                        "borrow_scene_lighting": False,
+                    },
+                ]
+            )
+        },
+        input_map={"pipeline.pose_ref_1": ("clean_ref.png", ref_p)},
+    )
+    assert len(sanitized_shots) == 1
+    assert sanitized_shots[0]["pose_note"] == ""
+    assert sanitized_shots[0]["view"] == "auto"
+    assert "bad" not in sanitized_shots[0]["prompt"]
+
+
+
 

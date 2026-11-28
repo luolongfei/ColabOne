@@ -190,6 +190,7 @@ COLABONE_FASHION_BUILTIN_POSES: tuple[dict[str, Any], ...] = (
     {
         "id": "pose_1",
         "field_key": "pipeline.pose_1_enabled",
+        "category": "front",
         "filename_stem": "01_正面站姿",
         "label": "正面标准站姿（主图）",
         "view": "front",
@@ -203,6 +204,7 @@ COLABONE_FASHION_BUILTIN_POSES: tuple[dict[str, Any], ...] = (
     {
         "id": "pose_2",
         "field_key": "pipeline.pose_2_enabled",
+        "category": "dynamic",
         "filename_stem": "02_轻提裙摆",
         "label": "轻提裙摆 / 自然互动",
         "view": "front",
@@ -216,6 +218,7 @@ COLABONE_FASHION_BUILTIN_POSES: tuple[dict[str, Any], ...] = (
     {
         "id": "pose_3",
         "field_key": "pipeline.pose_3_enabled",
+        "category": "side",
         "filename_stem": "03_左侧微侧",
         "label": "左侧微侧微笑",
         "view": "side",
@@ -229,6 +232,7 @@ COLABONE_FASHION_BUILTIN_POSES: tuple[dict[str, Any], ...] = (
     {
         "id": "pose_4",
         "field_key": "pipeline.pose_4_enabled",
+        "category": "back",
         "filename_stem": "04_右侧回眸",
         "label": "右侧优雅回眸",
         "view": "side",
@@ -241,6 +245,7 @@ COLABONE_FASHION_BUILTIN_POSES: tuple[dict[str, Any], ...] = (
     {
         "id": "pose_5",
         "field_key": "pipeline.pose_5_enabled",
+        "category": "detail",
         "filename_stem": "05_半身细节",
         "label": "半身工艺细节特写",
         "view": "detail",
@@ -254,6 +259,7 @@ COLABONE_FASHION_BUILTIN_POSES: tuple[dict[str, Any], ...] = (
     {
         "id": "pose_6",
         "field_key": "pipeline.pose_6_enabled",
+        "category": "back",
         "filename_stem": "06_完整背面",
         "label": "完整背面展示",
         "view": "back",
@@ -264,7 +270,345 @@ COLABONE_FASHION_BUILTIN_POSES: tuple[dict[str, Any], ...] = (
             "back drape of any cape or skirt panels, and consistent studio lighting."
         ),
     },
+    # Additional curated commercial & kids lookbook poses (pose_7 .. pose_30)
+    {
+        "id": "pose_7",
+        "field_key": "",
+        "category": "front",
+        "filename_stem": "微侧重心站",
+        "label": "微侧重心自然站",
+        "view": "front",
+        "prompt": (
+            "Full-body front-facing editorial studio shot with subtle relaxed weight shift onto "
+            "one foot, gentle natural shoulder slope, relaxed hands resting comfortably along "
+            "the garment sides, calm confident gaze at camera, full head-to-toe silhouette clearly visible."
+        ),
+    },
+    {
+        "id": "pose_8",
+        "field_key": "",
+        "category": "front",
+        "filename_stem": "双手轻叠站",
+        "label": "双手轻叠正面站",
+        "view": "front",
+        "prompt": (
+            "Full-body front-facing poised studio lookbook portrait, model standing upright "
+            "with hands lightly clasped in front of the lower waist without hiding bodice "
+            "details, poised gentle smile, balanced vertical garment drape from neckline to hem."
+        ),
+    },
+    {
+        "id": "pose_9",
+        "field_key": "",
+        "category": "front",
+        "filename_stem": "微仰修长正面",
+        "label": "微仰视角修长正面",
+        "view": "front",
+        "prompt": (
+            "Full-body front-facing lookbook shot from a subtle slightly lower eye-level camera "
+            "angle to present a tall balanced stance, feet lightly staggered, arms relaxed, "
+            "clearly showcasing full outfit proportions and clean hemline."
+        ),
+    },
+    {
+        "id": "pose_10",
+        "field_key": "",
+        "category": "side",
+        "filename_stem": "45度侧身",
+        "label": "45° 立体侧身展示",
+        "view": "side",
+        "prompt": (
+            "Full-body 45-degree three-quarter side profile studio portrait, head turned softly "
+            "toward the camera, highlighting the three-dimensional tailoring, sleeve curve, "
+            "waist contour, and layered drape of the garment."
+        ),
+    },
+    {
+        "id": "pose_11",
+        "field_key": "",
+        "category": "side",
+        "filename_stem": "右侧微侧",
+        "label": "右侧微侧自然看镜",
+        "view": "side",
+        "prompt": (
+            "Full-body three-quarter portrait angled roughly 30 degrees to the right while "
+            "looking warmly at the camera, relaxed natural arms showcasing the right-side "
+            "silhouette, sleeve fall, and skirt or trouser pleats."
+        ),
+    },
+    {
+        "id": "pose_12",
+        "field_key": "",
+        "category": "side",
+        "filename_stem": "插兜侧身",
+        "label": "单手插兜侧身松弛",
+        "view": "side",
+        "prompt": (
+            "Full-body effortless three-quarter side studio stance with one hand tucked casually "
+            "into a pocket or resting lightly at the hip, other arm naturally relaxed, clean "
+            "editorial composure highlighting coat, jacket, or trouser tailoring."
+        ),
+    },
+    {
+        "id": "pose_13",
+        "field_key": "",
+        "category": "side",
+        "filename_stem": "扶领微侧",
+        "label": "轻扶领口侧身展示",
+        "view": "side",
+        "prompt": (
+            "Full-body graceful three-quarter studio pose with one hand delicately poised near "
+            "the collar, lapel, or shoulder trim while looking toward the lens, drawing visual "
+            "focus to neckline craftsmanship while keeping full-length framing."
+        ),
+    },
+    {
+        "id": "pose_14",
+        "field_key": "",
+        "category": "back",
+        "filename_stem": "左侧背影回眸",
+        "label": "左侧背影轻转回眸",
+        "view": "back",
+        "prompt": (
+            "Full-body rear three-quarter view turned away from the camera with the model "
+            "glancing softly back over the left shoulder, clearly displaying the rear bodice, "
+            "back closure, bow or cape drape, and full rear skirt fall."
+        ),
+    },
+    {
+        "id": "pose_15",
+        "field_key": "",
+        "category": "back",
+        "filename_stem": "背面展裙",
+        "label": "背面展开裙摆 / 披风",
+        "view": "back",
+        "prompt": (
+            "Full-body rear-view studio lookbook photograph with the model facing away and "
+            "gently fanning out the lower skirt panels or sheer cape edges with both hands "
+            "so the entire back structure, train, and translucent layering are fully visible."
+        ),
+    },
+    {
+        "id": "pose_16",
+        "field_key": "",
+        "category": "dynamic",
+        "filename_stem": "自然迈步",
+        "label": "自然迈步迎面抓拍",
+        "view": "front",
+        "prompt": (
+            "Full-body candid mid-stride studio walk toward the camera, one foot stepping gently "
+            "forward with natural arm swing and subtle airflow moving the garment hem, crisp "
+            "motion-frozen shutter with authentic fabric folds and bright natural gaze."
+        ),
+    },
+    {
+        "id": "pose_17",
+        "field_key": "",
+        "category": "dynamic",
+        "filename_stem": "转身裙摆飞扬",
+        "label": "轻盈转身裙摆飞扬",
+        "view": "side",
+        "prompt": (
+            "Full-body graceful mid-turn movement captured cleanly in studio light, skirt or "
+            "coat hem swirling gently outward with natural centrifugal drape, joyful natural "
+            "expression looking toward the camera, sharp focus on face and fabric texture."
+        ),
+    },
+    {
+        "id": "pose_18",
+        "field_key": "",
+        "category": "dynamic",
+        "filename_stem": "插兜漫步",
+        "label": "双手插兜随性漫步",
+        "view": "front",
+        "prompt": (
+            "Full-body relaxed casual walking lookbook shot with hands tucked comfortably into "
+            "pockets (or resting casually at hip seams if pocketless), effortless confident "
+            "stride toward camera displaying clean garment drape and everyday wearability."
+        ),
+    },
+    {
+        "id": "pose_19",
+        "field_key": "",
+        "category": "dynamic",
+        "filename_stem": "轻撩发丝",
+        "label": "轻撩发丝自然动态",
+        "view": "front",
+        "prompt": (
+            "Full-body natural editorial studio portrait with one hand raised lightly to brush "
+            "or tuck hair near the temple, relaxed warm gaze, natural posture showcasing the "
+            "sleeve movement and full outfit silhouette cleanly."
+        ),
+    },
+    {
+        "id": "pose_20",
+        "field_key": "",
+        "category": "seated",
+        "filename_stem": "高脚凳坐姿",
+        "label": "极简高脚凳画报坐姿",
+        "view": "front",
+        "prompt": (
+            "Full-body editorial studio portrait seated gracefully on a minimalist neutral "
+            "studio stool, upright poised posture with legs neatly angled to elongate the "
+            "silhouette, garment folds arranged cleanly across lap and hem."
+        ),
+    },
+    {
+        "id": "pose_21",
+        "field_key": "",
+        "category": "seated",
+        "filename_stem": "低凳斜坐",
+        "label": "低凳 / 台阶自然斜坐",
+        "view": "side",
+        "prompt": (
+            "Full-body relaxed lookbook shot seated at a slight angle on a simple low matte "
+            "studio plinth block, hands resting gently on lap or skirt edge, warm natural "
+            "smile facing the camera, showcasing layered draping while seated."
+        ),
+    },
+    {
+        "id": "pose_22",
+        "field_key": "",
+        "category": "seated",
+        "filename_stem": "倚墙松弛",
+        "label": "轻倚墙面松弛站姿",
+        "view": "side",
+        "prompt": (
+            "Full-body effortless studio lookbook portrait leaning lightly with one shoulder "
+            "or back against a clean seamless studio wall, one knee slightly relaxed, "
+            "natural editorial poise displaying garment drape and shoulder structure."
+        ),
+    },
+    {
+        "id": "pose_23",
+        "field_key": "",
+        "category": "seated",
+        "filename_stem": "托颌静坐",
+        "label": "单手轻托下颌静坐",
+        "view": "front",
+        "prompt": (
+            "Three-quarter editorial seated studio portrait on a minimalist cube stool, one "
+            "hand resting delicately near the chin in calm thoughtful poise, clear view of "
+            "collar, sleeves, bodice texture, and natural facial expression."
+        ),
+    },
+    {
+        "id": "pose_24",
+        "field_key": "",
+        "category": "detail",
+        "filename_stem": "七分身近景",
+        "label": "七分身穿搭近景",
+        "view": "detail",
+        "prompt": (
+            "Three-quarter knee-up studio lookbook portrait facing slightly angled to the "
+            "camera, balanced medium framing highlighting upper-to-mid garment fit, waist "
+            "proportion, sleeve drape, and crisp facial expression."
+        ),
+    },
+    {
+        "id": "pose_25",
+        "field_key": "",
+        "category": "detail",
+        "filename_stem": "侧身领口特写",
+        "label": "微侧半身领口特写",
+        "view": "detail",
+        "prompt": (
+            "Medium close-up upper-body three-quarter portrait turned 25 degrees to the side, "
+            "crisp studio focus highlighting collar roll, shoulder trim, sequins, pearls, "
+            "embroidery, and fine fabric weave."
+        ),
+    },
+    {
+        "id": "pose_26",
+        "field_key": "",
+        "category": "detail",
+        "filename_stem": "抚襟袖口细节",
+        "label": "轻抚衣襟 / 袖口细节",
+        "view": "detail",
+        "prompt": (
+            "Waist-up editorial close-up studio portrait with one hand gently touching the "
+            "front placket, ribbon, or cuff trim so fine stitching, buttons, lace, and fabric "
+            "surface texture are sharply presented alongside natural hands."
+        ),
+    },
+    {
+        "id": "pose_27",
+        "field_key": "",
+        "category": "kids",
+        "filename_stem": "童模踮脚提裙",
+        "label": "开心踮脚提裙摆",
+        "view": "front",
+        "prompt": (
+            "Full-body cheerful front-facing lookbook studio shot, model standing playfully on "
+            "light tiptoes while holding out both sides of the skirt or outfit hem with a "
+            "bright innocent smile, lively youthful energy, preserving true natural height "
+            "and head-to-body proportions."
+        ),
+    },
+    {
+        "id": "pose_28",
+        "field_key": "",
+        "category": "kids",
+        "filename_stem": "童模俏皮挥手",
+        "label": "俏皮挥手甜美微笑",
+        "view": "front",
+        "prompt": (
+            "Full-body bright front-facing studio portrait, model giving a cheerful friendly "
+            "wave with one hand raised near shoulder height and a joyful natural smile looking "
+            "at the camera, relaxed stance showing the entire outfit clearly with authentic proportions."
+        ),
+    },
+    {
+        "id": "pose_29",
+        "field_key": "",
+        "category": "kids",
+        "filename_stem": "童模歪头甜笑",
+        "label": "歪头甜笑双手背后",
+        "view": "front",
+        "prompt": (
+            "Full-body endearing front-facing studio lookbook portrait, model tilting the head "
+            "gently to one side with a sweet bright smile and hands clasped playfully behind "
+            "the back, keeping the full front bodice, prints, and hemline completely unobstructed."
+        ),
+    },
+    {
+        "id": "pose_30",
+        "field_key": "",
+        "category": "kids",
+        "filename_stem": "童模轻快跳跃",
+        "label": "轻快小步跳跃抓拍",
+        "view": "front",
+        "prompt": (
+            "Full-body lively candid studio photograph capturing a light playful mid-step hop "
+            "with arms softly balanced out, joyful laughing expression, crisp frozen motion "
+            "showing natural flowing skirt or garment bounce and intact true proportions."
+        ),
+    },
 )
+
+COLABONE_FASHION_POSE_BY_ID: dict[str, dict[str, Any]] = {
+    pose["id"]: pose for pose in COLABONE_FASHION_BUILTIN_POSES
+}
+
+COLABONE_FASHION_MAX_POSE_SHOTS = 12
+COLABONE_FASHION_MAX_POSE_REFS = 6
+COLABONE_FASHION_POSE_SHOTS_KEY = "pipeline.pose_shots"
+COLABONE_FASHION_POSE_REF_SLOT_KEYS: tuple[str, ...] = (
+    "pipeline.pose_ref_1",
+    "pipeline.pose_ref_2",
+    "pipeline.pose_ref_3",
+    "pipeline.pose_ref_4",
+    "pipeline.pose_ref_5",
+    "pipeline.pose_ref_6",
+)
+COLABONE_FASHION_POSE_VIEW_IDS: frozenset[str] = frozenset(
+    {"auto", "front", "side", "back", "detail"}
+)
+_LEADING_SHOT_NUM_RE = re.compile(r"^\d{2}_+")
+_POSE_VIEW_BACK_ASCII_RE = re.compile(r"(?:^|[^a-z])(?:back|rear)(?:$|[^a-z])")
+_POSE_VIEW_DETAIL_ASCII_RE = re.compile(r"(?:^|[^a-z])(?:closeup|close-up|detail|macro|waist-up)(?:$|[^a-z])")
+_POSE_VIEW_SIDE_ASCII_RE = re.compile(r"(?:^|[^a-z])(?:side|profile|three-quarter|over-the-shoulder)(?:$|[^a-z])")
+_LABEL_MIDDOT_RE = re.compile(r"[·•]+")
 
 COLABONE_RMBG3_GARMENT_MATTE_INSTRUCTION = (
     "Generate a detailed grayscale alpha matte isolating ONLY the main clothing garment "
@@ -543,8 +887,153 @@ def resolve_colabone_fashion_dimensions(aspect_preset: str) -> tuple[int, int]:
     return COLABONE_FASHION_ASPECT_PRESETS.get(key, COLABONE_FASHION_ASPECT_PRESETS["3x4_2k"])
 
 
-def plan_colabone_fashion_shots(overrides: dict[str, Any]) -> list[dict[str, Any]]:
-    """Build the ordered list of lookbook shots from shot_pack / toggles / custom lines."""
+def _infer_pose_view_from_text(text: str, explicit_view: str = "auto") -> str:
+    ev = str(explicit_view or "auto").strip().lower()
+    if ev in ("front", "side", "back", "detail"):
+        return ev
+    low = str(text or "").lower()
+    if any(tok in low for tok in ("背面", "后背", "後背", "背影", "后视", "後視")) or _POSE_VIEW_BACK_ASCII_RE.search(low):
+        return "back"
+    if any(tok in low for tok in ("特写", "特寫", "近景", "半身", "七分", "微距")) or _POSE_VIEW_DETAIL_ASCII_RE.search(low):
+        return "detail"
+    if any(tok in low for tok in ("微侧", "微側", "侧身", "側身", "侧面", "側面", "回眸")) or _POSE_VIEW_SIDE_ASCII_RE.search(low):
+        return "side"
+    return "front"
+
+
+def _format_numbered_shot_stem(idx: int, raw_stem: str, fallback: str) -> str:
+    cleaned = _LEADING_SHOT_NUM_RE.sub("", str(raw_stem or "").strip())
+    cleaned = _SAFE_STEM_RE.sub("", cleaned).strip("_-") or fallback
+    return f"{idx:02d}_{cleaned}"
+
+
+def plan_colabone_fashion_shots(
+    overrides: dict[str, Any],
+    input_map: dict[str, tuple[str, Path]] | None = None,
+) -> list[dict[str, Any]]:
+    """Build the ordered list of lookbook shots from structured pose_shots or legacy shot_pack/toggles."""
+    raw_pose_shots = overrides.get(COLABONE_FASHION_POSE_SHOTS_KEY)
+    has_structured = False
+    parsed_items: Any = None
+    if isinstance(raw_pose_shots, list):
+        has_structured = True
+        parsed_items = raw_pose_shots
+    elif isinstance(raw_pose_shots, str) and raw_pose_shots.strip():
+        stripped = raw_pose_shots.strip()
+        try:
+            candidate = json.loads(stripped)
+        except Exception:
+            candidate = None
+        if isinstance(candidate, list):
+            has_structured = True
+            parsed_items = candidate
+
+    if has_structured:
+        allowed_ref_slots = set(COLABONE_FASHION_POSE_REF_SLOT_KEYS)
+        shots: list[dict[str, Any]] = []
+        for item in parsed_items[:64]:
+            if len(shots) >= COLABONE_FASHION_MAX_POSE_SHOTS:
+                break
+            if not isinstance(item, dict):
+                continue
+            raw_kind = item.get("kind")
+            kind = raw_kind.strip().lower() if isinstance(raw_kind, str) else ""
+            idx = len(shots) + 1
+            if kind == "preset":
+                raw_preset_id = item.get("preset_id") if isinstance(item.get("preset_id"), str) else item.get("id")
+                preset_id = raw_preset_id.strip() if isinstance(raw_preset_id, str) else ""
+                preset = COLABONE_FASHION_POSE_BY_ID.get(preset_id)
+                if preset is None:
+                    continue
+                shot_copy = dict(preset)
+                shot_copy["kind"] = "preset"
+                shot_copy["preset_id"] = preset_id
+                shot_copy["id"] = f"{preset_id}_{idx}" if any(s.get("preset_id") == preset_id for s in shots) else preset_id
+                shot_copy["filename_stem"] = _format_numbered_shot_stem(
+                    idx, str(preset.get("filename_stem") or ""), f"姿势{idx}"
+                )
+                shots.append(shot_copy)
+                continue
+
+            if kind == "reference":
+                raw_slot_key = item.get("slot_key")
+                slot_key = raw_slot_key.strip() if isinstance(raw_slot_key, str) else ""
+                if slot_key not in allowed_ref_slots:
+                    continue
+                if input_map is not None and slot_key not in input_map:
+                    continue
+                raw_view_obj = item.get("view")
+                raw_view = raw_view_obj.strip().lower() if isinstance(raw_view_obj, str) else "auto"
+                if raw_view not in COLABONE_FASHION_POSE_VIEW_IDS:
+                    raw_view = "auto"
+                raw_note = item.get("note")
+                note = raw_note.strip()[:COLABONE_FASHION_MAX_USER_PROMPT_CHARS] if isinstance(raw_note, str) else ""
+                borrow_lighting = _parse_bool(item.get("borrow_scene_lighting"), False)
+                ref_filename = ""
+                if input_map is not None and slot_key in input_map:
+                    ref_filename = str(input_map[slot_key][0] or "")
+                inferred_view = (
+                    raw_view
+                    if raw_view != "auto"
+                    else _infer_pose_view_from_text(f"{ref_filename} {note}", "auto")
+                )
+                effective_view = inferred_view if raw_view != "auto" else (
+                    inferred_view if inferred_view in ("back", "detail") else "auto"
+                )
+                raw_stem = Path(ref_filename).stem if ref_filename else ""
+                clean_label_stem = re.sub(r"\s+", " ", _LABEL_MIDDOT_RE.sub(" ", raw_stem)).strip()
+                base_label = clean_label_stem or f"参考图姿势 {idx}"
+                short_stem = _format_numbered_shot_stem(idx, base_label[:12], f"参考姿势{idx}")
+                prompt_parts = [
+                    "Commercial fashion lookbook portrait faithfully matching the exact body posture, "
+                    "limb placement, hand gesture, head angle, and camera framing of the pose reference photo, "
+                    "naturally adapted to the target model's own height, age appearance, and body proportions."
+                ]
+                if note:
+                    prompt_parts.append(f"Pose refinement note: {note}.")
+                shots.append(
+                    {
+                        "id": f"ref_{idx}",
+                        "kind": "reference",
+                        "pose_ref_slot": slot_key,
+                        "borrow_scene_lighting": borrow_lighting,
+                        "pose_note": note,
+                        "filename_stem": short_stem,
+                        "label": f"参考图姿势 {idx}" if not clean_label_stem else f"参考姿势 · {clean_label_stem[:16]}",
+                        "view": effective_view,
+                        "prompt": " ".join(prompt_parts),
+                    }
+                )
+                continue
+
+            if kind == "text":
+                raw_prompt = item.get("prompt")
+                line = raw_prompt.strip()[:COLABONE_FASHION_MAX_USER_PROMPT_CHARS] if isinstance(raw_prompt, str) else ""
+                if not line:
+                    continue
+                raw_view_obj = item.get("view")
+                raw_view = raw_view_obj.strip().lower() if isinstance(raw_view_obj, str) else "auto"
+                view = _infer_pose_view_from_text(line, raw_view)
+                short_name = _format_numbered_shot_stem(idx, line[:12], f"文字姿势{idx}")
+                shots.append(
+                    {
+                        "id": f"custom_{idx}",
+                        "kind": "text",
+                        "filename_stem": short_name,
+                        "label": f"文字姿势 {idx}",
+                        "view": view,
+                        "prompt": (
+                            f"Commercial fashion lookbook portrait. Pose & framing: {line}. "
+                            "Keep identical model identity, facial features, head-to-body ratio, "
+                            "exact garment details, and unified studio lighting."
+                        ),
+                    }
+                )
+
+        if not shots:
+            raise ValueError("出图姿势清单不能为空，请至少选择 1 个姿势、上传姿势参考图或填写文字描述")
+        return shots
+
     custom_raw = str(overrides.get("pipeline.custom_pose_prompts") or "").strip()
     if custom_raw:
         lines = [
@@ -552,17 +1041,15 @@ def plan_colabone_fashion_shots(overrides: dict[str, Any]) -> list[dict[str, Any
             for line in custom_raw.splitlines()
             if line.strip()
         ]
-        shots: list[dict[str, Any]] = []
-        for idx, line in enumerate(lines[:12], 1):
-            low = line.lower()
-            view = "back" if any(tok in low for tok in ("背面", "后背", "後背", "背影", "back view", "rear view")) else (
-                "detail" if any(tok in low for tok in ("特写", "特寫", "近景", "半身", "close-up", "closeup")) else "front"
-            )
-            short_name = _SAFE_STEM_RE.sub("", line[:12]).strip("_-") or f"姿势{idx}"
+        shots = []
+        for idx, line in enumerate(lines[:COLABONE_FASHION_MAX_POSE_SHOTS], 1):
+            view = _infer_pose_view_from_text(line, "auto")
+            short_name = _format_numbered_shot_stem(idx, line[:12], f"姿势{idx}")
             shots.append(
                 {
                     "id": f"custom_{idx}",
-                    "filename_stem": f"{idx:02d}_{short_name}",
+                    "kind": "text",
+                    "filename_stem": short_name,
                     "label": f"自定义姿势 {idx}",
                     "view": view,
                     "prompt": (
@@ -575,6 +1062,7 @@ def plan_colabone_fashion_shots(overrides: dict[str, Any]) -> list[dict[str, Any
         if shots:
             return shots
 
+    legacy_core_6 = COLABONE_FASHION_BUILTIN_POSES[:6]
     pack = str(overrides.get("pipeline.shot_pack") or "full_6").strip().lower()
     if pack == "hero_1":
         return [dict(COLABONE_FASHION_BUILTIN_POSES[0])]
@@ -585,16 +1073,23 @@ def plan_colabone_fashion_shots(overrides: dict[str, Any]) -> list[dict[str, Any
             dict(COLABONE_FASHION_BUILTIN_POSES[2]),
             dict(COLABONE_FASHION_BUILTIN_POSES[4]),
         ]
+    if pack == "kids_4":
+        return [
+            dict(COLABONE_FASHION_POSE_BY_ID["pose_27"]),
+            dict(COLABONE_FASHION_POSE_BY_ID["pose_28"]),
+            dict(COLABONE_FASHION_POSE_BY_ID["pose_29"]),
+            dict(COLABONE_FASHION_POSE_BY_ID["pose_30"]),
+        ]
     if pack == "custom":
         selected = [
             dict(pose)
-            for pose in COLABONE_FASHION_BUILTIN_POSES
+            for pose in legacy_core_6
             if _parse_bool(overrides.get(pose["field_key"]), True)
         ]
         if not selected:
             raise ValueError("自定义姿态模式下至少需要勾选 1 个姿势（或在高级设置中填写自定义姿势）")
         return selected
-    return [dict(pose) for pose in COLABONE_FASHION_BUILTIN_POSES]
+    return [dict(pose) for pose in legacy_core_6]
 
 
 def _decode_garment_rgb_on_white(img_bytes: bytes):
@@ -1066,21 +1561,37 @@ def build_minimax_h3_tryon_prompt_text(
     garment_back_pics = by_role.get("garment_back", [])
     garment_detail_pics = by_role.get("garment_detail", [])
     scene_pics = by_role.get("scene_ref", [])
+    pose_ref_pics = by_role.get("pose_ref", [])
+    pose_ref_lighting_pics = by_role.get("pose_ref_lighting", [])
 
     model_desc = _fmt_pics(model_pics, COLABONE_FASHION_MODEL_ROLE_HINTS)
     garment_front_desc = _fmt_pics(garment_front_pics, COLABONE_FASHION_GARMENT_ROLE_HINTS)
     garment_back_desc = _fmt_pics(garment_back_pics, COLABONE_FASHION_GARMENT_ROLE_HINTS)
     garment_detail_desc = _fmt_pics(garment_detail_pics, None)
+    pose_ref_desc = _fmt_pics(pose_ref_pics, None)
+    pose_ref_lighting_desc = _fmt_pics(pose_ref_lighting_pics, None)
 
     if hero_pics:
-        parts.append(
-            f"Create a new studio lookbook photograph of the exact same model and outfit established in {_fmt_pics(hero_pics)}, "
-            f"strictly preserving the face, age, hairstyle, skin tone, and exact body proportions of {model_desc}."
-        )
+        if pose_ref_lighting_pics:
+            parts.append(
+                f"Create a new lookbook photograph of the exact same model and outfit established in {_fmt_pics(hero_pics)}, "
+                f"strictly preserving the face, age, hairstyle, skin tone, and exact body proportions of {model_desc}, "
+                f"while allowing the lighting mood and scene ambiance to adapt naturally to {pose_ref_lighting_desc}."
+            )
+        else:
+            parts.append(
+                f"Create a new studio lookbook photograph of the exact same model and outfit established in {_fmt_pics(hero_pics)}, "
+                f"strictly preserving the face, age, hairstyle, skin tone, and exact body proportions of {model_desc}."
+            )
     else:
         primary_garment_desc = garment_front_desc or garment_back_desc or garment_detail_desc
+        shot_style_desc = (
+            "high-resolution editorial fashion lookbook photograph"
+            if pose_ref_lighting_pics
+            else "high-resolution professional studio lookbook photograph"
+        )
         parts.append(
-            f"Create a high-resolution professional studio lookbook photograph dressing the exact model from {model_desc} "
+            f"Create a {shot_style_desc} dressing the exact model from {model_desc} "
             f"in the exact garment shown in {primary_garment_desc}."
         )
 
@@ -1145,16 +1656,35 @@ def build_minimax_h3_tryon_prompt_text(
     if clean_notes:
         parts.append(f"SPECIFIC GARMENT NOTES: {clean_notes}")
 
-    if scene_pics:
+    if pose_ref_lighting_pics:
         parts.append(
-            f"UNIFIED SCENE & LIGHTING: Place the model seamlessly into the clean studio setting, background tone, and soft natural lighting style of {_fmt_pics(scene_pics)}."
+            f"POSE, FRAMING & ATMOSPHERE REFERENCE: Replicate the exact body posture, limb positions, hand gesture, head angle, and camera framing shown in {pose_ref_lighting_desc}, "
+            f"and borrow the lighting direction, color mood, and scene atmosphere of {pose_ref_lighting_desc}. "
+            f"STRICTLY IGNORE AND DISCARD the reference person's face, identity, hair, body proportions, and original clothing from {pose_ref_lighting_desc}—"
+            f"adapt the pose naturally to the exact height, age appearance, and body proportions of {model_desc} wearing only the target garment."
         )
+        if scene_pics:
+            parts.append(
+                f"ADDITIONAL SCENE REFERENCE: Blend cleanly with the studio texture of {_fmt_pics(scene_pics)}."
+            )
     else:
-        scene_text = COLABONE_FASHION_SCENE_PROMPTS.get(
-            str(scene_preset or "studio_light_gray").strip().lower(),
-            COLABONE_FASHION_SCENE_PROMPTS["studio_light_gray"],
-        )
-        parts.append(f"UNIFIED SCENE & LIGHTING: {scene_text}")
+        if scene_pics:
+            parts.append(
+                f"UNIFIED SCENE & LIGHTING: Place the model seamlessly into the clean studio setting, background tone, and soft natural lighting style of {_fmt_pics(scene_pics)}."
+            )
+        else:
+            scene_text = COLABONE_FASHION_SCENE_PROMPTS.get(
+                str(scene_preset or "studio_light_gray").strip().lower(),
+                COLABONE_FASHION_SCENE_PROMPTS["studio_light_gray"],
+            )
+            parts.append(f"UNIFIED SCENE & LIGHTING: {scene_text}")
+
+        if pose_ref_pics:
+            parts.append(
+                f"POSE & FRAMING REFERENCE ONLY (HARD ISOLATION): Strictly replicate the body posture, limb positions, hand gesture, head turn angle, gaze direction, and camera framing/crop shown in {pose_ref_desc}. "
+                f"COMPLETELY IGNORE AND DISCARD the reference person's face, identity, hairstyle, body size/proportions, clothing, accessories, background, and lighting from {pose_ref_desc}. "
+                f"Naturally adapt this pose to the exact height, age appearance, and body proportions of {model_desc} in the unified studio scene above."
+            )
 
     parts.append(f"POSE & COMPOSITION: {shot['prompt']}")
 
@@ -1667,7 +2197,16 @@ class ColabOneFashionTryOnRunner:
             scene_fn, scene_fp = input_map["pipeline.scene_ref_photo"]
             _validate_fashion_image_input(scene_fp, f"棚拍场景参考图「{scene_fn}」")
 
-        shots = plan_colabone_fashion_shots(overrides)
+        shots = plan_colabone_fashion_shots(overrides, input_map=input_map)
+        used_pose_ref_slots: list[str] = []
+        seen_pose_slots: set[str] = set()
+        for shot in shots:
+            pslot = str(shot.get("pose_ref_slot") or "").strip()
+            if pslot and pslot in input_map and pslot not in seen_pose_slots:
+                seen_pose_slots.add(pslot)
+                used_pose_ref_slots.append(pslot)
+                pfn, pfp = input_map[pslot]
+                _validate_fashion_image_input(pfp, f"姿势参考图「{pfn}」")
         width, height = resolve_colabone_fashion_dimensions(
             str(overrides.get("pipeline.aspect_preset") or "3x4_2k")
         )
@@ -1877,6 +2416,18 @@ class ColabOneFashionTryOnRunner:
                     if uploaded_scene:
                         uploaded_io_inputs.append(uploaded_scene)
 
+                uploaded_pose_refs: dict[str, str] = {}
+                for p_idx, pslot in enumerate(used_pose_ref_slots, 1):
+                    task.check()
+                    pfn, pfp = input_map[pslot]
+                    up_pfn, up_pfp = _prepare_opaque_rgb_upload(
+                        pfn, pfp, stem=f"pose_ref_{p_idx:02d}", work_dir=work_dir
+                    )
+                    uploaded_pname = self.comfy._upload_input_file(up_pfn, up_pfp)
+                    if uploaded_pname:
+                        uploaded_io_inputs.append(uploaded_pname)
+                        uploaded_pose_refs[pslot] = uploaded_pname
+
                 back_garments = [g for g in uploaded_garments if g["role"] == "back"]
                 detail_garments = [g for g in uploaded_garments if g["role"] == "detail"]
                 front_like_garments = [
@@ -1896,6 +2447,9 @@ class ColabOneFashionTryOnRunner:
                     shot_lo = gen_lo + gen_span * (idx / total_shots)
                     shot_hi = gen_lo + gen_span * ((idx + 1) / total_shots)
                     shot_view = str(shot.get("view") or "front").strip().lower()
+                    borrow_scene_lighting = bool(shot.get("borrow_scene_lighting"))
+                    pose_ref_slot = str(shot.get("pose_ref_slot") or "").strip()
+                    pose_ref_comfy_name = uploaded_pose_refs.get(pose_ref_slot) if pose_ref_slot else None
 
                     ref_list: list[str] = []
                     ref_roles: list[tuple[int, str, str]] = []
@@ -1925,6 +2479,13 @@ class ColabOneFashionTryOnRunner:
 
                     if uploaded_scene:
                         _push_ref(uploaded_scene, "scene_ref", "auto")
+
+                    if pose_ref_comfy_name:
+                        _push_ref(
+                            pose_ref_comfy_name,
+                            "pose_ref_lighting" if borrow_scene_lighting else "pose_ref",
+                            shot_view if shot_view in ("front", "side", "back", "detail") else "auto",
+                        )
 
                     prompt_text = build_minimax_h3_tryon_prompt_text(
                         shot=shot,
@@ -1990,7 +2551,8 @@ class ColabOneFashionTryOnRunner:
                             hero_comfy_name is None
                             and shot_num < total_shots
                             and anchor_hero_shot
-                            and shot_view in ("front", "side")
+                            and not borrow_scene_lighting
+                            and shot_view in ("front", "side", "auto")
                         ):
                             task.check()
                             hero_comfy_name = self.comfy._upload_input_file(
@@ -1998,7 +2560,7 @@ class ColabOneFashionTryOnRunner:
                             )
                             if hero_comfy_name:
                                 uploaded_io_inputs.append(hero_comfy_name)
-                            hero_view = shot_view
+                            hero_view = shot_view if shot_view in ("front", "side") else "front"
                             task.note(
                                 f"第 {shot_num} 张定妆主图已锁定为视觉锚点，正在保持同人同衣同光影展开其余姿势"
                             )

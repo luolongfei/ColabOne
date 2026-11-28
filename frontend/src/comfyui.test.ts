@@ -6,7 +6,11 @@ import {
   COLABONE_DIGITAL_HUMAN_ENGINE_SPECIFIC_KEYS,
   COLABONE_DIGITAL_HUMAN_GROUP_KEY,
   COLABONE_FASHION_MANAGED_FIELD_KEYS,
+  COLABONE_FASHION_MAX_POSE_REFS,
+  COLABONE_FASHION_MAX_POSE_SHOTS,
   COLABONE_FASHION_MAX_REFS_PER_GROUP,
+  COLABONE_FASHION_POSE_REF_SLOT_KEYS,
+  COLABONE_FASHION_POSE_SHOTS_KEY,
   COLABONE_LEGACY_VISUAL_PROMPTS,
   COLABONE_VOICE_PRESET_ID_RE,
   buildColabOneStudioWorkflowEntries,
@@ -32,8 +36,10 @@ import {
   missingRequiredWorkflowFields,
   outputBlobURL,
   parseColabOneFashionPhotoMeta,
+  parseColabOneFashionPoseShots,
   parseWorkflowImportJSON,
   partitionWorkflowFields,
+  pickColabOneNextFashionPoseRefSlotKeys,
   pickColabOneNextFashionSlotKeys,
   readColabOnePreferredDigitalHumanEngine,
   reconcileColabOneFashionPhotoList,
@@ -50,10 +56,18 @@ import {
   resolveColabOneWorkflowFieldPlaceholder,
   resolveSelectedTtsEngine,
   serializeColabOneFashionPhotoMeta,
+  serializeColabOneFashionPoseShots,
   transferColabOneDigitalHumanFields,
   workflowModelsTotalBytes,
   writeColabOnePreferredDigitalHumanEngine,
 } from "./comfyui";
+import {
+  COLABONE_FASHION_POSE_PACKS,
+  COLABONE_FASHION_POSE_PRESETS,
+  buildColabOneFashionPackShots,
+  pruneColabOneFashionPoseShotsForMedia,
+  resolveColabOneFashionPoseShotsFromValues,
+} from "./colabOneFashionPoseCatalog";
 import {
   hasColabOneDraftContent,
   mergeColabOneWorkflowDraftFields,
@@ -6078,17 +6092,24 @@ describe("unified digital human workflow helpers", () => {
       expect(notice?.notice).toContain("非商业用途");
 
       // Beginner-friendly basic vs advanced partitioning:
-      // 14 multi-ref managed fields + 3 basic dropdowns in primary; zero old scattered photo fields in advanced.
+      // 14 multi-ref photo managed fields + 7 pose-studio managed fields (pose_shots + pose_ref_1..6)
+      // + shot_pack (managed by Pose Studio) + 2 standard basic dropdowns in primary;
+      // zero old scattered photo fields in advanced.
       const { primary, advanced } = partitionWorkflowFields(fashionWf!.fields);
       const standardPrimary = primary.filter(
         (f) => !COLABONE_FASHION_MANAGED_FIELD_KEYS.has(f.key),
       );
       expect(standardPrimary.map((f) => f.key)).toEqual([
         "pipeline.scene_preset",
-        "pipeline.shot_pack",
         "pipeline.aspect_preset",
       ]);
-      expect(primary.length).toBe(17);
+      expect(primary.length).toBe(24);
+      expect(COLABONE_FASHION_MANAGED_FIELD_KEYS.has("pipeline.pose_shots")).toBe(true);
+      expect(COLABONE_FASHION_MANAGED_FIELD_KEYS.has("pipeline.shot_pack")).toBe(true);
+      expect(COLABONE_FASHION_MANAGED_FIELD_KEYS.has("pipeline.custom_pose_prompts")).toBe(true);
+      for (const refKey of COLABONE_FASHION_POSE_REF_SLOT_KEYS) {
+        expect(COLABONE_FASHION_MANAGED_FIELD_KEYS.has(refKey)).toBe(true);
+      }
       expect(advanced.length).toBeGreaterThanOrEqual(15);
       expect(
         advanced.some((f) =>
@@ -6293,6 +6314,144 @@ describe("unified digital human workflow helpers", () => {
           "pipeline.custom_pose_prompts": "正面微笑站姿",
         }),
       ).toBe(false);
+
+      // Structured pose_shots queue overrides legacy flags and blocks explicit empty "[]"
+      expect(
+        isColabOneFashionCustomPosesEmpty(fashionWf, {
+          ...defaults,
+          [COLABONE_FASHION_POSE_SHOTS_KEY]: "[]",
+        }),
+      ).toBe(true);
+      expect(
+        isColabOneFashionCustomPosesEmpty(fashionWf, {
+          ...allUnchecked,
+          [COLABONE_FASHION_POSE_SHOTS_KEY]: JSON.stringify([
+            { kind: "preset", preset_id: "pose_27" },
+          ]),
+        }),
+      ).toBe(false);
+    });
+
+    it("supports 30-pose catalog, mixed pose_shots queue, reference slot recycling, and pruning", () => {
+      expect(COLABONE_FASHION_POSE_PRESETS.length).toBe(30);
+      expect(COLABONE_FASHION_MAX_POSE_SHOTS).toBe(12);
+      expect(COLABONE_FASHION_MAX_POSE_REFS).toBe(6);
+      const ids = new Set(COLABONE_FASHION_POSE_PRESETS.map((p) => p.id));
+      expect(ids.size).toBe(30);
+      for (const preset of COLABONE_FASHION_POSE_PRESETS) {
+        expect(preset.svg.circles.length).toBeGreaterThan(0);
+        expect(preset.svg.paths.length).toBeGreaterThan(0);
+      }
+      for (const pack of COLABONE_FASHION_POSE_PACKS) {
+        for (const presetId of pack.presetIds) {
+          expect(ids.has(presetId)).toBe(true);
+        }
+      }
+
+      // Empty string falls back to legacy shot_pack; explicit "[]" resolves to empty queue
+      expect(parseColabOneFashionPoseShots("")).toBeNull();
+      expect(parseColabOneFashionPoseShots("[]")).toEqual([]);
+      expect(resolveColabOneFashionPoseShotsFromValues({ "pipeline.shot_pack": "kids_4" })).toEqual(
+        buildColabOneFashionPackShots("kids_4"),
+      );
+      expect(
+        resolveColabOneFashionPoseShotsFromValues({
+          "pipeline.shot_pack": "full_6",
+          [COLABONE_FASHION_POSE_SHOTS_KEY]: "[]",
+        }),
+      ).toEqual([]);
+
+      // Mixed preset + reference (with borrow_scene_lighting) + text roundtrips and enforces 12-shot cap
+      const mixed = [
+        { kind: "preset" as const, preset_id: "pose_1" },
+        {
+          kind: "reference" as const,
+          slot_key: "pipeline.pose_ref_1",
+          view: "side" as const,
+          note: "头再微偏一点",
+          borrow_scene_lighting: true,
+        },
+        {
+          kind: "text" as const,
+          prompt: "双手提裙摆轻盈转身",
+          view: "front" as const,
+        },
+      ];
+      const encoded = serializeColabOneFashionPoseShots(mixed);
+      expect(parseColabOneFashionPoseShots(encoded)).toEqual(mixed);
+
+      // Pose ref note must preserve trailing/internal spaces while typing (trimmed on blur/backend)
+      const withTypingSpace = serializeColabOneFashionPoseShots([
+        {
+          kind: "reference",
+          slot_key: "pipeline.pose_ref_1",
+          view: "auto",
+          note: "turn head \nleft ",
+          borrow_scene_lighting: false,
+        },
+      ]);
+      expect(parseColabOneFashionPoseShots(withTypingSpace)).toEqual([
+        {
+          kind: "reference",
+          slot_key: "pipeline.pose_ref_1",
+          view: "auto",
+          note: "turn head  left ",
+          borrow_scene_lighting: false,
+        },
+      ]);
+
+      // Corrupted non-string JSON values must never stringify into "[object Object]"
+      expect(
+        parseColabOneFashionPoseShots(
+          JSON.stringify([
+            { kind: "text", prompt: { bad: true }, view: 123 },
+            {
+              kind: "reference",
+              slot_key: "pipeline.pose_ref_1",
+              view: ["bad"],
+              note: { bad: true },
+              borrow_scene_lighting: false,
+            },
+          ]),
+        ),
+      ).toEqual([
+        {
+          kind: "reference",
+          slot_key: "pipeline.pose_ref_1",
+          view: "auto",
+          note: "",
+          borrow_scene_lighting: false,
+        },
+      ]);
+
+      // Pruning drops missing pose_ref slots while preserving valid refs, presets, and text shots
+      const prunedJson = pruneColabOneFashionPoseShotsForMedia(
+        serializeColabOneFashionPoseShots([
+          ...mixed,
+          {
+            kind: "reference",
+            slot_key: "pipeline.pose_ref_2",
+            view: "auto",
+            note: "",
+            borrow_scene_lighting: false,
+          },
+        ]),
+        new Set(["pipeline.pose_ref_1"]),
+      );
+      expect(parseColabOneFashionPoseShots(prunedJson)).toEqual(mixed);
+
+      // Pose ref slot allocator reuses freed slots and caps at 6
+      expect(
+        pickColabOneNextFashionPoseRefSlotKeys(
+          ["pipeline.pose_ref_1", "pipeline.pose_ref_3"],
+          10,
+        ),
+      ).toEqual([
+        "pipeline.pose_ref_2",
+        "pipeline.pose_ref_4",
+        "pipeline.pose_ref_5",
+        "pipeline.pose_ref_6",
+      ]);
     });
 
     it("trims and deduplicates order keys before looking up roles in serializeColabOneFashionPhotoMeta", () => {

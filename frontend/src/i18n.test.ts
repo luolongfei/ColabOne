@@ -4558,4 +4558,64 @@ describe("Guest output share locale isolation and cold-load bootstrap", () => {
     setColabOneLocale("zh-HK", { persist: false, syncNative: false });
     expect(tb("已达到 CU 消耗上限（12.5 CU），正在自动释放实例")).toContain("實例");
   });
+
+  it("translates all 30 fashion pose presets and dynamic pose-ref/text runtime messages across all 6 locales", async () => {
+    const { COLABONE_FASHION_POSE_PRESETS, COLABONE_FASHION_POSE_PACKS } =
+      await import("./colabOneFashionPoseCatalog");
+    const leakRe = /[\u3400-\u9fff\uf900-\ufaff（）「」，。：；“”《》【】、]/;
+    const dynamicPoseSamples = [
+      "出图姿势清单不能为空，请至少选择 1 个姿势、上传姿势参考图或填写文字描述",
+      "第 2/6 张 · 参考姿势 · street_look_01 · MiniMax-H3 极速采样 · 采样 3/6",
+      "第 2/6 张 · 参考姿势 · street_look_01 · 采样 3/6",
+      "第 2/6 张 · 参考姿势 · street_look_01",
+      "第 3/6 张 · 参考图姿势 3 · 采样 2/6",
+      "第 4/6 张 · 文字姿势 4",
+      "第 2 张定妆主图已锁定为视觉锚点，正在保持同人同衣同光影展开其余姿势",
+      "姿势参考图「street_ref.png」图片文件为空，请重新上传",
+      "姿势参考图「street_ref.png」仅支持 PNG、JPEG 或 WebP 图片格式（当前为 .bmp）",
+      "姿势参考图「street_ref.png」分辨率超过上限（最多 1600 万像素）",
+    ];
+    for (const loc of ["zh-CN", "en-US", "zh-TW", "zh-HK", "ja-JP", "ko-KR"] as const) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      for (const pack of COLABONE_FASHION_POSE_PACKS) {
+        const uiText = t(pack.labelKey);
+        expect(uiText.trim().length, `${loc} ${pack.labelKey}`).toBeGreaterThan(0);
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(leakRe.test(uiText), `${loc} leak in ${pack.labelKey}: ${uiText}`).toBe(false);
+        }
+      }
+      for (const preset of COLABONE_FASHION_POSE_PRESETS) {
+        const uiText = t(preset.labelKey);
+        const backendText = tb(preset.fallbackLabel);
+        expect(uiText.trim().length, `${loc} UI ${preset.id}`).toBeGreaterThan(0);
+        expect(backendText.trim().length, `${loc} backend ${preset.id}`).toBeGreaterThan(0);
+        if (loc !== "zh-CN" && (loc === "en-US" || loc === "ko-KR")) {
+          expect(leakRe.test(uiText), `${loc} UI leak ${preset.id}: ${uiText}`).toBe(false);
+          expect(leakRe.test(backendText), `${loc} backend leak ${preset.id}: ${backendText}`).toBe(
+            false,
+          );
+        }
+      }
+      for (const sample of dynamicPoseSamples) {
+        const out = tb(sample);
+        if (loc === "zh-CN") {
+          expect(out).toBe(sample);
+        } else {
+          expect(out, `${loc} must translate "${sample}"`).not.toBe(sample);
+          if (loc === "en-US" || loc === "ko-KR") {
+            expect(leakRe.test(out), `${loc} leak in "${out}"`).toBe(false);
+          }
+        }
+      }
+    }
+    expect(
+      translateColabOneBackendText("第 2/6 张 · 参考姿势 · street_look_01 · 采样 3/6", "en-US"),
+    ).toBe("Shot 2/6 · Pose Ref · street_look_01 · Step 3/6");
+    expect(
+      translateColabOneBackendText(
+        "姿势参考图「street_ref.png」图片文件为空，请重新上传",
+        "en-US",
+      ),
+    ).toBe('Pose reference photo "street_ref.png" image file is empty; please upload again');
+  });
 });
