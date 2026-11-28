@@ -357,6 +357,90 @@ def test_active_tasks_and_authorization_lease_protect_idle_but_not_budget(
     assert runtime.claim_auto_release(800)
 
 
+def test_release_modes_never_and_cu_limit_and_prepare_release_auto(tmp_path, monkeypatch):
+    import json
+    from server.runtime import ColabOneRuntime
+
+    catalog = tmp_path / "catalog"
+    catalog.mkdir()
+    (catalog / "presets.json").write_text("[]", encoding="utf-8")
+    (catalog / "engine.json").write_text('{"tag":"test","assets":[]}', encoding="utf-8")
+    (catalog / "comfyui.json").write_text(
+        '{"repo":"https://github.com/Comfy-Org/ComfyUI.git","tag":"test","commit":"' + "a" * 40 + '","port":8188,"proxy_port":8189,"templates":[]}',
+        encoding="utf-8",
+    )
+    cfg_path = tmp_path / "remote_config.json"
+    token = "test-control-token-at-least-32-chars"
+    cfg_path.write_text(
+        json.dumps({"root": str(tmp_path / "vm"), "token": token, "idle_minutes": 30}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("COLABONE_REMOTE_CONFIG", str(cfg_path))
+
+    rt = ColabOneRuntime(tmp_path / "vm", catalog)
+    rt.last_active = 100
+    monkeypatch.setattr(rt, "gpu_info", lambda: {"name": "Tesla T4", "total_mib": 15360, "used_mib": 0})
+    headers = {"Authorization": "Bearer " + token}
+
+    with TestClient(create_colabone_app(rt, token)) as client:
+        # 1. Never auto-release disables idle countdown and persists into COLABONE_REMOTE_CONFIG.
+        resp = client.post(
+            "/api/v1/configure",
+            json={"idle_minutes": 0, "release_mode": "never", "deadline": 0},
+            headers=headers,
+        )
+        assert resp.status_code == 200
+        assert rt.release_mode == "never"
+        assert rt.idle_minutes == 0
+        st = client.get("/api/v1/status", headers=headers).json()
+        assert st["release_mode"] == "never"
+        assert st["idle_minutes"] == 0
+        assert st["idle"]["phase"] == "disabled"
+        assert st["idle"]["remaining_seconds"] == 0
+        assert not rt.claim_auto_release(999999)
+
+        saved_cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert saved_cfg["release_mode"] == "never"
+        assert saved_cfg["idle_minutes"] == 0
+
+        # 2. CU limit mode disables idle countdown while preserving failsafe deadline release.
+        resp2 = client.post(
+            "/api/v1/configure",
+            json={"idle_minutes": 0, "release_mode": "cu_limit", "deadline": 2500},
+            headers=headers,
+        )
+        assert resp2.status_code == 200
+        assert rt.release_mode == "cu_limit"
+        assert rt.idle_status(2400)["phase"] == "disabled"
+        assert not rt.claim_auto_release(2400)
+        assert rt.claim_auto_release(2500)
+        rt.auto_releasing = False
+
+        # 3. Switching back to idle minutes restores idle mode cleanly.
+        resp3 = client.post(
+            "/api/v1/configure",
+            json={"idle_minutes": 45, "deadline": 0},
+            headers=headers,
+        )
+        assert resp3.status_code == 200
+        assert rt.release_mode == "idle"
+        assert rt.idle_minutes == 45
+        assert rt.idle_status(rt.last_active + 10)["phase"] == "watching"
+
+        # 4. POST /api/v1/prepare-release?auto=1 passes auto=True.
+        seen_auto = []
+        orig_prep = rt.prepare_release
+
+        def spy_prepare_release(auto: bool = False):
+            seen_auto.append(auto)
+            return orig_prep(auto=auto)
+
+        monkeypatch.setattr(rt, "prepare_release", spy_prepare_release)
+        assert client.post("/api/v1/prepare-release?auto=1", headers=headers).status_code == 200
+        assert client.post("/api/v1/prepare-release", headers=headers).status_code == 200
+        assert seen_auto == [True, False]
+
+
 def test_activity_endpoint_requires_auth_and_validates_lease(runtime):
     token = "test-control-token-at-least-32-chars"
     with TestClient(create_colabone_app(runtime, token)) as client:

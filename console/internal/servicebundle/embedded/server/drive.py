@@ -1,12 +1,14 @@
 """Google Drive mount and workspace persistence for ColabOne remote runtimes.
 
-Supports two complementary modes storing data in the identical Drive layout
-(`My Drive / ColabOne_Drive / workspace`):
+Supports two complementary modes with isolated root folders so Google Drive's
+`drive.file` scope never creates duplicate same-named folders alongside Colab
+native DriveFS mounts:
 1. `colab_drivefs`: Official Google Colab native DriveFS mounted at `/content/drive`
-   (`/content/drive/MyDrive`), requiring zero GCP project or rclone download.
+   (`/content/drive/MyDrive/ColabOne_Drive_Mount`), requiring zero GCP project or
+   rclone download.
 2. `mount` / `rclone_sync`: Headless `rclone` using the saved `drive.file` OAuth
    refresh_token (and optional `X-Goog-User-Project` quota project header when
-   using Google's public ADC OAuth client).
+   using Google's public ADC OAuth client), persisted under `My Drive / ColabOne_Drive`.
 """
 
 from __future__ import annotations
@@ -60,6 +62,7 @@ def _close_http_session(session: requests.Session) -> None:
 
 COLABONE_DRIVE_REMOTE = "colabone_gdrive"
 COLABONE_DRIVE_FOLDER = "ColabOne_Drive"
+COLABONE_DRIVEFS_FOLDER = "ColabOne_Drive_Mount"
 COLABONE_DRIVE_OUTPUTS_SUBDIR = "outputs"
 COLABONE_DRIVE_SPEC = f"{COLABONE_DRIVE_REMOTE}:{COLABONE_DRIVE_FOLDER}"
 DEFAULT_MOUNT_ROOT = Path("/content/drive/MyDrive")
@@ -742,8 +745,11 @@ class ColabOneDrive:
             return alt
         return self.mount_root
 
+    def _drivefs_root_dir(self) -> Path:
+        return self._active_mydrive_dir() / COLABONE_DRIVEFS_FOLDER
+
     def _drivefs_workspace_dir(self) -> Path:
-        return self._active_mydrive_dir() / COLABONE_DRIVE_FOLDER / "workspace"
+        return self._drivefs_root_dir() / "workspace"
 
     def _checked_drivefs_workspace_dir(self) -> Path:
         drivefs_root = self.mount_root.parent
@@ -758,7 +764,7 @@ class ColabOneDrive:
                 raise
             except ValueError:
                 raise OSError("Google 云盘根目录不能是符号链接") from None
-        folder_dir = mydrive / COLABONE_DRIVE_FOLDER
+        folder_dir = mydrive / COLABONE_DRIVEFS_FOLDER
         if folder_dir.is_symlink():
             raise OSError("Google 云盘应用目录不能是符号链接")
         ws = folder_dir / "workspace"
@@ -772,11 +778,7 @@ class ColabOneDrive:
         return ws
 
     def _drivefs_outputs_dir(self) -> Path:
-        return (
-            self._active_mydrive_dir()
-            / COLABONE_DRIVE_FOLDER
-            / COLABONE_DRIVE_OUTPUTS_SUBDIR
-        )
+        return self._drivefs_root_dir() / COLABONE_DRIVE_OUTPUTS_SUBDIR
 
     def is_colab_drivefs_mounted(self) -> bool:
         """Return True if official Google Colab DriveFS is mounted at mount_root.parent."""
@@ -1258,7 +1260,7 @@ class ColabOneDrive:
             mode = self.mode
         try:
             if mode == "colab_drivefs":
-                folder_dir = self._active_mydrive_dir() / COLABONE_DRIVE_FOLDER
+                folder_dir = self._drivefs_root_dir()
                 ws_root = self._drivefs_workspace_dir()
                 if folder_dir.is_symlink() or ws_root.is_symlink():
                     raise ValueError("云盘工作区目录不能是符号链接")
@@ -1323,7 +1325,7 @@ class ColabOneDrive:
             mode = self.mode
         try:
             if mode == "colab_drivefs":
-                folder_dir = self._active_mydrive_dir() / COLABONE_DRIVE_FOLDER
+                folder_dir = self._drivefs_root_dir()
                 ws_root = self._drivefs_workspace_dir()
                 if folder_dir.is_symlink() or ws_root.is_symlink():
                     raise ValueError("云盘工作区目录不能是符号链接")
@@ -1393,7 +1395,7 @@ class ColabOneDrive:
             mode = self.mode
         try:
             if mode == "colab_drivefs":
-                folder_dir = self._active_mydrive_dir() / COLABONE_DRIVE_FOLDER
+                folder_dir = self._drivefs_root_dir()
                 ws_root = self._drivefs_workspace_dir()
                 if folder_dir.is_symlink() or ws_root.is_symlink():
                     raise ValueError("云盘工作区目录不能是符号链接")
@@ -1547,7 +1549,12 @@ class ColabOneDrive:
         sha256_expected = (expected_sha256 or "").strip().lower()
         if expected_size is not None and actual_size != expected_size:
             sha256_expected = ""
-        remote_folder = f"{COLABONE_DRIVE_FOLDER}/{COLABONE_DRIVE_OUTPUTS_SUBDIR}"
+        remote_root = (
+            COLABONE_DRIVEFS_FOLDER
+            if mode == "colab_drivefs"
+            else COLABONE_DRIVE_FOLDER
+        )
+        remote_folder = f"{remote_root}/{COLABONE_DRIVE_OUTPUTS_SUBDIR}"
 
         def _ensure_src_sha256() -> str:
             nonlocal sha256_expected
@@ -1570,7 +1577,7 @@ class ColabOneDrive:
                     self.mode = "disabled"
                     self.error = err
                 raise RuntimeError(err)
-            folder_dir = self._active_mydrive_dir() / COLABONE_DRIVE_FOLDER
+            folder_dir = self._drivefs_root_dir()
             out_dir = self._drivefs_outputs_dir()
             if folder_dir.is_symlink() or out_dir.is_symlink():
                 raise ValueError("云盘导出目录不能是符号链接")
@@ -1923,12 +1930,17 @@ class ColabOneDrive:
             mount_path = str(self._active_mydrive_dir())
         elif connected and mode == "mount" and self.is_fuse_mounted():
             mount_path = str(self.mount_root)
+        remote_folder = (
+            COLABONE_DRIVEFS_FOLDER
+            if (connected and mode == "colab_drivefs")
+            else COLABONE_DRIVE_FOLDER
+        )
         return {
             "connected": connected,
             "configured": self.configured(),
             "mode": mode if connected else "disabled",
             "mount_path": mount_path,
-            "remote_folder": COLABONE_DRIVE_FOLDER,
+            "remote_folder": remote_folder,
             "pending": pending,
             "error": error,
             "total_bytes": total_bytes if connected else None,

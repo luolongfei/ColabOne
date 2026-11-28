@@ -89,6 +89,8 @@ describe("ColabOneSnapshot & ModelSpec defaults and library gating", () => {
     expect(first.settings).toEqual({
       gpu: "G4",
       idle_minutes: 30,
+      release_mode: "idle",
+      release_cu_limit: 10,
       idle_countdown_seconds: 60,
       auto_drive: true,
       download_threads: 16,

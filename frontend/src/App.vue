@@ -139,12 +139,18 @@ import {
 } from "./colabOnePoller";
 import {
   COLABONE_IDLE_RELEASE_OPTIONS,
+  COLABONE_RELEASE_SELECT_CU_LIMIT,
+  COLABONE_RELEASE_SELECT_NEVER,
   describeColabOneBilling,
+  describeColabOneRunConsumption,
+  encodeColabOneReleaseSelectValue,
   formatColabOneCompactRunDuration,
+  formatColabOneCULimitValue,
   formatCountdownClock,
   formatIdlePolicyLabel,
   friendlyErrorMessage,
   isTransientIpcError,
+  parseColabOneReleaseSelectValue,
   stripColabOneErrorPrefixes,
 } from "./billing";
 import {
@@ -247,12 +253,17 @@ import {
 import {
   COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS,
   COLABONE_DEFAULT_GPU,
+  COLABONE_DEFAULT_RELEASE_CU_LIMIT,
+  COLABONE_DEFAULT_RELEASE_MODE,
   COLABONE_MAX_ASSIGN_MAX_ATTEMPTS,
+  COLABONE_MAX_RELEASE_CU_LIMIT,
   COLABONE_MIN_ASSIGN_MAX_ATTEMPTS,
+  COLABONE_MIN_RELEASE_CU_LIMIT,
   createColabOneSnapshot,
   COLABONE_STATUS_LABELS,
   evaluateColabOneRuntimeUpgrade,
   type AccountInstance,
+  type ColabOneReleaseMode,
   type ColabOneSnapshot,
 } from "./types";
 
@@ -1399,6 +1410,8 @@ const form = ref({
   gpu: COLABONE_DEFAULT_GPU as string,
   idle_minutes: 30,
   idle_countdown_seconds: 60,
+  release_mode: COLABONE_DEFAULT_RELEASE_MODE as ColabOneReleaseMode,
+  release_cu_limit: COLABONE_DEFAULT_RELEASE_CU_LIMIT as number,
   auto_drive: true,
   download_threads: 16,
   assign_max_attempts: COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS as number,
@@ -1406,6 +1419,33 @@ const form = ref({
   assign_proxy: "",
   hf_token: "",
 });
+const cuLimitDraft = ref<number | undefined>(COLABONE_DEFAULT_RELEASE_CU_LIMIT);
+const editingCuLimit = ref(false);
+const cuLimitPendingActivation = ref(false);
+watch(
+  () => form.value.release_cu_limit,
+  (val) => {
+    if (!editingCuLimit.value && !cuLimitPendingActivation.value) {
+      cuLimitDraft.value = val;
+    }
+  },
+);
+watch(
+  () => form.value.release_mode,
+  (mode) => {
+    if (mode === "cu_limit") {
+      cuLimitPendingActivation.value = false;
+    }
+  },
+);
+watch(
+  [() => state.value.runtime.state === "ready", () => state.value.setup.colab],
+  ([isReady, hasColab]) => {
+    if (!isReady || !hasColab) {
+      cuLimitPendingActivation.value = false;
+    }
+  },
+);
 const assignMaxAttemptsDraft = ref<number | undefined>(
   COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS,
 );
@@ -1430,6 +1470,75 @@ const billingOverview = computed(() =>
       : state.value.runtime.id,
     clockNow.value,
   ),
+);
+const currentRunOverview = computed(() =>
+  describeColabOneRunConsumption(state.value.account, {
+    setupColab: state.value.setup.colab,
+    runtimeState: state.value.runtime.state,
+    runtimeId:
+      state.value.runtime.state === "stopped"
+        ? undefined
+        : state.value.runtime.id,
+    nowMs: clockNow.value,
+  }),
+);
+const currentRunConsumedCU = computed(() =>
+  currentRunOverview.value.active ? currentRunOverview.value.consumed : 0,
+);
+const activeReleaseSelectValue = computed(() =>
+  cuLimitPendingActivation.value
+    ? COLABONE_RELEASE_SELECT_CU_LIMIT
+    : encodeColabOneReleaseSelectValue(
+        form.value.release_mode,
+        form.value.idle_minutes,
+      ),
+);
+const showCuLimitEditor = computed(
+  () => activeReleaseSelectValue.value === COLABONE_RELEASE_SELECT_CU_LIMIT,
+);
+const normalizedCuLimitDraft = computed<number | null>(() => {
+  const n = Number(cuLimitDraft.value);
+  if (
+    !Number.isFinite(n) ||
+    n < COLABONE_MIN_RELEASE_CU_LIMIT ||
+    n > COLABONE_MAX_RELEASE_CU_LIMIT
+  ) {
+    return null;
+  }
+  return Math.round(n * 100) / 100;
+});
+const cuLimitCanApply = computed(() => normalizedCuLimitDraft.value !== null);
+const cuLimitNeedsApply = computed(() => {
+  const next = normalizedCuLimitDraft.value;
+  if (next === null) return false;
+  if (cuLimitPendingActivation.value || form.value.release_mode !== "cu_limit") {
+    return true;
+  }
+  return Math.abs(next - form.value.release_cu_limit) > 1e-6;
+});
+const cuLimitDraftAlreadyReached = computed(
+  () =>
+    ready.value &&
+    normalizedCuLimitDraft.value !== null &&
+    currentRunConsumedCU.value >= normalizedCuLimitDraft.value - 1e-6,
+);
+const cuLimitRemainingCU = computed(() =>
+  Math.max(0, form.value.release_cu_limit - currentRunConsumedCU.value),
+);
+const isCuLimitUrgent = computed(
+  () =>
+    form.value.release_mode === "cu_limit" &&
+    ready.value &&
+    form.value.release_cu_limit > 0 &&
+    (cuLimitRemainingCU.value <= 0.5 ||
+      currentRunConsumedCU.value / form.value.release_cu_limit >= 0.9),
+);
+const activeDriveFolderName = computed(
+  () =>
+    state.value.runtime.drive?.remote_folder ||
+    (state.value.runtime.drive?.mode === "colab_drivefs"
+      ? "ColabOne_Drive_Mount"
+      : "ColabOne_Drive"),
 );
 
 const code = ref(""),
@@ -1796,6 +1905,8 @@ const SYNCED_SETTING_KEYS = [
   "gpu",
   "idle_minutes",
   "idle_countdown_seconds",
+  "release_mode",
+  "release_cu_limit",
   "auto_drive",
   "download_threads",
   "assign_max_attempts",
@@ -2294,35 +2405,150 @@ watch(
   },
 );
 
-async function changeIdleMinutes(rawMinutes: unknown) {
-  const minutes = Number(rawMinutes);
-  if (!Number.isFinite(minutes) || minutes < 1) return;
-  const previous = form.value.idle_minutes;
-  form.value.idle_minutes = minutes;
-  lastSyncedSettings.idle_minutes = minutes;
+function onCuLimitInput(value: unknown) {
+  if (value === null || value === undefined || value === "") {
+    cuLimitDraft.value = undefined;
+    return;
+  }
+  const parsed = Number(value);
+  if (Number.isFinite(parsed)) {
+    cuLimitDraft.value = parsed;
+  }
+}
+
+async function persistReleasePolicy(options: {
+  mode: ColabOneReleaseMode;
+  idleMinutes?: number;
+  cuLimit?: number;
+}) {
+  const prevMode = form.value.release_mode;
+  const prevIdle = form.value.idle_minutes;
+  const prevLimit = form.value.release_cu_limit;
+
+  const nextMode = options.mode;
+  const nextIdle = options.idleMinutes ?? prevIdle;
+  const nextLimit =
+    options.cuLimit !== undefined
+      ? Math.round(options.cuLimit * 100) / 100
+      : prevLimit;
+
+  const payload: Record<string, unknown> = { release_mode: nextMode };
+  const keys: SyncedSettingKey[] = ["release_mode"];
+  if (nextMode === "idle") {
+    payload.idle_minutes = nextIdle;
+    keys.push("idle_minutes");
+  } else if (nextMode === "cu_limit") {
+    payload.release_cu_limit = nextLimit;
+    keys.push("release_cu_limit");
+  }
+
+  cuLimitPendingActivation.value = false;
+  form.value.release_mode = nextMode;
+  lastSyncedSettings.release_mode = nextMode;
+  if (nextMode === "idle") {
+    form.value.idle_minutes = nextIdle;
+    lastSyncedSettings.idle_minutes = nextIdle;
+  } else if (nextMode === "cu_limit") {
+    form.value.release_cu_limit = nextLimit;
+    lastSyncedSettings.release_cu_limit = nextLimit;
+    cuLimitDraft.value = nextLimit;
+  }
+
   savingIdle.value = true;
-  beginPendingSetting(["idle_minutes"]);
+  beginPendingSetting(keys);
   try {
-    await colabOneCommand("settings.save", { idle_minutes: minutes });
+    await colabOneCommand("settings.save", payload);
     clearActionErrors();
+    const policyLabel = formatIdlePolicyLabel(nextIdle, nextMode, nextLimit);
     notify(
-      t("device.toastIdleSet", { policy: formatIdlePolicyLabel(minutes) }),
+      nextMode === "idle"
+        ? t("device.toastIdleSet", { policy: policyLabel })
+        : t("device.toastReleaseModeSet", { policy: policyLabel }),
       "success",
       "setting-idle-policy",
     );
   } catch (e) {
-    if (form.value.idle_minutes === minutes) {
-      form.value.idle_minutes = previous;
+    if (form.value.release_mode === nextMode) {
+      form.value.release_mode = prevMode;
     }
-    if (lastSyncedSettings.idle_minutes === minutes) {
-      lastSyncedSettings.idle_minutes = previous;
+    if (lastSyncedSettings.release_mode === nextMode) {
+      lastSyncedSettings.release_mode = prevMode;
+    }
+    if (nextMode === "idle") {
+      if (form.value.idle_minutes === nextIdle) {
+        form.value.idle_minutes = prevIdle;
+      }
+      if (lastSyncedSettings.idle_minutes === nextIdle) {
+        lastSyncedSettings.idle_minutes = prevIdle;
+      }
+    } else if (nextMode === "cu_limit") {
+      if (form.value.release_cu_limit === nextLimit) {
+        form.value.release_cu_limit = prevLimit;
+      }
+      if (lastSyncedSettings.release_cu_limit === nextLimit) {
+        lastSyncedSettings.release_cu_limit = prevLimit;
+      }
+      cuLimitDraft.value = prevLimit;
     }
     showError(e);
   } finally {
     const synced = await syncSnapshotQuietly();
-    endPendingSetting(["idle_minutes"], synced);
+    endPendingSetting(keys, synced);
     savingIdle.value = false;
   }
+}
+
+async function changeReleasePolicy(rawVal: unknown) {
+  if (savingIdle.value) return;
+  const parsed = parseColabOneReleaseSelectValue(rawVal);
+  if (!parsed) return;
+  if (parsed.mode === "idle") {
+    await persistReleasePolicy({
+      mode: "idle",
+      idleMinutes: parsed.idleMinutes,
+    });
+    return;
+  }
+  if (parsed.mode === "never") {
+    await persistReleasePolicy({ mode: "never" });
+    return;
+  }
+  const savedLimit =
+    Number.isFinite(form.value.release_cu_limit) &&
+    form.value.release_cu_limit >= COLABONE_MIN_RELEASE_CU_LIMIT
+      ? form.value.release_cu_limit
+      : COLABONE_DEFAULT_RELEASE_CU_LIMIT;
+  if (ready.value && currentRunConsumedCU.value >= savedLimit - 1e-6) {
+    cuLimitPendingActivation.value = true;
+    cuLimitDraft.value = Math.min(
+      COLABONE_MAX_RELEASE_CU_LIMIT,
+      Math.max(savedLimit, Math.ceil(currentRunConsumedCU.value + 5)),
+    );
+    notify(
+      t("device.toastCuLimitConfirmNeeded", {
+        consumed: currentRunConsumedCU.value.toFixed(2),
+      }),
+      "info",
+      "setting-cu-limit-confirm",
+    );
+    return;
+  }
+  await persistReleasePolicy({ mode: "cu_limit", cuLimit: savedLimit });
+}
+
+async function commitReleaseCuLimit() {
+  if (savingIdle.value) return;
+  const next = normalizedCuLimitDraft.value;
+  if (next === null) {
+    showError(t("device.errInvalidCuLimit"));
+    return;
+  }
+  editingCuLimit.value = false;
+  await persistReleasePolicy({ mode: "cu_limit", cuLimit: next });
+}
+
+async function changeIdleMinutes(rawMinutes: unknown) {
+  await changeReleasePolicy(rawMinutes);
 }
 
 let savingDownloadThreads = false;
@@ -2898,9 +3124,30 @@ async function save() {
   } else {
     assignMaxAttemptsDraft.value = form.value.assign_max_attempts;
   }
+  const prevReleaseMode = form.value.release_mode;
+  const prevReleaseCuLimit = form.value.release_cu_limit;
+  const prevCuLimitDraft = cuLimitDraft.value;
+  const prevCuLimitPending = cuLimitPendingActivation.value;
+  let effectiveReleaseMode = form.value.release_mode;
+  let effectiveCuLimit = form.value.release_cu_limit;
+  if (showCuLimitEditor.value) {
+    const parsedCu = normalizedCuLimitDraft.value;
+    if (parsedCu === null) {
+      showError(t("device.errInvalidCuLimit"));
+      return;
+    }
+    effectiveReleaseMode = "cu_limit";
+    effectiveCuLimit = parsedCu;
+    form.value.release_mode = "cu_limit";
+    form.value.release_cu_limit = parsedCu;
+    cuLimitDraft.value = parsedCu;
+    cuLimitPendingActivation.value = false;
+  }
   const payload: Record<string, unknown> = {
     gpu: form.value.gpu,
     idle_minutes: form.value.idle_minutes,
+    release_mode: effectiveReleaseMode,
+    release_cu_limit: effectiveCuLimit,
     auto_drive: form.value.auto_drive,
     download_threads: form.value.download_threads,
     assign_max_attempts: form.value.assign_max_attempts,
@@ -2911,6 +3158,8 @@ async function save() {
   const pendingFields: SyncedSettingKey[] = [
     "gpu",
     "idle_minutes",
+    "release_mode",
+    "release_cu_limit",
     "auto_drive",
     "download_threads",
     "assign_max_attempts",
@@ -2924,6 +3173,8 @@ async function save() {
         ...lastSyncedSettings,
         gpu: form.value.gpu,
         idle_minutes: form.value.idle_minutes,
+        release_mode: effectiveReleaseMode,
+        release_cu_limit: effectiveCuLimit,
         auto_drive: form.value.auto_drive,
         download_threads: form.value.download_threads,
         assign_max_attempts: form.value.assign_max_attempts,
@@ -2934,32 +3185,92 @@ async function save() {
     } else {
       form.value.assign_max_attempts = prevAttempts;
       assignMaxAttemptsDraft.value = prevAttempts;
+      form.value.release_mode = prevReleaseMode;
+      form.value.release_cu_limit = prevReleaseCuLimit;
+      cuLimitDraft.value = prevCuLimitDraft;
+      cuLimitPendingActivation.value = prevCuLimitPending;
     }
   } finally {
     endPendingSetting(pendingFields, ok);
   }
 }
 
+function resolveReleaseSettingsForSubmit(): {
+  release_mode: ColabOneReleaseMode;
+  release_cu_limit: number;
+  rollback: () => void;
+} | null {
+  const prevReleaseMode = form.value.release_mode;
+  const prevReleaseCuLimit = form.value.release_cu_limit;
+  const prevCuLimitDraft = cuLimitDraft.value;
+  const prevCuLimitPending = cuLimitPendingActivation.value;
+  const rollback = () => {
+    form.value.release_mode = prevReleaseMode;
+    form.value.release_cu_limit = prevReleaseCuLimit;
+    cuLimitDraft.value = prevCuLimitDraft;
+    cuLimitPendingActivation.value = prevCuLimitPending;
+  };
+  if (!showCuLimitEditor.value) {
+    return {
+      release_mode: form.value.release_mode,
+      release_cu_limit: form.value.release_cu_limit,
+      rollback,
+    };
+  }
+  const parsedCu = normalizedCuLimitDraft.value;
+  if (parsedCu === null) {
+    showError(t("device.errInvalidCuLimit"));
+    return null;
+  }
+  form.value.release_mode = "cu_limit";
+  form.value.release_cu_limit = parsedCu;
+  cuLimitDraft.value = parsedCu;
+  cuLimitPendingActivation.value = false;
+  return {
+    release_mode: "cu_limit",
+    release_cu_limit: parsedCu,
+    rollback,
+  };
+}
+
 async function start() {
+  const release = resolveReleaseSettingsForSubmit();
+  if (!release) return;
   if (
     await act("settings.save", {
       gpu: form.value.gpu,
       idle_minutes: form.value.idle_minutes,
+      release_mode: release.release_mode,
+      release_cu_limit: release.release_cu_limit,
       auto_drive: form.value.auto_drive,
     })
-  )
+  ) {
+    lastSyncedSettings.release_mode = release.release_mode;
+    lastSyncedSettings.release_cu_limit = release.release_cu_limit;
     await act("runtime.start");
+  } else {
+    release.rollback();
+  }
 }
 
 async function startNew() {
+  const release = resolveReleaseSettingsForSubmit();
+  if (!release) return;
   if (
     await act("settings.save", {
       gpu: form.value.gpu,
       idle_minutes: form.value.idle_minutes,
+      release_mode: release.release_mode,
+      release_cu_limit: release.release_cu_limit,
       auto_drive: form.value.auto_drive,
     })
-  )
+  ) {
+    lastSyncedSettings.release_mode = release.release_mode;
+    lastSyncedSettings.release_cu_limit = release.release_cu_limit;
     await act("runtime.start", { new: true, gpu: form.value.gpu });
+  } else {
+    release.rollback();
+  }
 }
 
 const monitorBusy = ref(false);
@@ -5323,6 +5634,8 @@ onUnmounted(() => {
                 :idle="idle"
                 :idle-remaining="idleRemaining"
                 :idle-minutes="form.idle_minutes"
+                :release-mode="form.release_mode"
+                :release-cu-limit="form.release_cu_limit"
                 :now-ms="clockNow"
                 :loading="!snapshotLoaded"
                 :refreshing="refreshingAccount"
@@ -5743,28 +6056,64 @@ onUnmounted(() => {
 
                     <div class="co-control-field">
                       <span class="co-field-label">{{ t("device.idleReleaseLabel") }}</span>
-                      <ASelect
-                        :value="form.idle_minutes"
-                        :aria-label="t('device.idleReleaseAria')"
-                        class="co-select-idle"
-                        :dropdown-match-select-width="false"
-                        :disabled="savingIdle"
-                        @change="changeIdleMinutes"
-                      >
-                        <ASelectOption
-                          v-if="!isPresetIdleMinutes(form.idle_minutes)"
-                          :value="form.idle_minutes"
+                      <div class="co-release-control-row">
+                        <ASelect
+                          :value="activeReleaseSelectValue"
+                          :aria-label="t('device.idleReleaseAria')"
+                          class="co-select-idle"
+                          :dropdown-match-select-width="false"
+                          :disabled="savingIdle"
+                          @change="changeReleasePolicy"
                         >
-                          {{ formatIdlePolicyLabel(form.idle_minutes) }}
-                        </ASelectOption>
-                        <ASelectOption
-                          v-for="opt in COLABONE_IDLE_RELEASE_OPTIONS"
-                          :key="opt.value"
-                          :value="opt.value"
-                        >
-                          {{ opt.label }}
-                        </ASelectOption>
-                      </ASelect>
+                          <ASelectOption
+                            v-if="!isPresetIdleMinutes(form.idle_minutes)"
+                            :value="encodeColabOneReleaseSelectValue('idle', form.idle_minutes)"
+                          >
+                            {{ formatIdlePolicyLabel(form.idle_minutes) }}
+                          </ASelectOption>
+                          <ASelectOption
+                            v-for="opt in COLABONE_IDLE_RELEASE_OPTIONS"
+                            :key="opt.value"
+                            :value="encodeColabOneReleaseSelectValue('idle', opt.value)"
+                          >
+                            {{ opt.label }}
+                          </ASelectOption>
+                          <ASelectOption :value="COLABONE_RELEASE_SELECT_NEVER">
+                            {{ t("billing.releaseModeNever") }}
+                          </ASelectOption>
+                          <ASelectOption :value="COLABONE_RELEASE_SELECT_CU_LIMIT">
+                            {{ t("billing.releaseModeCuLimitOption") }}
+                          </ASelectOption>
+                        </ASelect>
+
+                        <div v-if="showCuLimitEditor" class="co-cu-limit-editor">
+                          <AInputNumber
+                            :value="cuLimitDraft"
+                            :min="COLABONE_MIN_RELEASE_CU_LIMIT"
+                            :max="COLABONE_MAX_RELEASE_CU_LIMIT"
+                            :step="1"
+                            :precision="2"
+                            :aria-label="t('device.releaseCuLimitAria')"
+                            class="co-cu-limit-input"
+                            :disabled="savingIdle"
+                            @update:value="onCuLimitInput"
+                            @focus="editingCuLimit = true"
+                            @blur="editingCuLimit = false"
+                            @press-enter="commitReleaseCuLimit"
+                          />
+                          <span class="co-cu-limit-unit">CU</span>
+                          <AButton
+                            size="small"
+                            :type="cuLimitNeedsApply ? 'primary' : 'default'"
+                            :loading="savingIdle"
+                            :disabled="savingIdle || !cuLimitCanApply"
+                            class="co-cu-limit-apply-btn"
+                            @click="commitReleaseCuLimit"
+                          >
+                            {{ t("common.apply") }}
+                          </AButton>
+                        </div>
+                      </div>
                     </div>
                   </div>
 
@@ -5882,7 +6231,71 @@ onUnmounted(() => {
                 <!-- Idle Policy & Drive Status Strips -->
                 <div class="co-device-meta-strips">
                   <div class="co-device-policy co-device-policy">
-                    <template v-if="ready && idle">
+                    <template v-if="cuLimitPendingActivation">
+                      <div class="co-policy-live is-warning">
+                        <ABadge status="warning" />
+                        <span>
+                          {{
+                            t("device.releaseCuLimitPendingHint", {
+                              consumed: currentRunConsumedCU.toFixed(2),
+                            })
+                          }}
+                        </span>
+                      </div>
+                      <span class="co-policy-hint">
+                        {{ t("device.releaseCuLimitHint") }}
+                      </span>
+                    </template>
+                    <template v-else-if="form.release_mode === 'never'">
+                      <div class="co-policy-live is-warning">
+                        <ABadge status="warning" />
+                        <span>
+                          {{
+                            ready
+                              ? t("device.releaseNeverLive")
+                              : t("device.releaseNeverSummary")
+                          }}
+                        </span>
+                      </div>
+                      <span class="co-policy-hint">
+                        {{ t("device.releaseNeverHint") }}
+                      </span>
+                    </template>
+                    <template v-else-if="form.release_mode === 'cu_limit'">
+                      <div
+                        v-if="ready"
+                        class="co-policy-live"
+                        :class="{ 'is-urgent': isCuLimitUrgent, 'is-active': !isCuLimitUrgent }"
+                      >
+                        <ABadge :status="isCuLimitUrgent ? 'error' : 'processing'" />
+                        <span>
+                          {{
+                            t("device.releaseCuLimitLive", {
+                              consumed: currentRunConsumedCU.toFixed(2),
+                              limit: formatColabOneCULimitValue(form.release_cu_limit),
+                              remaining: cuLimitRemainingCU.toFixed(2),
+                            })
+                          }}
+                        </span>
+                      </div>
+                      <div v-else class="co-policy-live">
+                        {{
+                          t("device.releaseCuLimitSummary", {
+                            limit: formatColabOneCULimitValue(form.release_cu_limit),
+                          })
+                        }}
+                      </div>
+                      <span class="co-policy-hint">
+                        {{
+                          cuLimitDraftAlreadyReached && cuLimitNeedsApply
+                            ? t("device.releaseCuLimitImmediateWarn", {
+                                consumed: currentRunConsumedCU.toFixed(2),
+                              })
+                            : t("device.releaseCuLimitHint")
+                        }}
+                      </span>
+                    </template>
+                    <template v-else-if="ready && idle">
                       <div
                         v-if="idle.phase === 'active'"
                         class="co-policy-live is-active"
@@ -5980,9 +6393,7 @@ onUnmounted(() => {
                           />
                           <template v-else>{{
                             t("device.driveMountedFull", {
-                              folder:
-                                state.runtime.drive?.remote_folder ||
-                                "ColabOne_Drive",
+                              folder: activeDriveFolderName,
                               free: state.runtime.drive?.free_bytes
                                 ? t("device.driveFreeSegment", {
                                     size: bytes(state.runtime.drive.free_bytes),
@@ -6437,7 +6848,9 @@ onUnmounted(() => {
                 {{ t("device.footerBase") }}
                 {{
                   state.setup.drive
-                    ? t("device.footerDriveMounted")
+                    ? t("device.footerDriveMountedFolder", {
+                        folder: activeDriveFolderName,
+                      })
                     : form.auto_drive && state.setup.drive_authorized
                       ? ready
                         ? t("device.footerDriveUnmountedActive")
@@ -6763,7 +7176,9 @@ onUnmounted(() => {
                             >
                               {{
                                 state.setup.drive
-                                  ? t("settings.driveTagMounted")
+                                  ? t("settings.driveTagMountedFolder", {
+                                      folder: activeDriveFolderName,
+                                    })
                                   : state.setup.drive_headless
                                     ? t("settings.driveTagHeadlessReady")
                                     : state.setup.drive_authorized
@@ -6776,7 +7191,9 @@ onUnmounted(() => {
                           </div>
                           <p class="co-sr-desc">
                             {{ t("settings.driveDescPrefix") }}
-                            <code>My Drive / ColabOne_Drive</code>{{ t("settings.driveDescSuffix") }}
+                            <code>My Drive / ColabOne_Drive</code>
+                            {{ t("settings.driveDescNativeSep") }}
+                            <code>My Drive / ColabOne_Drive_Mount</code>{{ t("settings.driveDescSuffix") }}
                           </p>
                         </div>
 
@@ -7022,7 +7439,7 @@ onUnmounted(() => {
                       </div>
                     </div>
 
-                    <!-- Row 2.2: Idle Auto-Release -->
+                    <!-- Row 2.2: Auto-Release Policy -->
                     <div class="co-settings-row">
                       <div class="co-sr-main">
                         <div class="co-sr-info">
@@ -7033,14 +7450,47 @@ onUnmounted(() => {
                             <ColabOneSkeleton width="86%" :height="12" variant="text" tone="subtle" :delay="80" />
                           </div>
                           <p v-else class="co-sr-desc co-sk-reveal">
+                            <template v-if="activeReleaseSelectValue === COLABONE_RELEASE_SELECT_NEVER">
+                              {{ t("settings.releaseNeverDesc") }}
+                            </template>
+                            <template v-else-if="activeReleaseSelectValue === COLABONE_RELEASE_SELECT_CU_LIMIT">
+                              {{
+                                t("settings.releaseCuLimitDesc", {
+                                  limit: formatColabOneCULimitValue(
+                                    normalizedCuLimitDraft ?? form.release_cu_limit,
+                                  ),
+                                })
+                              }}
+                            </template>
+                            <template v-else>
+                              {{
+                                t("settings.idleProtectionDesc", {
+                                  policy: formatIdlePolicyLabel(form.idle_minutes),
+                                })
+                              }}
+                            </template>
+                          </p>
+                          <p
+                            v-if="
+                              snapshotLoaded &&
+                              showCuLimitEditor &&
+                              (cuLimitPendingActivation ||
+                                (cuLimitDraftAlreadyReached && cuLimitNeedsApply))
+                            "
+                            class="co-cu-limit-warn"
+                          >
                             {{
-                              t("settings.idleProtectionDesc", {
-                                policy: formatIdlePolicyLabel(form.idle_minutes),
-                              })
+                              cuLimitPendingActivation
+                                ? t("device.releaseCuLimitPendingHint", {
+                                    consumed: currentRunConsumedCU.toFixed(2),
+                                  })
+                                : t("device.releaseCuLimitImmediateWarn", {
+                                    consumed: currentRunConsumedCU.toFixed(2),
+                                  })
                             }}
                           </p>
                         </div>
-                        <div class="co-sr-control">
+                        <div class="co-sr-control co-sr-release-control">
                           <ColabOneSkeleton
                             v-if="!snapshotLoaded"
                             :width="184"
@@ -7050,29 +7500,65 @@ onUnmounted(() => {
                             tone="subtle"
                             :delay="60"
                           />
-                          <ASelect
-                            v-else
-                            :value="form.idle_minutes"
-                            :aria-label="t('device.idleReleaseAria')"
-                            class="co-sr-select co-sr-select-idle co-sk-reveal"
-                            :dropdown-match-select-width="false"
-                            :disabled="savingIdle"
-                            @change="changeIdleMinutes"
-                          >
-                            <ASelectOption
-                              v-if="!isPresetIdleMinutes(form.idle_minutes)"
-                              :value="form.idle_minutes"
+                          <div v-else class="co-release-control-row co-sk-reveal">
+                            <ASelect
+                              :value="activeReleaseSelectValue"
+                              :aria-label="t('device.idleReleaseAria')"
+                              class="co-sr-select co-sr-select-idle"
+                              :dropdown-match-select-width="false"
+                              :disabled="savingIdle"
+                              @change="changeReleasePolicy"
                             >
-                              {{ formatIdlePolicyLabel(form.idle_minutes) }}
-                            </ASelectOption>
-                            <ASelectOption
-                              v-for="opt in COLABONE_IDLE_RELEASE_OPTIONS"
-                              :key="opt.value"
-                              :value="opt.value"
-                            >
-                              {{ opt.label }}
-                            </ASelectOption>
-                          </ASelect>
+                              <ASelectOption
+                                v-if="!isPresetIdleMinutes(form.idle_minutes)"
+                                :value="encodeColabOneReleaseSelectValue('idle', form.idle_minutes)"
+                              >
+                                {{ formatIdlePolicyLabel(form.idle_minutes) }}
+                              </ASelectOption>
+                              <ASelectOption
+                                v-for="opt in COLABONE_IDLE_RELEASE_OPTIONS"
+                                :key="opt.value"
+                                :value="encodeColabOneReleaseSelectValue('idle', opt.value)"
+                              >
+                                {{ opt.label }}
+                              </ASelectOption>
+                              <ASelectOption :value="COLABONE_RELEASE_SELECT_NEVER">
+                                {{ t("billing.releaseModeNever") }}
+                              </ASelectOption>
+                              <ASelectOption :value="COLABONE_RELEASE_SELECT_CU_LIMIT">
+                                {{ t("billing.releaseModeCuLimitOption") }}
+                              </ASelectOption>
+                            </ASelect>
+
+                            <div v-if="showCuLimitEditor" class="co-cu-limit-editor">
+                              <AInputNumber
+                                id="settings-release-cu-limit"
+                                :value="cuLimitDraft"
+                                :min="COLABONE_MIN_RELEASE_CU_LIMIT"
+                                :max="COLABONE_MAX_RELEASE_CU_LIMIT"
+                                :step="1"
+                                :precision="2"
+                                :aria-label="t('device.releaseCuLimitAria')"
+                                class="co-cu-limit-input"
+                                :disabled="savingIdle"
+                                @update:value="onCuLimitInput"
+                                @focus="editingCuLimit = true"
+                                @blur="editingCuLimit = false"
+                                @press-enter="commitReleaseCuLimit"
+                              />
+                              <span class="co-cu-limit-unit">CU</span>
+                              <AButton
+                                size="small"
+                                :type="cuLimitNeedsApply ? 'primary' : 'default'"
+                                :loading="savingIdle"
+                                :disabled="savingIdle || !cuLimitCanApply"
+                                class="co-cu-limit-apply-btn"
+                                @click="commitReleaseCuLimit"
+                              >
+                                {{ t("common.apply") }}
+                              </AButton>
+                            </div>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -9740,6 +10226,50 @@ onUnmounted(() => {
   width: auto;
 }
 
+.co-release-control-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.co-cu-limit-editor {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.co-cu-limit-input {
+  width: 102px;
+}
+
+.co-cu-limit-input :deep(.ant-input-number-input) {
+  font-variant-numeric: tabular-nums;
+}
+
+.co-cu-limit-unit {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--co-muted);
+  white-space: nowrap;
+}
+
+.co-cu-limit-apply-btn {
+  height: 30px;
+  padding-inline: 10px;
+}
+
+.co-cu-limit-warn {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--co-warning-text, var(--co-warning));
+}
+
+.co-sr-release-control {
+  flex-shrink: 0;
+}
+
 .co-device-actions {
   display: flex;
   align-items: center;
@@ -9776,6 +10306,10 @@ onUnmounted(() => {
 
 .co-policy-live.is-active {
   color: var(--co-accent);
+}
+
+.co-policy-live.is-warning {
+  color: var(--co-warning-text, var(--co-warning));
 }
 
 .co-policy-live.is-urgent {
@@ -9972,8 +10506,11 @@ onUnmounted(() => {
   gap: 10px 18px;
 }
 
-.co-sr-info {
+.co-sr-main > .co-sr-info {
   flex: 1 1 240px;
+}
+
+.co-sr-info {
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -10232,6 +10769,7 @@ onUnmounted(() => {
     gap: 10px;
   }
 
+  .co-sr-main > .co-sr-info,
   .co-sr-info {
     flex: none;
   }
@@ -10239,6 +10777,11 @@ onUnmounted(() => {
   .co-sr-control {
     justify-content: flex-start;
     flex-wrap: wrap;
+  }
+
+  .co-sr-control .co-release-control-row {
+    display: flex;
+    width: 100%;
   }
 
   .co-sr-control-input,
@@ -10255,6 +10798,7 @@ onUnmounted(() => {
     gap: 10px;
   }
 
+  .co-sr-main > .co-sr-info,
   .co-sr-info {
     flex: none;
   }
@@ -10262,6 +10806,11 @@ onUnmounted(() => {
   .co-sr-control {
     justify-content: flex-start;
     flex-wrap: wrap;
+  }
+
+  .co-sr-control .co-release-control-row {
+    display: flex;
+    width: 100%;
   }
 
   .co-sr-control-input,

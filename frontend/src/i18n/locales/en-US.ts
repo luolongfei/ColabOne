@@ -19,6 +19,7 @@ export const enUSMessages: ColabOneMessages = {
   "common.delete": "Delete",
   "common.clear": "Clear",
   "common.save": "Save",
+  "common.apply": "Apply",
   "common.retry": "Retry",
   "common.refresh": "Refresh",
   "common.collapse": "Collapse",
@@ -192,6 +193,9 @@ export const enUSMessages: ColabOneMessages = {
   "billing.idleOption45": "45 min",
   "billing.idleOption60": "1 hr",
   "billing.idleOption120": "2 hr",
+  "billing.releaseModeNever": "Never Auto-Release",
+  "billing.releaseModeCuLimitOption": "Release at CU Limit",
+  "billing.releaseModeCuLimitShort": "Release at {limit} CU",
   "billing.barAria": "Billing and auto-release status",
   "billing.barIdlePausedTooltip":
     "Remote task active — idle auto-release paused (Policy: {policy})",
@@ -206,6 +210,14 @@ export const enUSMessages: ColabOneMessages = {
   "billing.barIdleCountdown": "Idle {clock}",
   "billing.barIdleCountdownShort": "Idle {clock}",
   "billing.barIdleCountdownAria": "Idle auto-release in {clock}; click to reset timer",
+  "billing.barReleaseNever": "Never Auto-Release",
+  "billing.barReleaseNeverShort": "No Release",
+  "billing.barReleaseNeverTooltip":
+    "Never auto-release enabled: instance stays running until stopped manually or compute units (CU) run out",
+  "billing.barReleaseCuLimit": "CU Limit {consumed}/{limit}",
+  "billing.barReleaseCuLimitShort": "{consumed}/{limit} CU",
+  "billing.barReleaseCuLimitTooltip":
+    "Current run has used {consumed} CU of {limit} CU limit ({remaining} CU left); auto-saves Drive and releases once reached",
   "billing.barStatusInstances": "{status} (Running: {count})",
   "billing.barBurnRate": "Burn Rate",
   "billing.barRemainingBalance": "Balance",
@@ -539,6 +551,17 @@ export const enUSMessages: ColabOneMessages = {
   "device.idlePauseHint": "Timer pauses during downloads, loading, and inference",
   "device.idlePolicySummary": "Auto-release after {policy} idle",
   "device.idlePolicyHint": "Releases when idle; pauses automatically while tasks run",
+  "device.releaseCuLimitAria": "Auto-release CU consumption limit",
+  "device.releaseNeverLive": "Never Auto-Release · Runs until stopped manually or CU runs out",
+  "device.releaseNeverSummary": "Never auto-release (until stopped manually or CU runs out)",
+  "device.releaseNeverHint": "Auto-release is off; monitor your compute unit balance carefully",
+  "device.releaseCuLimitLive": "CU Limit · Used {consumed} / {limit} CU ({remaining} CU left)",
+  "device.releaseCuLimitSummary": "Auto-release after using {limit} CU in this run",
+  "device.releaseCuLimitHint": "Auto-saves Drive and releases the instance once the CU limit is reached",
+  "device.releaseCuLimitPendingHint":
+    "Not active yet: {consumed} CU used in this run — confirm the CU limit and click Apply",
+  "device.releaseCuLimitImmediateWarn":
+    "This run has already used {consumed} CU, reaching this limit — clicking Apply will immediately trigger auto-release",
   "device.driveMountedFull": "Google Drive mounted (My Drive / {folder}{free}) · {tail}",
   "device.driveFreeSegment": " · {size} free",
   "device.drivePendingSync": "{count} pending sync",
@@ -587,6 +610,8 @@ export const enUSMessages: ColabOneMessages = {
   "device.footerBase": "Model weights, Public API inference, and ComfyUI all run on the remote GPU.",
   "device.footerDriveMounted":
     "Model catalogs, workflows, and outputs sync to Google Drive (ColabOne_Drive) automatically before release.",
+  "device.footerDriveMountedFolder":
+    "Model catalogs, workflows, and outputs sync to Google Drive ({folder}) automatically before release.",
   "device.footerDriveAuto":
     "Drive auto-mount is enabled: starting a GPU connects ColabOne_Drive to persist model catalogs, workflows, and outputs.",
   "device.footerDriveUnmountedActive":
@@ -616,6 +641,10 @@ export const enUSMessages: ColabOneMessages = {
   "device.releaseConfirmSelected": "Stop Selected ({count})",
   "device.toastRefreshed": "Billing and instance status refreshed",
   "device.toastIdleSet": "Idle auto-release set to {policy}",
+  "device.toastReleaseModeSet": "Auto-release policy set to {policy}",
+  "device.toastCuLimitConfirmNeeded":
+    "This run has already used {consumed} CU; confirm or raise the CU limit and click Apply",
+  "device.errInvalidCuLimit": "CU consumption limit must be between 0.1 and 100000",
   "device.toastThreadsSet": "Remote download concurrency set to {threads} threads",
   "device.toastAssignMaxAttemptsSet": "Max GPU allocation attempts set to {count}",
   "device.toastDefaultGpuSet": "Default GPU set to {gpu}",
@@ -625,6 +654,10 @@ export const enUSMessages: ColabOneMessages = {
   "api.title": "Public API",
   "api.subtitle":
     "Expose OpenAI Responses / Chat Completions & Codex context compaction from your remote GPU. Auto-releases after {policy} of inactivity.",
+  "api.subtitleNever":
+    "Expose OpenAI Responses / Chat Completions & Codex context compaction from your remote GPU. Never auto-release is enabled until stopped manually or CU runs out.",
+  "api.subtitleCuLimit":
+    "Expose OpenAI Responses / Chat Completions & Codex context compaction from your remote GPU. Auto-saves Drive and releases once this run uses {limit} CU.",
   "api.statusStopped": "Off",
   "api.statusUnconfirmed": "Unconfirmed",
   "api.statusStarting": "Connecting",
@@ -1115,6 +1148,10 @@ export const enUSMessages: ColabOneMessages = {
     "Remote GPU is stopped. Start a GPU to run ComfyUI workflows or open the native canvas.",
   "comfy.runningIdleHint":
     "Idle auto-release pauses automatically during jobs and canvas activity (Policy: {policy})",
+  "comfy.runningReleaseNeverHint":
+    "Never auto-release enabled · Instance stays running until stopped manually or CU runs out",
+  "comfy.runningReleaseCuLimitHint":
+    "CU limit release enabled · Auto-saves Drive and releases once this run uses {limit} CU",
   "comfy.preparingDesc":
     "Setting up ComfyUI on the remote GPU; workflows will be ready once setup finishes.",
   "comfy.readyToStartDesc":
@@ -1181,6 +1218,8 @@ export const enUSMessages: ColabOneMessages = {
     "Images, videos, and audio generated by your workflows appear here for preview, local export, or direct upload to Google Drive.",
   "comfy.drivePersistHint":
     "Google Drive mounted (My Drive / ColabOne_Drive) — outputs persist automatically, or click \"Save to Drive\" to archive to outputs.",
+  "comfy.drivePersistHintFolder":
+    "Google Drive mounted (My Drive / {folder}) — outputs persist automatically, or click \"Save to Drive\" to archive to outputs.",
   "comfy.localExportHint":
     "Outputs are stored on the remote GPU; export locally or save directly to Google Drive before releasing the instance.",
   "comfy.driveWaitingHint":
@@ -1216,6 +1255,8 @@ export const enUSMessages: ColabOneMessages = {
   "comfy.exportedToDrive": "Saved to Drive",
   "comfy.exportDriveReadyTooltip":
     "Upload directly from the remote GPU to Google Drive (My Drive / ColabOne_Drive / outputs) for fast permanent storage",
+  "comfy.exportDriveReadyTooltipFolder":
+    "Upload directly from the remote GPU to Google Drive (My Drive / {folder} / outputs) for fast permanent storage",
   "comfy.exportDriveSetupTooltip":
     "Opens Google Drive authorization & setup on first use, then automatically uploads this output for permanent storage",
   "comfy.exportDriveDoneTooltip":
@@ -1297,6 +1338,12 @@ export const enUSMessages: ColabOneMessages = {
   "comfy.noticeExportedDrive": "Output exported to Google Drive: {path}",
   "comfy.noticeExportedDriveExists": "Output is already saved in Google Drive: {path}",
   "comfy.noticeDeletedOutput": "Output deleted.",
+  "comfy.noticeDeletedOutputManualCloudMount":
+    "Removed from the app. The cloud copy was written via Colab mount mode and cannot be deleted automatically; please delete it manually in Google Drive.",
+  "comfy.noticeDeletedOutputManualCloudNoApi":
+    "Removed from the app. Direct Google Drive API access is not enabled, so the cloud file could not be deleted automatically; please delete it manually in Google Drive.",
+  "comfy.noticeDeletedOutputManualCloudGeneric":
+    "Removed from the app. The file in Google Drive could not be deleted automatically; please delete it manually in Google Drive if needed.",
   "comfy.driveModalTitleExport": "Export to Google Drive",
   "comfy.driveModalTitleConfig": "Configure Google Drive",
   "comfy.driveModalTagExported": "Exported",
@@ -1418,6 +1465,7 @@ export const enUSMessages: ColabOneMessages = {
   "comfy.openOutputInDrive": "View in Drive",
   "comfy.openOutputInDriveTooltip": "Open this output in Google Drive",
   "comfy.outputDriveSyncedTooltip": "Synced to Google Drive (ColabOne_Drive)",
+  "comfy.outputDriveSyncedTooltipFolder": "Synced to Google Drive ({folder})",
   "comfy.outputTagSavedInDrive": "Saved in Drive",
   "comfy.outputTagSyncedInDrive": "Synced to Drive",
   "comfy.outputTagShared": "External Share",
@@ -1430,6 +1478,8 @@ export const enUSMessages: ColabOneMessages = {
   "comfy.shareWorkflowBtn": "Share Workflow",
   "comfy.exportLocalNeedDriveApiTooltip": "Native DriveFS record cannot stream directly without GPU; click View in Drive or enable headless Drive API",
   "comfy.deleteDriveOutputDesc": "Remove Drive-linked output \"{name}\" (also moves it to Google Drive Trash when Drive API is enabled). Continue?",
+  "comfy.deleteDriveMountOutputDesc":
+    "Remove \"{name}\" from the app list? Because it was written via Colab mount mode, the cloud file must be deleted manually in Google Drive. Continue?",
   "comfy.driveModalConnectedAutoReleaseDesc": "Mounted to Google Drive \"{folder}\"{free}. Click below to enable automatic output sync and safe instance release after workflow completion.",
   "comfy.driveAutoReleaseEnableNowBtn": "Enable auto-release",
   "comfy.driveRetryAutoReleaseBtn": "Retry enabling auto-release",
@@ -1720,10 +1770,12 @@ export const enUSMessages: ColabOneMessages = {
   "settings.clipboardReadFailed": "Could not read clipboard; please paste directly below",
   "settings.driveHeading": "Google Drive",
   "settings.driveTagMounted": "Mounted · ColabOne_Drive",
+  "settings.driveTagMountedFolder": "Mounted · {folder}",
   "settings.driveTagHeadlessReady": "Zero-Prompt Ready · Auto-Mount",
   "settings.driveTagAuthorized": "Authorized · Native DriveFS",
   "settings.driveTagReauth": "Re-auth Required",
   "settings.driveDescPrefix": "Reuses your local Google OAuth token to mount dedicated folder",
+  "settings.driveDescNativeSep": " (headless) or native mount folder",
   "settings.driveDescSuffix":
     " to automatically persist your model list, ComfyUI workflows, and generated outputs.",
   "settings.driveNeedScopeAlert":
@@ -1746,7 +1798,7 @@ export const enUSMessages: ColabOneMessages = {
   "settings.downloadThreadsAria": "Download concurrency threads",
   "settings.threadsOption": "{count} Threads",
   "settings.autoDriveLabel": "Auto-Mount Drive",
-  "settings.autoDriveDesc": "Automatically mount and sync Google Drive (ColabOne_Drive) on GPU start",
+  "settings.autoDriveDesc": "Automatically mount and sync Google Drive (ColabOne_Drive / ColabOne_Drive_Mount) on GPU start",
   "settings.assignMaxAttemptsLabel": "Max GPU Allocation Attempts",
   "settings.assignMaxAttemptsAria": "Maximum GPU allocation attempts",
   "settings.assignMaxAttemptsUnit": "attempts",
@@ -1755,6 +1807,10 @@ export const enUSMessages: ColabOneMessages = {
   "settings.idleProtectionTitle": "Idle Auto-Release Protection",
   "settings.idleProtectionDesc":
     "Automatically releases remote resources after {policy} of inactivity. Any interaction resets the timer; downloads, loading, API inference, and ComfyUI tasks pause it automatically.",
+  "settings.releaseNeverDesc":
+    "Never auto-release enabled: instances stay running until you stop them manually or your account compute units (CU) run out.",
+  "settings.releaseCuLimitDesc":
+    "Automatically syncs Google Drive and releases instances once cumulative CU usage for the current run reaches {limit} CU (idle countdown is off).",
   "settings.computeSyncNote":
     "Default GPU and idle timeout sync live with the Devices page and take effect immediately.",
   "settings.assignProxyTitle": "GPU Allocation Proxy (Assign Only)",
@@ -2540,6 +2596,10 @@ export const enUSMessages: ColabOneMessages = {
   "outputGallery.noticeAlbumExported": "Album exported locally as ZIP",
   "outputGallery.noticeAlbumDriveExported": "All album items exported to Google Drive",
   "outputGallery.noticeAlbumDeleted": "Deleted all outputs in this album",
+  "outputGallery.noticeAlbumDeletedManualCloudMount":
+    "Album removed from the app. {count} cloud file(s) were written via Colab mount mode and cannot be deleted automatically; please delete them manually in Google Drive.",
+  "outputGallery.noticeAlbumDeletedManualCloudGeneric":
+    "Album removed from the app. {count} file(s) in Google Drive could not be deleted automatically; please delete them manually in Google Drive.",
   "outputGallery.multiSelectBtn": "Multi-Select Share",
   "outputGallery.multiSelectCancel": "Exit Selection",
   "outputGallery.multiSelectAll": "Select All",

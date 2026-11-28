@@ -1716,7 +1716,8 @@ func TestDriveOutputsAuditHardening(t *testing.T) {
 			t.Fatalf("expected on-demand sync to resolve and trash resolved-ws-fid, got %v", gotTrashed)
 		}
 
-		// When !canDirectRead and Drive file IDs exist, offline delete returns error and preserves record.
+		// When !canDirectRead and Drive file IDs exist, offline delete still removes the local record
+		// and returns a manual-cloud-cleanup warning so outputs are always deletable in the app.
 		oid2 := "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"
 		h.auth.requiresQuota = true
 		_ = h.vault.Delete("cloud_project")
@@ -1726,11 +1727,15 @@ func TestDriveOutputsAuditHardening(t *testing.T) {
 			Size: 40, DriveSynced: true, DriveFileID: "fid-locked",
 		}
 		h.ctrl.mu.Unlock()
-		if _, err := h.ctrl.deleteDriveOutputOffline(context.Background(), oid2); err == nil {
-			t.Fatal("expected error when !canDirectRead prevents trashing remote Drive file")
+		res2, err := h.ctrl.deleteDriveOutputOffline(context.Background(), oid2)
+		if err != nil {
+			t.Fatalf("expected local delete with manual cloud warning when !canDirectRead, got err=%v", err)
 		}
-		if h.ctrl.driveOutputRecordCopy(oid2) == nil {
-			t.Fatal("expected local Drive record preserved when remote trash unavailable")
+		if !asBool(res2["ok"]) || !asBool(res2["local_only"]) || !asBool(res2["manual_cloud_cleanup"]) || asString(res2["warning_reason"]) != "drive_api_unavailable" {
+			t.Fatalf("unexpected local-only delete response when !canDirectRead: %#v", res2)
+		}
+		if h.ctrl.driveOutputRecordCopy(oid2) != nil {
+			t.Fatal("expected local Drive record removed when !canDirectRead")
 		}
 	})
 
@@ -1760,9 +1765,10 @@ func TestDriveOutputsAuditHardening(t *testing.T) {
 }
 
 func TestDriveOutputsFinalHardeningOfflineDeleteAndWorkspaceLinks(t *testing.T) {
-	// 1) A3 H1: deleteDriveOutputOffline checks canDirectRead upfront (even with empty IDs), rejects colab_drivefs with empty IDs,
-	//    and refuses to drop local state when sync fails or still yields empty Drive file IDs.
-	t.Run("DeleteDriveOutputOfflineEmptyIDsGuards", func(t *testing.T) {
+	// 1) Offline delete ALWAYS removes the local app record when cloud deletion isn't possible
+	//    (!canDirectRead, colab_drivefs mount mode, or unresolved file IDs) and returns a warning
+	//    telling the user to delete the cloud copy manually in Google Drive.
+	t.Run("DeleteDriveOutputOfflineLocalFallbackWithCloudWarning", func(t *testing.T) {
 		oidNoRead := "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
 		oidDriveFS := "e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2"
 		oidUnsynced := "e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3"
@@ -1781,7 +1787,7 @@ func TestDriveOutputsFinalHardeningOfflineDeleteAndWorkspaceLinks(t *testing.T) 
 		_ = h.vault.Set("colab", map[string]any{"token": "tok-h1"})
 		_ = h.vault.Set("google_profile", map[string]any{"sub": "sub-h1"})
 
-		// Case A: !canDirectRead with empty file IDs must fail immediately without touching local state or hitting Drive API.
+		// Case A: !canDirectRead with empty file IDs removes local record immediately without hitting Drive API.
 		h.auth.driveScope = false
 		h.ctrl.mu.Lock()
 		h.ctrl.driveOutputs["sub:sub-h1"] = map[string]*ColabOneDriveOutputRecord{
@@ -1791,32 +1797,54 @@ func TestDriveOutputsFinalHardeningOfflineDeleteAndWorkspaceLinks(t *testing.T) 
 			},
 		}
 		h.ctrl.mu.Unlock()
-		if _, err := h.ctrl.deleteDriveOutputOffline(context.Background(), oidNoRead); err == nil || !strings.Contains(err.Error(), "直连权限") {
-			t.Fatalf("expected direct-read permission error for empty IDs when !canDirectRead, got %v", err)
+		resNoRead, err := h.ctrl.deleteDriveOutputOffline(context.Background(), oidNoRead)
+		if err != nil {
+			t.Fatalf("expected local delete when !canDirectRead with empty IDs, got %v", err)
 		}
-		if h.ctrl.driveOutputRecordCopy(oidNoRead) == nil {
-			t.Fatal("expected local record preserved when !canDirectRead with empty IDs")
+		if !asBool(resNoRead["ok"]) || !asBool(resNoRead["local_only"]) || !asBool(resNoRead["manual_cloud_cleanup"]) || asString(resNoRead["warning_reason"]) != "drive_api_unavailable" {
+			t.Fatalf("unexpected response when !canDirectRead: %#v", resNoRead)
+		}
+		if h.ctrl.driveOutputRecordCopy(oidNoRead) != nil {
+			t.Fatal("expected local record removed when !canDirectRead with empty IDs")
 		}
 		if httpHits != 0 {
 			t.Fatalf("expected zero Drive API calls when !canDirectRead, got %d", httpHits)
 		}
 
-		// Case B: canDirectRead == true, colab_drivefs with empty IDs must error honestly and preserve local record.
+		// Case B: canDirectRead == true, colab_drivefs with empty IDs removes local record cleanly
+		// without hitting Drive API, returns mount-mode warning, and stays deleted across SyncDriveOutputs.
 		h.auth.driveScope = true
 		h.ctrl.mu.Lock()
 		h.ctrl.driveOutputs["sub:sub-h1"][oidDriveFS] = &ColabOneDriveOutputRecord{
-			ID: oidDriveFS, Kind: "image", Filename: "drivefs.png", Extension: "png", Mime: "image/png",
-			Size: 40, DriveSynced: true, DriveMode: "colab_drivefs",
+			ID: oidDriveFS, Kind: "video", Filename: "drivefs.mp4", Extension: "mp4", Mime: "video/mp4",
+			Size: 4096, DriveSynced: true, DriveExported: true, DriveMode: "colab_drivefs",
+			DrivePath: "My Drive/ColabOne_Drive/outputs/drivefs.mp4",
 		}
 		h.ctrl.mu.Unlock()
-		if _, err := h.ctrl.deleteDriveOutputOffline(context.Background(), oidDriveFS); err == nil || !strings.Contains(err.Error(), "挂载模式") {
-			t.Fatalf("expected colab_drivefs offline delete error, got %v", err)
+		resDriveFS, err := h.ctrl.deleteDriveOutputOffline(context.Background(), oidDriveFS)
+		if err != nil {
+			t.Fatalf("expected colab_drivefs offline delete to succeed locally with warning, got %v", err)
 		}
-		if h.ctrl.driveOutputRecordCopy(oidDriveFS) == nil {
-			t.Fatal("expected colab_drivefs local record preserved")
+		if !asBool(resDriveFS["ok"]) || !asBool(resDriveFS["local_only"]) || !asBool(resDriveFS["manual_cloud_cleanup"]) || asString(resDriveFS["warning_reason"]) != "colab_drivefs" {
+			t.Fatalf("unexpected colab_drivefs delete response: %#v", resDriveFS)
+		}
+		if !strings.Contains(asString(resDriveFS["warning"]), "挂载模式") || !strings.Contains(asString(resDriveFS["warning"]), "手动删除") {
+			t.Fatalf("expected mount-mode manual cloud cleanup warning, got %q", asString(resDriveFS["warning"]))
+		}
+		if h.ctrl.driveOutputRecordCopy(oidDriveFS) != nil {
+			t.Fatal("expected colab_drivefs local record removed")
+		}
+		if httpHits != 0 {
+			t.Fatalf("expected zero Drive API calls for colab_drivefs empty-ID delete, got %d", httpHits)
+		}
+		if _, err := h.ctrl.SyncDriveOutputs(context.Background()); err != nil {
+			t.Fatalf("SyncDriveOutputs after colab_drivefs delete failed: %v", err)
+		}
+		if h.ctrl.driveOutputRecordCopy(oidDriveFS) != nil {
+			t.Fatal("expected deleted colab_drivefs record NOT to resurrect after SyncDriveOutputs")
 		}
 
-		// Case C: SyncDriveOutputs returns synced==false (no auth token) -> must fail and preserve local record.
+		// Case C: SyncDriveOutputs completes yet leaves empty IDs -> removes local record with warning.
 		h2 := newTestHarness(t, false)
 		h2.ctrl.driveAPIBaseURL = srv.URL
 		h2.ctrl.driveHTTPClient = srv.Client()
@@ -1830,8 +1858,6 @@ func TestDriveOutputsFinalHardeningOfflineDeleteAndWorkspaceLinks(t *testing.T) 
 				Size: 40, DriveSynced: true, DriveMode: "drive_api", DriveExported: true,
 			},
 		}
-		// Simulate an in-flight sync so SyncDriveOutputs preserves the empty-ID record via addedDuringSync?
-		// Better: if Drive API returns 200 with empty root list while record was marked addedDuringSync, rec stays non-nil with empty IDs!
 		h2.ctrl.mu.Unlock()
 		srvEmpty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Inject addedDuringSync mid-sync so SyncDriveOutputs finishes with synced=true yet preserves oidUnsynced with empty IDs.
@@ -1845,11 +1871,185 @@ func TestDriveOutputsFinalHardeningOfflineDeleteAndWorkspaceLinks(t *testing.T) 
 		h2.ctrl.driveAPIBaseURL = srvEmpty.URL
 		h2.ctrl.driveHTTPClient = srvEmpty.Client()
 
-		if _, err := h2.ctrl.deleteDriveOutputOffline(context.Background(), oidUnsynced); err == nil || !strings.Contains(err.Error(), "暂无法确认远端文件位置") {
-			t.Fatalf("expected unresolved empty-ID error after sync, got %v", err)
+		resUnsynced, err := h2.ctrl.deleteDriveOutputOffline(context.Background(), oidUnsynced)
+		if err != nil {
+			t.Fatalf("expected unresolved empty-ID delete to succeed locally with warning, got %v", err)
 		}
-		if h2.ctrl.driveOutputRecordCopy(oidUnsynced) == nil {
-			t.Fatal("expected local record preserved when file IDs remain empty after sync")
+		if !asBool(resUnsynced["ok"]) || !asBool(resUnsynced["local_only"]) || !asBool(resUnsynced["manual_cloud_cleanup"]) || asString(resUnsynced["warning_reason"]) != "remote_file_unconfirmed" {
+			t.Fatalf("unexpected unresolved empty-ID delete response: %#v", resUnsynced)
+		}
+		if h2.ctrl.driveOutputRecordCopy(oidUnsynced) != nil {
+			t.Fatal("expected local record removed when file IDs remain empty after sync")
+		}
+
+		// Case D: Permanent HTTP 403 on Drive API trash falls back to local removal with warning,
+		// whereas transient HTTP 500 returns an error and keeps the local record for retry.
+		oidForbidden := "e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8"
+		oidTransient := "e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9"
+		srvErr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.URL.Path, "fid-403") {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"error":{"code":403,"message":"insufficientFilePermissions"}}`))
+				return
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":{"code":500,"message":"backendError"}}`))
+		}))
+		defer srvErr.Close()
+		h3 := newTestHarness(t, false)
+		h3.ctrl.driveAPIBaseURL = srvErr.URL
+		h3.ctrl.driveHTTPClient = srvErr.Client()
+		h3.auth.driveScope = true
+		_ = h3.vault.Set("colab", map[string]any{"token": "tok-h1-d"})
+		_ = h3.vault.Set("google_profile", map[string]any{"sub": "sub-h1-d"})
+		h3.ctrl.mu.Lock()
+		h3.ctrl.driveOutputs["sub:sub-h1-d"] = map[string]*ColabOneDriveOutputRecord{
+			oidForbidden: {
+				ID: oidForbidden, Kind: "image", Filename: "forbidden.png", Extension: "png", Mime: "image/png",
+				Size: 64, DriveSynced: true, DriveMode: "mount", DriveFileID: "fid-403",
+			},
+			oidTransient: {
+				ID: oidTransient, Kind: "image", Filename: "transient.png", Extension: "png", Mime: "image/png",
+				Size: 64, DriveSynced: true, DriveMode: "mount", DriveFileID: "fid-500",
+			},
+		}
+		h3.ctrl.mu.Unlock()
+
+		resForbidden, err := h3.ctrl.deleteDriveOutputOffline(context.Background(), oidForbidden)
+		if err != nil {
+			t.Fatalf("expected HTTP 403 permanent Drive error to fall back locally with warning, got %v", err)
+		}
+		if !asBool(resForbidden["ok"]) || !asBool(resForbidden["local_only"]) || !asBool(resForbidden["manual_cloud_cleanup"]) || asString(resForbidden["warning_reason"]) != "drive_api_unavailable" {
+			t.Fatalf("unexpected HTTP 403 delete response: %#v", resForbidden)
+		}
+		if h3.ctrl.driveOutputRecordCopy(oidForbidden) != nil {
+			t.Fatal("expected local record removed after permanent HTTP 403")
+		}
+
+		if _, err := h3.ctrl.deleteDriveOutputOffline(context.Background(), oidTransient); err == nil {
+			t.Fatal("expected transient HTTP 500 on Drive API trash to return an error for retry")
+		}
+		if h3.ctrl.driveOutputRecordCopy(oidTransient) == nil {
+			t.Fatal("expected local record preserved on transient HTTP 500 so user can retry")
+		}
+	})
+
+	// 1b) Online delete of an exported colab_drivefs output deletes the runtime copy AND removes
+	//     the local Drive record (no leftover zombie card) with a mount-mode manual cleanup warning.
+	t.Run("OnlineDeleteExportedColabDriveFSRemovesCardWithWarning", func(t *testing.T) {
+		h := newTestHarness(t, false)
+		h.auth.driveScope = true
+		_ = h.vault.Set("colab", map[string]any{"token": "tok-online-dfs"})
+		_ = h.vault.Set("google_profile", map[string]any{"sub": "sub-online-dfs"})
+		seedTestSession(h.vault, "ep-dfs", "L4", true)
+
+		oidDFS := "e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6"
+		oidNoAPI := "e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7"
+		h.ctrl.mu.Lock()
+		h.ctrl.driveOutputs["sub:sub-online-dfs"] = map[string]*ColabOneDriveOutputRecord{
+			oidDFS: {
+				ID: oidDFS, Kind: "video", Filename: "dfs_export.mp4", Extension: "mp4", Mime: "video/mp4",
+				Size: 4096, DriveSynced: true, DriveExported: true, DriveMode: "colab_drivefs",
+				DrivePath: "My Drive/ColabOne_Drive/outputs/dfs_export.mp4",
+			},
+			oidNoAPI: {
+				ID: oidNoAPI, Kind: "image", Filename: "noapi_export.png", Extension: "png", Mime: "image/png",
+				Size: 256, DriveSynced: true, DriveExported: true, DriveMode: "mount",
+				DriveFileID: "fid-noapi-exp",
+			},
+		}
+		h.ctrl.mu.Unlock()
+
+		remainingLive := []any{
+			map[string]any{"id": oidDFS, "extension": "mp4"},
+			map[string]any{"id": oidNoAPI, "extension": "png"},
+		}
+		h.ctrl.Update(map[string]any{
+			"runtime":       map[string]any{"state": "ready", "id": "ep-dfs"},
+			"comfy_outputs": remainingLive,
+		})
+		h.provider.rpcFn = func(ctx context.Context, method, path string, body any, opts ColabOneRPCOptions) (any, error) {
+			if method == "DELETE" && strings.HasPrefix(path, "comfyui/outputs/") {
+				delID := strings.TrimPrefix(path, "comfyui/outputs/")
+				next := make([]any, 0, len(remainingLive))
+				for _, it := range remainingLive {
+					if asString(asMap(it)["id"]) != delID {
+						next = append(next, it)
+					}
+				}
+				remainingLive = next
+				return map[string]any{"ok": true}, nil
+			}
+			if path == "snapshot" {
+				return map[string]any{
+					"runtime":       map[string]any{"state": "ready", "id": "ep-dfs", "protocol": 7, "tasks": []any{}},
+					"models":        []any{},
+					"workflows":     []any{},
+					"comfy_outputs": remainingLive,
+				}, nil
+			}
+			return map[string]any{"ok": true}, nil
+		}
+
+		resDFS, err := h.ctrl.Command(context.Background(), "comfyui.output.delete", map[string]any{"id": oidDFS})
+		if err != nil {
+			t.Fatalf("online delete of exported colab_drivefs failed: %v", err)
+		}
+		resMap := asMap(resDFS)
+		if !asBool(resMap["manual_cloud_cleanup"]) || asString(resMap["warning_reason"]) != "colab_drivefs" {
+			t.Fatalf("expected colab_drivefs manual cloud cleanup warning, got %#v", resMap)
+		}
+		if h.ctrl.driveOutputRecordCopy(oidDFS) != nil {
+			t.Fatal("expected colab_drivefs Drive record removed after online delete (no zombie card)")
+		}
+
+		// Online delete when !canDirectRead also removes the exported record with drive_api_unavailable warning.
+		h.auth.driveScope = false
+		resNoAPI, err := h.ctrl.Command(context.Background(), "comfyui.output.delete", map[string]any{"id": oidNoAPI})
+		if err != nil {
+			t.Fatalf("online delete without Drive API failed: %v", err)
+		}
+		noAPIMap := asMap(resNoAPI)
+		if !asBool(noAPIMap["manual_cloud_cleanup"]) || asString(noAPIMap["warning_reason"]) != "drive_api_unavailable" {
+			t.Fatalf("expected drive_api_unavailable manual cloud cleanup warning, got %#v", noAPIMap)
+		}
+		if h.ctrl.driveOutputRecordCopy(oidNoAPI) != nil {
+			t.Fatal("expected exported Drive record removed after online delete when !canDirectRead")
+		}
+
+		// Online delete when Drive API trash returns permanent HTTP 403 removes the exported record
+		// with drive_api_unavailable warning instead of leaving a zombie card.
+		oidOnline403 := "eaeaeaeaeaeaeaeaeaeaeaeaeaeaeaea"
+		srv403 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":{"code":403,"message":"insufficientFilePermissions"}}`))
+		}))
+		defer srv403.Close()
+		h.ctrl.driveAPIBaseURL = srv403.URL
+		h.ctrl.driveHTTPClient = srv403.Client()
+		h.auth.driveScope = true
+		h.ctrl.mu.Lock()
+		h.ctrl.driveOutputs["sub:sub-online-dfs"][oidOnline403] = &ColabOneDriveOutputRecord{
+			ID: oidOnline403, Kind: "image", Filename: "online403.png", Extension: "png", Mime: "image/png",
+			Size: 128, DriveSynced: true, DriveExported: true, DriveMode: "mount",
+			DriveFileID: "fid-online-403",
+		}
+		h.ctrl.mu.Unlock()
+		remainingLive = []any{map[string]any{"id": oidOnline403, "extension": "png"}}
+		h.ctrl.Update(map[string]any{
+			"runtime":       map[string]any{"state": "ready", "id": "ep-dfs"},
+			"comfy_outputs": remainingLive,
+		})
+		res403, err := h.ctrl.Command(context.Background(), "comfyui.output.delete", map[string]any{"id": oidOnline403})
+		if err != nil {
+			t.Fatalf("online delete with HTTP 403 on Drive trash failed: %v", err)
+		}
+		map403 := asMap(res403)
+		if !asBool(map403["manual_cloud_cleanup"]) || asString(map403["warning_reason"]) != "drive_api_unavailable" {
+			t.Fatalf("expected drive_api_unavailable warning on online HTTP 403, got %#v", map403)
+		}
+		if h.ctrl.driveOutputRecordCopy(oidOnline403) != nil {
+			t.Fatal("expected exported Drive record removed on permanent HTTP 403 during online delete")
 		}
 	})
 
@@ -1892,6 +2092,46 @@ func TestDriveOutputsFinalHardeningOfflineDeleteAndWorkspaceLinks(t *testing.T) 
 		recExp := h.ctrl.driveOutputRecordCopy(oidExp)
 		if recExp == nil || recExp.DriveWorkspaceFileID != "" || recExp.DriveWebViewLink != "https://drive.google.com/file/d/exp-fid-2/view" {
 			t.Fatalf("expected exported DriveWebViewLink preserved while workspace ID cleared, got %+v", recExp)
+		}
+	})
+
+	t.Run("DriveFSDefaultsToSeparateMountFolder", func(t *testing.T) {
+		h := newTestHarness(t, false)
+		_ = h.vault.Set("colab", map[string]any{"token": "tok-folder"})
+		_ = h.vault.Set("google_profile", map[string]any{"sub": "sub-folder"})
+		oidMount := "f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1"
+		oidRclone := "f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2"
+
+		// DriveFS mode defaults to ColabOne_Drive_Mount.
+		h.ctrl.Update(map[string]any{
+			"runtime": map[string]any{
+				"state": "ready",
+				"drive": map[string]any{"connected": true, "mode": "colab_drivefs", "remote_folder": "ColabOne_Drive_Mount"},
+			},
+			"comfy_outputs": []any{
+				map[string]any{"id": oidMount, "filename": "dfs_clip.mp4", "extension": "mp4", "size": 1024},
+			},
+		})
+		h.ctrl.recordExportedDriveOutput(oidMount, map[string]any{"filename": "dfs_clip.mp4", "size": 1024})
+		recMount := h.ctrl.driveOutputRecordCopy(oidMount)
+		if recMount == nil || recMount.DriveFolder != "ColabOne_Drive_Mount/outputs" || recMount.DrivePath != "My Drive/ColabOne_Drive_Mount/outputs/dfs_clip.mp4" {
+			t.Fatalf("expected ColabOne_Drive_Mount paths for colab_drivefs, got %+v", recMount)
+		}
+
+		// Headless mount mode stays on ColabOne_Drive.
+		h.ctrl.Update(map[string]any{
+			"runtime": map[string]any{
+				"state": "ready",
+				"drive": map[string]any{"connected": true, "mode": "mount", "remote_folder": "ColabOne_Drive"},
+			},
+			"comfy_outputs": []any{
+				map[string]any{"id": oidRclone, "filename": "rclone_clip.mp4", "extension": "mp4", "size": 2048},
+			},
+		})
+		h.ctrl.recordExportedDriveOutput(oidRclone, map[string]any{"filename": "rclone_clip.mp4", "size": 2048})
+		recRclone := h.ctrl.driveOutputRecordCopy(oidRclone)
+		if recRclone == nil || recRclone.DriveFolder != "ColabOne_Drive/outputs" || recRclone.DrivePath != "My Drive/ColabOne_Drive/outputs/rclone_clip.mp4" {
+			t.Fatalf("expected ColabOne_Drive paths for headless mount, got %+v", recRclone)
 		}
 	})
 }

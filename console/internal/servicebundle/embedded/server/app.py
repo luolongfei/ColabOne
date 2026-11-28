@@ -56,9 +56,10 @@ class ColabOneDownloadRequest(BaseModel):
 
 class ColabOneConfigureRequest(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False)
-    idle_minutes: int = Field(default=30, ge=1, le=240)
+    idle_minutes: int = Field(default=30, ge=0, le=240)
     idle_countdown_seconds: int = Field(default=60, ge=10, le=300)
     deadline: float = Field(default=0, ge=0)
+    release_mode: Literal["idle", "never", "cu_limit"] | None = None
 
 
 class ColabOneActivityRequest(BaseModel):
@@ -245,10 +246,15 @@ def create_colabone_app(runtime, token, background=False):
 
     @app.post("/api/v1/configure", dependencies=auth)
     def configure(body: ColabOneConfigureRequest):
+        effective_mode = body.release_mode
+        if effective_mode is None:
+            effective_mode = "never" if body.idle_minutes <= 0 else "idle"
+        effective_idle = 0 if effective_mode in ("never", "cu_limit") else max(1, body.idle_minutes)
         with runtime.lock:
-            runtime.idle_minutes = body.idle_minutes
+            runtime.idle_minutes = effective_idle
             runtime.idle_countdown_seconds = body.idle_countdown_seconds
             runtime.deadline = body.deadline
+            runtime.release_mode = effective_mode
         cfg_env = os.environ.get("COLABONE_REMOTE_CONFIG", "")
         if cfg_env:
             cfg_path = Path(cfg_env)
@@ -257,6 +263,7 @@ def create_colabone_app(runtime, token, background=False):
                     idle_minutes = runtime.idle_minutes
                     idle_countdown_seconds = runtime.idle_countdown_seconds
                     deadline = runtime.deadline
+                    release_mode = getattr(runtime, "release_mode", "idle")
                 try:
                     if not cfg_path.is_symlink() and cfg_path.is_file():
                         data = json.loads(cfg_path.read_text(encoding="utf-8"))
@@ -264,6 +271,7 @@ def create_colabone_app(runtime, token, background=False):
                             data["idle_minutes"] = idle_minutes
                             data["idle_countdown_seconds"] = idle_countdown_seconds
                             data["deadline"] = deadline
+                            data["release_mode"] = release_mode
                             atomic_json(cfg_path, data)
                 except (OSError, ValueError):
                     pass
@@ -551,9 +559,9 @@ def create_colabone_app(runtime, token, background=False):
         return {"ok": True}
 
     @app.post("/api/v1/prepare-release", dependencies=auth)
-    def prepare_release():
+    def prepare_release(auto: bool = False):
         try:
-            return runtime.prepare_release()
+            return runtime.prepare_release(auto=auto)
         except Exception as exc:
             raise HTTPException(409, _scrub_secret_text(str(exc))[:300]) from None
 
@@ -596,8 +604,16 @@ if __name__ == "__main__":
         Path(config["root"]), Path(__file__).resolve().parents[1] / "catalog"
     )
     runtime.deadline = config.get("deadline", 0)
-    if config.get("idle_minutes"):
+    if "idle_minutes" in config and config["idle_minutes"] is not None:
         runtime.idle_minutes = int(config["idle_minutes"])
+    if config.get("release_mode") in ("idle", "never", "cu_limit"):
+        runtime.release_mode = str(config["release_mode"])
+    elif runtime.idle_minutes <= 0:
+        runtime.release_mode = "never"
+    if runtime.release_mode in ("never", "cu_limit"):
+        runtime.idle_minutes = 0
+    elif runtime.idle_minutes <= 0:
+        runtime.idle_minutes = 30
     if config.get("idle_countdown_seconds"):
         runtime.idle_countdown_seconds = int(config["idle_countdown_seconds"])
     app = create_colabone_app(runtime, config["token"], background=True)

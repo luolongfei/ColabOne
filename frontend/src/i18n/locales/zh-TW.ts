@@ -19,6 +19,7 @@ export const zhTWMessages: ColabOneMessages = {
   "common.delete": "刪除",
   "common.clear": "清除",
   "common.save": "儲存",
+  "common.apply": "套用",
   "common.retry": "重試",
   "common.refresh": "重新整理",
   "common.collapse": "收合",
@@ -189,6 +190,9 @@ export const zhTWMessages: ColabOneMessages = {
   "billing.idleOption45": "45 分鐘",
   "billing.idleOption60": "1 小時",
   "billing.idleOption120": "2 小時",
+  "billing.releaseModeNever": "長期不釋放",
+  "billing.releaseModeCuLimitOption": "消耗達指定 CU 後釋放",
+  "billing.releaseModeCuLimitShort": "消耗達 {limit} CU 釋放",
   "billing.barAria": "計費與自動釋放狀態",
   "billing.barIdlePausedTooltip": "遠端工作執行中，已暫停閒置自動釋放（閒置原則：{policy}）",
   "billing.barIdleImminentTooltip":
@@ -202,6 +206,14 @@ export const zhTWMessages: ColabOneMessages = {
   "billing.barIdleCountdown": "閒置釋放 {clock}",
   "billing.barIdleCountdownShort": "閒置 {clock}",
   "billing.barIdleCountdownAria": "閒置釋放 {clock}，點擊重設倒數",
+  "billing.barReleaseNever": "長期不釋放",
+  "billing.barReleaseNeverShort": "不釋放",
+  "billing.barReleaseNeverTooltip":
+    "已設為長期不釋放：執行個體將持續運作，直到手動停止或帳戶計算單元（CU）耗盡",
+  "billing.barReleaseCuLimit": "CU 上限 {consumed}/{limit}",
+  "billing.barReleaseCuLimitShort": "{consumed}/{limit} CU",
+  "billing.barReleaseCuLimitTooltip":
+    "本次連續運作已消耗 {consumed} CU，上限 {limit} CU（剩餘 {remaining} CU）；達上限後將自動儲存雲端硬碟並釋放執行個體",
   "billing.barStatusInstances": "{status}（執行中：{count} 台）",
   "billing.barBurnRate": "消耗速率",
   "billing.barRemainingBalance": "剩餘餘額",
@@ -524,6 +536,17 @@ export const zhTWMessages: ColabOneMessages = {
   "device.idlePauseHint": "下載、載入與推論期間會自動暫停倒數",
   "device.idlePolicySummary": "閒置滿 {policy} 自動釋放",
   "device.idlePolicyHint": "無操作與工作時倒數釋放，執行工作期間自動暫停",
+  "device.releaseCuLimitAria": "自動釋放 CU 消耗上限",
+  "device.releaseNeverLive": "長期不釋放 · 將持續運作直至手動停止或 CU 耗盡",
+  "device.releaseNeverSummary": "長期不釋放（直至手動停止或 CU 耗盡）",
+  "device.releaseNeverHint": "已關閉自動釋放，請留意帳戶計算單元餘額消耗",
+  "device.releaseCuLimitLive": "CU 上限釋放 · 本次已消耗 {consumed} / {limit} CU（剩餘 {remaining} CU）",
+  "device.releaseCuLimitSummary": "本次消耗達 {limit} CU 後自動釋放",
+  "device.releaseCuLimitHint": "達到設定 CU 上限時自動儲存雲端硬碟並釋放執行個體",
+  "device.releaseCuLimitPendingHint":
+    "尚未生效：目前本次已消耗 {consumed} CU，請確認 CU 上限後點擊「套用」",
+  "device.releaseCuLimitImmediateWarn":
+    "目前本次已消耗 {consumed} CU，已達到該上限，點擊「套用」後將立即觸發自動釋放",
   "device.driveMountedFull": "已自動掛載 Google 雲端硬碟（My Drive / {folder}{free}）· {tail}",
   "device.driveFreeSegment": " · 可用 {size}",
   "device.drivePendingSync": "{count} 項待同步",
@@ -571,6 +594,8 @@ export const zhTWMessages: ColabOneMessages = {
   "device.footerBase": "模型權重、對外 API 推論與 ComfyUI 工作流程皆在遠端 GPU 執行。",
   "device.footerDriveMounted":
     "模型清單、ComfyUI 工作流程與輸出作品已自動儲存至 Google 雲端硬碟 (ColabOne_Drive)，釋放前會自動同步。",
+  "device.footerDriveMountedFolder":
+    "模型清單、ComfyUI 工作流程與輸出作品已自動儲存至 Google 雲端硬碟 ({folder})，釋放前會自動同步。",
   "device.footerDriveAuto":
     "已開啟 Google 雲端硬碟自動掛載：啟動 GPU 後會自動連線 ColabOne_Drive，持久保存模型清單、工作流程與作品。",
   "device.footerDriveUnmountedActive":
@@ -599,6 +624,10 @@ export const zhTWMessages: ColabOneMessages = {
   "device.releaseConfirmSelected": "確認停止所選（{count}）",
   "device.toastRefreshed": "帳戶計費與執行個體狀態已重新整理",
   "device.toastIdleSet": "已將閒置自動釋放設為 {policy}",
+  "device.toastReleaseModeSet": "已將自動釋放原則設為 {policy}",
+  "device.toastCuLimitConfirmNeeded":
+    "目前本次已消耗 {consumed} CU，請確認或調高 CU 上限後點擊「套用」生效",
+  "device.errInvalidCuLimit": "CU 消耗上限必須介於 0.1 至 100000 之間",
   "device.toastThreadsSet": "已將遠端下載並行數設為 {threads} 執行緒",
   "device.toastAssignMaxAttemptsSet": "已將 GPU 分配最大嘗試次數設為 {count} 次",
   "device.toastDefaultGpuSet": "已將預設 GPU 設為 {gpu}",
@@ -608,6 +637,10 @@ export const zhTWMessages: ColabOneMessages = {
   "api.title": "對外 API",
   "api.subtitle":
     "透過遠端 GPU 提供 OpenAI Responses / Chat Completions 相容介面與 Codex 上下文壓縮；連續 {policy} 無請求或操作後自動釋放遠端資源。",
+  "api.subtitleNever":
+    "透過遠端 GPU 提供 OpenAI Responses / Chat Completions 相容介面與 Codex 上下文壓縮；目前已設為長期不釋放，執行個體將持續運作直至手動停止或 CU 耗盡。",
+  "api.subtitleCuLimit":
+    "透過遠端 GPU 提供 OpenAI Responses / Chat Completions 相容介面與 Codex 上下文壓縮；本次累計消耗達 {limit} CU 後自動儲存雲端硬碟並釋放遠端資源。",
   "api.statusStopped": "未開啟",
   "api.statusUnconfirmed": "狀態待確認",
   "api.statusStarting": "連線中",
@@ -1080,6 +1113,8 @@ export const zhTWMessages: ColabOneMessages = {
   "comfy.gpuStartingDesc": "遠端 GPU 啟動中；就緒後即可執行 ComfyUI 工作流程或開啟原生節點畫布。",
   "comfy.gpuStoppedDesc": "遠端 GPU 未啟動；啟動後即可執行 ComfyUI 工作流程或開啟原生節點畫布。",
   "comfy.runningIdleHint": "工作與畫布操作期間自動暫停閒置釋放（閒置原則：{policy}）",
+  "comfy.runningReleaseNeverHint": "目前已設為長期不釋放 · 執行個體將持續運作直至手動停止或 CU 耗盡",
+  "comfy.runningReleaseCuLimitHint": "目前為 CU 上限釋放 · 本次累計消耗達 {limit} CU 後自動儲存雲端硬碟並釋放執行個體",
   "comfy.preparingDesc": "正在遠端 GPU 建置 ComfyUI 執行環境，完成後即可直接執行工作流程。",
   "comfy.readyToStartDesc": "遠端 GPU 已就緒，啟動 ComfyUI 引擎後即可執行工作流程或開啟原生畫布。",
   "comfy.freeVram": "釋放 VRAM",
@@ -1142,6 +1177,8 @@ export const zhTWMessages: ColabOneMessages = {
     "執行任意工作流程後，產生的圖片、影片與音訊會自動顯示於此，支援線上預覽、匯出至本機或直接儲存至 Google 雲端硬碟。",
   "comfy.drivePersistHint":
     "已掛載 Google 雲端硬碟（My Drive / ColabOne_Drive），作品會自動持久保存，也可點選「匯出到雲端」直接儲存至 outputs 目錄。",
+  "comfy.drivePersistHintFolder":
+    "已掛載 Google 雲端硬碟（My Drive / {folder}），作品會自動持久保存，也可點選「匯出到雲端」直接儲存至 outputs 目錄。",
   "comfy.localExportHint":
     "作品暫存於目前遠端 GPU，建議在釋放執行個體前先匯出至本機，或匯出到 Google 雲端硬碟永久保存。",
   "comfy.driveWaitingHint":
@@ -1177,6 +1214,8 @@ export const zhTWMessages: ColabOneMessages = {
   "comfy.exportedToDrive": "已存雲端",
   "comfy.exportDriveReadyTooltip":
     "雲端直傳至 Google 雲端硬碟（My Drive / ColabOne_Drive / outputs），速度更快且永久保存",
+  "comfy.exportDriveReadyTooltipFolder":
+    "雲端直傳至 Google 雲端硬碟（My Drive / {folder} / outputs），速度更快且永久保存",
   "comfy.exportDriveSetupTooltip":
     "首次使用將彈出 Google 雲端硬碟授權設定，完成後自動將作品雲端直傳並永久保存",
   "comfy.exportDriveDoneTooltip":
@@ -1253,6 +1292,12 @@ export const zhTWMessages: ColabOneMessages = {
   "comfy.noticeExportedDrive": "作品已匯出至 Google 雲端硬碟：{path}",
   "comfy.noticeExportedDriveExists": "該作品已儲存於 Google 雲端硬碟：{path}",
   "comfy.noticeDeletedOutput": "已刪除該輸出作品。",
+  "comfy.noticeDeletedOutputManualCloudMount":
+    "已從軟體中刪除該作品。因雲端檔案由 Colab 掛載模式寫入，無法自動同步刪除，請在 Google 雲端硬碟中手動刪除。",
+  "comfy.noticeDeletedOutputManualCloudNoApi":
+    "已從軟體中刪除該作品。因尚未開啟 Google 雲端硬碟 API 直連權限，無法自動同步刪除雲端檔案，請在 Google 雲端硬碟中手動刪除。",
+  "comfy.noticeDeletedOutputManualCloudGeneric":
+    "已從軟體中刪除該作品。暫無法自動同步刪除 Google 雲端硬碟中的檔案，如需徹底清理請在 Google 雲端硬碟中手動刪除。",
   "comfy.driveModalTitleExport": "匯出到 Google 雲端硬碟",
   "comfy.driveModalTitleConfig": "設定 Google 雲端硬碟",
   "comfy.driveModalTagExported": "已匯出",
@@ -1374,6 +1419,7 @@ export const zhTWMessages: ColabOneMessages = {
   "comfy.openOutputInDrive": "在雲端查看",
   "comfy.openOutputInDriveTooltip": "在瀏覽器中開啟 Google 雲端硬碟查看該成果檔案",
   "comfy.outputDriveSyncedTooltip": "已同步至 Google 雲端硬碟 (ColabOne_Drive)",
+  "comfy.outputDriveSyncedTooltipFolder": "已同步至 Google 雲端硬碟 ({folder})",
   "comfy.outputTagSavedInDrive": "已存至雲端",
   "comfy.outputTagSyncedInDrive": "已同步雲端",
   "comfy.outputTagShared": "外部分享",
@@ -1386,6 +1432,8 @@ export const zhTWMessages: ColabOneMessages = {
   "comfy.shareWorkflowBtn": "分享工作流程",
   "comfy.exportLocalNeedDriveApiTooltip": "目前為原生掛載紀錄，暫無法免開機直傳本機；請點擊「在雲端查看」下載，或開啟免彈窗雲端模式",
   "comfy.deleteDriveOutputDesc": "將移除雲端硬碟關聯作品「{name}」（若已開啟雲端 API 會同步移入 Google 雲端硬碟垃圾桶），確認刪除嗎？",
+  "comfy.deleteDriveMountOutputDesc":
+    "將從軟體清單中移除作品「{name}」；由於該檔案由 Colab 掛載模式寫入，雲端檔案需在 Google 雲端硬碟中手動刪除。確認刪除嗎？",
   "comfy.driveModalConnectedAutoReleaseDesc": "已掛載至 Google 雲端硬碟「{folder}」{free}。點擊下方按鈕即可開啟工作流程完成後自動同步作品並安全釋放執行個體。",
   "comfy.driveAutoReleaseEnableNowBtn": "開啟完成後自動釋放",
   "comfy.driveRetryAutoReleaseBtn": "重試開啟自動釋放",
@@ -1667,10 +1715,12 @@ export const zhTWMessages: ColabOneMessages = {
   "settings.clipboardReadFailed": "無法讀取剪貼簿，請直接貼上至下方輸入欄位",
   "settings.driveHeading": "Google 雲端硬碟",
   "settings.driveTagMounted": "已掛載 · ColabOne_Drive",
+  "settings.driveTagMountedFolder": "已掛載 · {folder}",
   "settings.driveTagHeadlessReady": "免彈窗已就緒 · 自動掛載",
   "settings.driveTagAuthorized": "已授權 · 原生 DriveFS",
   "settings.driveTagReauth": "需重新登入一次授權",
   "settings.driveDescPrefix": "沿用本機 Google OAuth 憑證自動掛載專屬資料夾",
+  "settings.driveDescNativeSep": "（無感模式）或原生掛載資料夾",
   "settings.driveDescSuffix": "，自動持久保存模型清單、ComfyUI 工作流程與生成作品。",
   "settings.driveNeedScopeAlert":
     "目前授權尚未包含雲端硬碟權限；點擊上方「重新登入」補充授權後，後續執行個體將自動掛載雲端硬碟。",
@@ -1691,7 +1741,7 @@ export const zhTWMessages: ColabOneMessages = {
   "settings.downloadThreadsAria": "下載並行執行緒",
   "settings.threadsOption": "{count} 執行緒",
   "settings.autoDriveLabel": "雲端硬碟自動掛載",
-  "settings.autoDriveDesc": "啟動 GPU 時自動掛載並同步 Google 雲端硬碟 (ColabOne_Drive)",
+  "settings.autoDriveDesc": "啟動 GPU 時自動掛載並同步 Google 雲端硬碟（ColabOne_Drive / ColabOne_Drive_Mount）",
   "settings.assignMaxAttemptsLabel": "GPU 分配最大嘗試次數",
   "settings.assignMaxAttemptsAria": "GPU 分配最大嘗試次數",
   "settings.assignMaxAttemptsUnit": "次",
@@ -1700,6 +1750,10 @@ export const zhTWMessages: ColabOneMessages = {
   "settings.idleProtectionTitle": "閒置自動釋放保護",
   "settings.idleProtectionDesc":
     "超過 {policy} 無操作或工作時自動釋放遠端資源；繼續操作會重設倒數，模型下載與載入、對外 API 推論及 ComfyUI 執行期間自動暫停倒數。",
+  "settings.releaseNeverDesc":
+    "已設為長期不釋放：執行個體將持續運作，直到你手動停止或帳戶計算單元（CU）耗盡。",
+  "settings.releaseCuLimitDesc":
+    "本次連續運作累計消耗達到 {limit} CU 時，自動儲存 Google 雲端硬碟並釋放執行個體（閒置倒數已關閉）。",
   "settings.computeSyncNote": "預設 GPU 與閒置釋放時間會與「遠端裝置」即時同步，修改後立即生效。",
   "settings.assignProxyTitle": "GPU 分配代理（僅分配階段）",
   "settings.assignProxyTagActive": "已啟用 · 僅分配",
@@ -2454,6 +2508,10 @@ export const zhTWMessages: ColabOneMessages = {
   "outputGallery.noticeAlbumExported": "相簿已打包匯出至本機",
   "outputGallery.noticeAlbumDriveExported": "相簿已全部匯出至 Google 雲端硬碟",
   "outputGallery.noticeAlbumDeleted": "已刪除此相簿中的全部作品",
+  "outputGallery.noticeAlbumDeletedManualCloudMount":
+    "已從軟體中刪除該相簿。其中 {count} 項雲端檔案由 Colab 掛載模式寫入，無法自動同步刪除，請在 Google 雲端硬碟中手動刪除。",
+  "outputGallery.noticeAlbumDeletedManualCloudGeneric":
+    "已從軟體中刪除該相簿。其中 {count} 項 Google 雲端硬碟檔案無法自動同步刪除，請在 Google 雲端硬碟中手動刪除。",
   "outputGallery.multiSelectBtn": "多選分享",
   "outputGallery.multiSelectCancel": "退出多選",
   "outputGallery.multiSelectAll": "全選",

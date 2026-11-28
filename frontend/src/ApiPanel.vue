@@ -62,7 +62,7 @@ import {
   requestStateLabel,
   resolveSpeedSummary,
 } from "./apiSpeed";
-import { formatIdlePolicyLabel } from "./billing";
+import { formatColabOneCULimitValue, formatIdlePolicyLabel } from "./billing";
 import { t, tb } from "./i18n";
 import {
   COLABONE_AUTO_API_MODEL_ID,
@@ -610,9 +610,19 @@ onUnmounted(() => {
           />
           <template v-else>
             {{
-              t("api.subtitle", {
-                policy: formatIdlePolicyLabel(props.state.settings.idle_minutes),
-              })
+              props.state.settings.release_mode === "never"
+                ? t("api.subtitleNever")
+                : props.state.settings.release_mode === "cu_limit"
+                  ? t("api.subtitleCuLimit", {
+                      limit: formatColabOneCULimitValue(
+                        props.state.settings.release_cu_limit,
+                      ),
+                    })
+                  : t("api.subtitle", {
+                      policy: formatIdlePolicyLabel(
+                        props.state.settings.idle_minutes,
+                      ),
+                    })
             }}
           </template>
         </p>

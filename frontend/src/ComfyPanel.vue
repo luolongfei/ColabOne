@@ -111,7 +111,7 @@ import {
   type ColabOneOutputShareSummary,
   type ColabOneWebConsoleState,
 } from "./api";
-import { formatIdlePolicyLabel } from "./billing";
+import { formatColabOneCULimitValue, formatIdlePolicyLabel } from "./billing";
 import {
   computeColabOneGroupCU,
   groupColabOneOutputs,
@@ -296,6 +296,13 @@ async function openOutputSharePreview(url: string, shareId = "") {
 
 // Engine & runtime status
 const gpuReady = computed(() => props.state.runtime.state === "ready");
+const activeDriveFolderName = computed(
+  () =>
+    props.state.runtime.drive?.remote_folder ||
+    (props.state.runtime.drive?.mode === "colab_drivefs"
+      ? "ColabOne_Drive_Mount"
+      : "ColabOne_Drive"),
+);
 const gpuStarting = computed(() => props.state.runtime.state === "starting");
 const comfy = computed(() => props.state.runtime.comfyui);
 const canvas = computed(() => comfy.value?.canvas);
@@ -7040,7 +7047,7 @@ async function exportAlbumToDrive(
         const existing = exportedDriveOutputs.value[refItem.id];
         const remoteFolder =
           existing?.remoteFolder ||
-          `${props.state.runtime.drive?.remote_folder || "ColabOne_Drive"}/outputs`;
+          `${activeDriveFolderName.value}/outputs`;
         const filename = existing?.filename || refItem.filename;
         const drivePath =
           existing?.drivePath ||
@@ -7085,7 +7092,7 @@ async function exportAlbumToDrive(
       const remoteFolder =
         typeof res?.remote_folder === "string" && res.remote_folder.trim()
           ? res.remote_folder.trim()
-          : `${props.state.runtime.drive?.remote_folder || "ColabOne_Drive"}/outputs`;
+          : `${activeDriveFolderName.value}/outputs`;
       const filename =
         typeof res?.filename === "string" && res.filename.trim()
           ? res.filename.trim()
@@ -7157,11 +7164,25 @@ async function deleteOutputGroup(group: ColabOneOutputGroup) {
   deletingAlbums.value = { ...deletingAlbums.value, [group.id]: true };
   const eligible = getDeletableGroupItems(group);
   let deletedCount = 0;
+  let manualCloudCleanupCount = 0;
+  let manualCloudCleanupMountCount = 0;
+  let firstManualCloudCleanupReason = "";
   try {
     for (const target of eligible) {
       if (disposed) break;
       abortOutputFetch(target.id);
-      await colabOneCommand("comfyui.output.delete", { id: target.id });
+      const res = await colabOneCommand("comfyui.output.delete", { id: target.id });
+      if (res?.manual_cloud_cleanup) {
+        manualCloudCleanupCount += 1;
+        const reason =
+          typeof res.warning_reason === "string" ? res.warning_reason : "";
+        if (!firstManualCloudCleanupReason && reason) {
+          firstManualCloudCleanupReason = reason;
+        }
+        if (reason === "colab_drivefs") {
+          manualCloudCleanupMountCount += 1;
+        }
+      }
       const url = blobUrls.value[target.id];
       if (url) {
         delete blobUrls.value[target.id];
@@ -7183,7 +7204,33 @@ async function deleteOutputGroup(group: ColabOneOutputGroup) {
         if (galleryModalGroupId.value === group.id) {
           closeOutputGallery();
         }
-        setNoticeKey("outputGallery.noticeAlbumDeleted");
+        if (manualCloudCleanupCount > 0) {
+          emit("clearError");
+          emit(
+            "notify",
+            formatDeleteOutputManualCloudWarning(
+              firstManualCloudCleanupReason,
+              group.items.length > 1,
+              manualCloudCleanupCount,
+              manualCloudCleanupMountCount,
+            ),
+            "warning",
+          );
+        } else {
+          setNoticeKey("outputGallery.noticeAlbumDeleted");
+        }
+      } else if (manualCloudCleanupCount > 0) {
+        emit("clearError");
+        emit(
+          "notify",
+          formatDeleteOutputManualCloudWarning(
+            firstManualCloudCleanupReason,
+            manualCloudCleanupCount > 1,
+            manualCloudCleanupCount,
+            manualCloudCleanupMountCount,
+          ),
+          "warning",
+        );
       } else {
         setNoticeKey("comfy.noticeDeletedOutput");
       }
@@ -7285,6 +7332,31 @@ const isDriveOutputsSyncing = computed(
 
 function isOutputDriveBacked(item: WorkflowOutput): boolean {
   return item.storage === "drive";
+}
+
+function isOutputMountModeDriveOnly(item: WorkflowOutput): boolean {
+  return item.drive_mode === "colab_drivefs" && !item.drive_file_id;
+}
+
+function formatDeleteOutputManualCloudWarning(
+  reason: string,
+  isAlbum: boolean,
+  count = 1,
+  mountCount = 0,
+): string {
+  if (isAlbum) {
+    if (mountCount > 0 && mountCount === count) {
+      return t("outputGallery.noticeAlbumDeletedManualCloudMount", { count });
+    }
+    return t("outputGallery.noticeAlbumDeletedManualCloudGeneric", { count });
+  }
+  if (reason === "colab_drivefs") {
+    return t("comfy.noticeDeletedOutputManualCloudMount");
+  }
+  if (reason === "drive_api_unavailable") {
+    return t("comfy.noticeDeletedOutputManualCloudNoApi");
+  }
+  return t("comfy.noticeDeletedOutputManualCloudGeneric");
 }
 
 function canLoadOutputAsset(item: WorkflowOutput): boolean {
@@ -8284,7 +8356,7 @@ async function runDriveExport(
     const remoteFolder =
       typeof res?.remote_folder === "string" && res.remote_folder.trim()
         ? res.remote_folder.trim()
-        : `${props.state.runtime.drive?.remote_folder || "ColabOne_Drive"}/outputs`;
+        : `${activeDriveFolderName.value}/outputs`;
     const filename =
       typeof res?.filename === "string" && res.filename.trim()
         ? res.filename.trim()
@@ -8604,7 +8676,7 @@ async function deleteOutput(target: WorkflowOutput) {
   deletingOutputs.value = { ...deletingOutputs.value, [target.id]: true };
   try {
     abortOutputFetch(target.id);
-    await colabOneCommand("comfyui.output.delete", { id: target.id });
+    const res = await colabOneCommand("comfyui.output.delete", { id: target.id });
     const url = blobUrls.value[target.id];
     if (url) {
       delete blobUrls.value[target.id];
@@ -8620,7 +8692,18 @@ async function deleteOutput(target: WorkflowOutput) {
       exportedDriveOutputs.value = nextExported;
     }
     emit("sync");
-    setNoticeKey("comfy.noticeDeletedOutput");
+    if (res?.manual_cloud_cleanup) {
+      emit("clearError");
+      const reason =
+        typeof res.warning_reason === "string" ? res.warning_reason : "";
+      emit(
+        "notify",
+        formatDeleteOutputManualCloudWarning(reason, false, 1),
+        "warning",
+      );
+    } else {
+      setNoticeKey("comfy.noticeDeletedOutput");
+    }
   } catch (e) {
     reportError(e);
   } finally {
@@ -9206,9 +9289,19 @@ defineExpose({
             </template>
             <template v-else-if="comfyRunning">
               {{
-                t("comfy.runningIdleHint", {
-                  policy: formatIdlePolicyLabel(props.state.settings.idle_minutes),
-                })
+                props.state.settings.release_mode === "never"
+                  ? t("comfy.runningReleaseNeverHint")
+                  : props.state.settings.release_mode === "cu_limit"
+                    ? t("comfy.runningReleaseCuLimitHint", {
+                        limit: formatColabOneCULimitValue(
+                          props.state.settings.release_cu_limit,
+                        ),
+                      })
+                    : t("comfy.runningIdleHint", {
+                        policy: formatIdlePolicyLabel(
+                          props.state.settings.idle_minutes,
+                        ),
+                      })
               }}
             </template>
             <template v-else-if="comfyStarting">
@@ -9218,7 +9311,11 @@ defineExpose({
               {{
                 t("comfy.nativeRunActiveDesc", {
                   name: runningWorkflowName,
-                  policy: formatIdlePolicyLabel(props.state.settings.idle_minutes),
+                  policy: formatIdlePolicyLabel(
+                    props.state.settings.idle_minutes,
+                    props.state.settings.release_mode,
+                    props.state.settings.release_cu_limit,
+                  ),
                 })
               }}
             </template>
@@ -11595,7 +11692,7 @@ defineExpose({
             v-else-if="state.setup.drive"
             :title="
               t('comfy.outputsDriveConnectedTooltip', {
-                folder: state.runtime.drive?.remote_folder || 'ColabOne_Drive',
+                folder: activeDriveFolderName,
               })
             "
           >
@@ -11699,7 +11796,9 @@ defineExpose({
                         ? tb(state.operation.title)
                         : t("comfy.driveModalMountingDirectTitle")
                   : state.setup.drive
-                    ? t("comfy.drivePersistHint")
+                    ? t("comfy.drivePersistHintFolder", {
+                        folder: activeDriveFolderName,
+                      })
                     : !gpuReady && state.setup.colab
                       ? driveOutputsCanDirectRead
                         ? t("comfy.driveOfflineDirectHint")
@@ -12268,7 +12367,11 @@ defineExpose({
                     :title="
                       getGroupDrivePath(group)
                         ? formatColabOneDrivePath(getGroupDrivePath(group))
-                        : t('comfy.outputDriveSyncedTooltip')
+                        : t('comfy.outputDriveSyncedTooltipFolder', {
+                            folder: group.items.some((x) => x.drive_mode === 'colab_drivefs')
+                              ? 'ColabOne_Drive_Mount'
+                              : activeDriveFolderName,
+                          })
                     "
                   >
                     <ATag
@@ -12917,7 +13020,12 @@ defineExpose({
                     :title="
                       getOutputDrivePath(item)
                         ? formatColabOneDrivePath(getOutputDrivePath(item))
-                        : t('comfy.outputDriveSyncedTooltip')
+                        : t('comfy.outputDriveSyncedTooltipFolder', {
+                            folder:
+                              item.drive_mode === 'colab_drivefs'
+                                ? 'ColabOne_Drive_Mount'
+                                : activeDriveFolderName,
+                          })
                     "
                   >
                     <ATag
@@ -13066,11 +13174,13 @@ defineExpose({
                           ? t('comfy.exportDriveDoneTooltip', {
                               path: formatColabOneDrivePath(
                                 getOutputDrivePath(item) ||
-                                  `My Drive/ColabOne_Drive/outputs/${item.filename}`,
+                                  `My Drive/${item.drive_mode === 'colab_drivefs' ? 'ColabOne_Drive_Mount' : 'ColabOne_Drive'}/outputs/${item.filename}`,
                               ),
                             })
                           : state.setup.drive
-                            ? t('comfy.exportDriveReadyTooltip')
+                            ? t('comfy.exportDriveReadyTooltipFolder', {
+                                folder: activeDriveFolderName,
+                              })
                             : t('comfy.exportDriveSetupTooltip')
                       "
                     >
@@ -13110,9 +13220,13 @@ defineExpose({
                       :description="
                         !isShareMode &&
                         (isOutputDriveBacked(item) || !gpuReady)
-                          ? t('comfy.deleteDriveOutputDesc', {
-                              name: item.filename,
-                            })
+                          ? isOutputMountModeDriveOnly(item)
+                            ? t('comfy.deleteDriveMountOutputDesc', {
+                                name: item.filename,
+                              })
+                            : t('comfy.deleteDriveOutputDesc', {
+                                name: item.filename,
+                              })
                           : t('comfy.deleteOutputDesc', { name: item.filename })
                       "
                       :ok-text="t('common.confirmDelete')"

@@ -45,7 +45,7 @@ export function getColabOneDriveConnectStage(
   }
   const title = String(op?.title || "");
   if (/授权已确认|初始化\s*rclone/i.test(title)) return "mounting";
-  if (/初始化\s*ColabOne_Drive/i.test(title)) return "initializing";
+  if (/初始化\s*ColabOne_Drive(?:_Mount)?/i.test(title)) return "initializing";
   return "checking";
 }
 </script>
@@ -191,10 +191,18 @@ const isConnectingDrive = computed(
 );
 const canClose = computed(() => !props.exporting);
 
+const activeDriveFolderName = computed(
+  () =>
+    props.state.runtime.drive?.remote_folder ||
+    (props.state.runtime.drive?.mode === "colab_drivefs"
+      ? "ColabOne_Drive_Mount"
+      : "ColabOne_Drive"),
+);
+
 const remoteFolderDisplay = computed(() => {
   const raw = props.exportResult?.remoteFolder
     ? props.exportResult.remoteFolder
-    : `${props.state.runtime.drive?.remote_folder || "ColabOne_Drive"}/outputs`;
+    : `${activeDriveFolderName.value}/outputs`;
   return formatColabOneDrivePath(raw);
 });
 
@@ -240,7 +248,9 @@ const statusBadge = computed(() => {
 
 const mountingCardTitle = computed(() => {
   if (driveConnectStage.value === "initializing") {
-    return t("comfy.driveModalInitializingTitle");
+    return props.state.operation?.title
+      ? tb(props.state.operation.title)
+      : t("comfy.driveModalInitializingTitle");
   }
   if (driveConnectMode.value === "rclone" && props.state.operation?.title) {
     return tb(props.state.operation.title);
@@ -579,13 +589,13 @@ function onAutoDriveToggle(event: { target?: { checked?: boolean } }) {
                 })
               : isAutoReleasePurpose
                 ? t("comfy.driveModalConnectedAutoReleaseDesc", {
-                    folder: state.runtime.drive?.remote_folder || "ColabOne_Drive",
+                    folder: activeDriveFolderName,
                     free: driveFreeSpaceText
                       ? t("device.driveFreeSegment", { size: driveFreeSpaceText })
                       : "",
                   })
                 : t("comfy.driveModalConnectedOnlyDesc", {
-                    folder: state.runtime.drive?.remote_folder || "ColabOne_Drive",
+                    folder: activeDriveFolderName,
                     free: driveFreeSpaceText
                       ? t("device.driveFreeSegment", { size: driveFreeSpaceText })
                       : "",

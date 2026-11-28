@@ -17,6 +17,7 @@ export const zhCNMessages = {
   "common.delete": "删除",
   "common.clear": "清除",
   "common.save": "保存",
+  "common.apply": "应用",
   "common.retry": "重试",
   "common.refresh": "刷新",
   "common.collapse": "收起",
@@ -187,6 +188,9 @@ export const zhCNMessages = {
   "billing.idleOption45": "45 分钟",
   "billing.idleOption60": "1 小时",
   "billing.idleOption120": "2 小时",
+  "billing.releaseModeNever": "长期不释放",
+  "billing.releaseModeCuLimitOption": "消耗到指定 CU 后释放",
+  "billing.releaseModeCuLimitShort": "消耗达 {limit} CU 释放",
   "billing.barAria": "计费与自动释放状态",
   "billing.barIdlePausedTooltip": "远端任务运行中，已暂停空闲自动释放（空闲策略：{policy}）",
   "billing.barIdleImminentTooltip":
@@ -200,6 +204,14 @@ export const zhCNMessages = {
   "billing.barIdleCountdown": "空闲释放 {clock}",
   "billing.barIdleCountdownShort": "空闲 {clock}",
   "billing.barIdleCountdownAria": "空闲释放 {clock}，点击重置倒计时",
+  "billing.barReleaseNever": "长期不释放",
+  "billing.barReleaseNeverShort": "不释放",
+  "billing.barReleaseNeverTooltip":
+    "已设为长期不释放：实例将持续运行，直到手动停止或账号计算单元（CU）耗尽",
+  "billing.barReleaseCuLimit": "CU 上限 {consumed}/{limit}",
+  "billing.barReleaseCuLimitShort": "{consumed}/{limit} CU",
+  "billing.barReleaseCuLimitTooltip":
+    "本次连续运行已消耗 {consumed} CU，上限 {limit} CU（剩余 {remaining} CU）；达到上限后将自动保存云盘并释放实例",
   "billing.barStatusInstances": "{status}（运行实例：{count} 台）",
   "billing.barBurnRate": "消耗速率",
   "billing.barRemainingBalance": "剩余余额",
@@ -522,6 +534,17 @@ export const zhCNMessages = {
   "device.idlePauseHint": "下载、装载与推理期间自动暂停倒计时",
   "device.idlePolicySummary": "空闲满 {policy} 自动释放",
   "device.idlePolicyHint": "无操作和任务时倒计时释放，运行任务期间自动暂停",
+  "device.releaseCuLimitAria": "自动释放 CU 消耗上限",
+  "device.releaseNeverLive": "长期不释放 · 将持续运行直至手动停止或 CU 耗尽",
+  "device.releaseNeverSummary": "长期不释放（直至手动停止或 CU 耗尽）",
+  "device.releaseNeverHint": "已关闭自动释放，请注意账号计算单元余额消耗",
+  "device.releaseCuLimitLive": "CU 上限释放 · 本次已消耗 {consumed} / {limit} CU（剩余 {remaining} CU）",
+  "device.releaseCuLimitSummary": "本次消耗达 {limit} CU 后自动释放",
+  "device.releaseCuLimitHint": "达到设定 CU 上限时自动保存云盘并释放实例",
+  "device.releaseCuLimitPendingHint":
+    "尚未生效：当前本次已消耗 {consumed} CU，请确认 CU 上限后点击「应用」",
+  "device.releaseCuLimitImmediateWarn":
+    "当前本次已消耗 {consumed} CU，已达到该上限，点击「应用」后将立即触发自动释放",
   "device.driveMountedFull":
     "已自动挂载 Google 云盘（My Drive / {folder}{free}）· {tail}",
   "device.driveFreeSegment": " · 可用 {size}",
@@ -570,6 +593,8 @@ export const zhCNMessages = {
   "device.footerBase": "模型权重、对外 API 推理与 ComfyUI 工作流均在远端 GPU 执行。",
   "device.footerDriveMounted":
     "模型清单、ComfyUI 工作流与输出作品已自动持久化到 Google 云盘 (ColabOne_Drive)，释放实例前会自动同步。",
+  "device.footerDriveMountedFolder":
+    "模型清单、ComfyUI 工作流与输出作品已自动持久化到 Google 云盘 ({folder})，释放实例前会自动同步。",
   "device.footerDriveAuto":
     "已开启 Google 云盘自动挂载：启动 GPU 后将自动连接 ColabOne_Drive，持久保存模型清单、ComfyUI 工作流与输出作品。",
   "device.footerDriveUnmountedActive":
@@ -598,6 +623,10 @@ export const zhCNMessages = {
   "device.releaseConfirmSelected": "确认停止所选（{count}）",
   "device.toastRefreshed": "账户计费与实例状态已刷新",
   "device.toastIdleSet": "已将空闲自动释放设为 {policy}",
+  "device.toastReleaseModeSet": "已将自动释放策略设为 {policy}",
+  "device.toastCuLimitConfirmNeeded":
+    "当前本次已消耗 {consumed} CU，请确认或调高 CU 上限后点击「应用」生效",
+  "device.errInvalidCuLimit": "CU 消耗上限必须在 0.1 至 100000 之间",
   "device.toastThreadsSet": "已将远端下载并发设为 {threads} 线程",
   "device.toastAssignMaxAttemptsSet": "已将 GPU 分配最大尝试次数设为 {count} 次",
   "device.toastDefaultGpuSet": "已将默认 GPU 设为 {gpu}",
@@ -607,6 +636,10 @@ export const zhCNMessages = {
   "api.title": "对外 API",
   "api.subtitle":
     "通过远端 GPU 提供 OpenAI Responses / Chat Completions 兼容接口与 Codex 上下文压缩；连续 {policy} 无请求或操作后自动释放远端资源。",
+  "api.subtitleNever":
+    "通过远端 GPU 提供 OpenAI Responses / Chat Completions 兼容接口与 Codex 上下文压缩；当前已设为长期不释放，实例将持续运行直至手动停止或 CU 耗尽。",
+  "api.subtitleCuLimit":
+    "通过远端 GPU 提供 OpenAI Responses / Chat Completions 兼容接口与 Codex 上下文压缩；本次累计消耗达 {limit} CU 后自动保存云盘并释放远端资源。",
   "api.statusStopped": "未开启",
   "api.statusUnconfirmed": "状态待确认",
   "api.statusStarting": "正在连接",
@@ -1081,6 +1114,8 @@ export const zhCNMessages = {
   "comfy.gpuStartingDesc": "远端 GPU 正在启动中；就绪后即可运行 ComfyUI 工作流或打开原生节点画布。",
   "comfy.gpuStoppedDesc": "远端 GPU 未启动；启动后即可运行 ComfyUI 工作流或打开原生节点画布。",
   "comfy.runningIdleHint": "任务与画布操作期间自动暂停空闲释放（空闲策略：{policy}）",
+  "comfy.runningReleaseNeverHint": "当前已设为长期不释放 · 实例将持续运行直至手动停止或 CU 耗尽",
+  "comfy.runningReleaseCuLimitHint": "当前为 CU 上限释放 · 本次累计消耗达 {limit} CU 后自动保存云盘并释放实例",
   "comfy.preparingDesc": "正在远端 GPU 准备 ComfyUI 运行环境，完成后即可直接运行工作流。",
   "comfy.readyToStartDesc": "远端 GPU 已就绪，启动 ComfyUI 引擎后即可运行工作流或打开原生画布。",
   "comfy.freeVram": "释放显存",
@@ -1143,6 +1178,8 @@ export const zhCNMessages = {
     "运行任意工作流后，生成的图片、视频与音频会自动展示在这里，支持在线预览、导出到本地或直接保存至 Google 云盘。",
   "comfy.drivePersistHint":
     "已挂载 Google 云盘（My Drive / ColabOne_Drive），作品会自动持久化，也可点击「导出到云盘」直接保存至 outputs 目录。",
+  "comfy.drivePersistHintFolder":
+    "已挂载 Google 云盘（My Drive / {folder}），作品会自动持久化，也可点击「导出到云盘」直接保存至 outputs 目录。",
   "comfy.localExportHint":
     "作品暂存在当前远端 GPU，建议在释放实例前导出到本地，或导出到 Google 云盘永久保存。",
   "comfy.driveWaitingHint":
@@ -1178,6 +1215,8 @@ export const zhCNMessages = {
   "comfy.exportedToDrive": "已存云盘",
   "comfy.exportDriveReadyTooltip":
     "云端直传至 Google 云盘（My Drive / ColabOne_Drive / outputs），速度更快且永久保存",
+  "comfy.exportDriveReadyTooltipFolder":
+    "云端直传至 Google 云盘（My Drive / {folder} / outputs），速度更快且永久保存",
   "comfy.exportDriveSetupTooltip":
     "首次使用将弹出 Google 云盘授权配置，完成后自动将作品云端直传并永久保存",
   "comfy.exportDriveDoneTooltip":
@@ -1254,6 +1293,12 @@ export const zhCNMessages = {
   "comfy.noticeExportedDrive": "作品已导出到 Google 云盘：{path}",
   "comfy.noticeExportedDriveExists": "该作品已保存在 Google 云盘：{path}",
   "comfy.noticeDeletedOutput": "已删除该输出作品。",
+  "comfy.noticeDeletedOutputManualCloudMount":
+    "已从软件中删除该作品。因云端文件由 Colab 挂载模式写入，无法自动同步删除，请在 Google 云盘中手动删除。",
+  "comfy.noticeDeletedOutputManualCloudNoApi":
+    "已从软件中删除该作品。因尚未开启 Google 云盘 API 直连权限，无法自动同步删除云端文件，请在 Google 云盘中手动删除。",
+  "comfy.noticeDeletedOutputManualCloudGeneric":
+    "已从软件中删除该作品。暂无法自动同步删除 Google 云盘中的文件，如需彻底清理请在 Google 云盘中手动删除。",
   "comfy.driveModalTitleExport": "导出到 Google 云盘",
   "comfy.driveModalTitleConfig": "配置 Google 云盘",
   "comfy.driveModalTagExported": "已导出",
@@ -1375,6 +1420,7 @@ export const zhCNMessages = {
   "comfy.openOutputInDrive": "在云盘查看",
   "comfy.openOutputInDriveTooltip": "在浏览器中打开 Google 云盘查看该成果文件",
   "comfy.outputDriveSyncedTooltip": "已同步至 Google 云盘 (ColabOne_Drive)",
+  "comfy.outputDriveSyncedTooltipFolder": "已同步至 Google 云盘 ({folder})",
   "comfy.outputTagSavedInDrive": "已存至云盘",
   "comfy.outputTagSyncedInDrive": "已同步云盘",
   "comfy.outputTagShared": "外部分享",
@@ -1387,6 +1433,8 @@ export const zhCNMessages = {
   "comfy.shareWorkflowBtn": "分享工作流",
   "comfy.exportLocalNeedDriveApiTooltip": "当前为原生挂载记录，暂无法免开机直传本地；请点击「在云盘查看」下载，或开启无感云盘模式",
   "comfy.deleteDriveOutputDesc": "将移除云盘关联作品「{name}」（若已开启云盘 API 会同步移入 Google 云盘回收站），确认删除吗？",
+  "comfy.deleteDriveMountOutputDesc":
+    "将从软件列表中移除作品「{name}」；由于该文件由 Colab 挂载模式写入，云端文件需在 Google 云盘中手动删除。确认删除吗？",
   "comfy.driveModalConnectedAutoReleaseDesc": "已挂载至 Google 云盘「{folder}」{free}。点击下方按钮即可开启工作流完成后自动同步作品并安全释放实例。",
   "comfy.driveAutoReleaseEnableNowBtn": "开启完成后自动释放",
   "comfy.driveRetryAutoReleaseBtn": "重试开启自动释放",
@@ -1669,10 +1717,12 @@ export const zhCNMessages = {
   "settings.clipboardReadFailed": "未能读取剪贴板，请直接粘贴到下方输入框",
   "settings.driveHeading": "Google 云盘",
   "settings.driveTagMounted": "已挂载 · ColabOne_Drive",
+  "settings.driveTagMountedFolder": "已挂载 · {folder}",
   "settings.driveTagHeadlessReady": "免弹窗已就绪 · 自动挂载",
   "settings.driveTagAuthorized": "已授权 · 原生 DriveFS",
   "settings.driveTagReauth": "需重新登录一次授权",
   "settings.driveDescPrefix": "复用本机 Google OAuth 凭据自动挂载专属目录",
+  "settings.driveDescNativeSep": "（无感模式）或原生挂载目录",
   "settings.driveDescSuffix": "，自动持久保存模型清单、ComfyUI 工作流与生成作品。",
   "settings.driveNeedScopeAlert":
     "当前授权尚未包含云盘权限；点击上方「重新登录」补充授权后，后续实例将自动挂载云盘。",
@@ -1693,7 +1743,7 @@ export const zhCNMessages = {
   "settings.downloadThreadsAria": "下载并发线程",
   "settings.threadsOption": "{count} 线程",
   "settings.autoDriveLabel": "云盘自动挂载",
-  "settings.autoDriveDesc": "启动 GPU 时自动挂载并同步 Google 云盘 (ColabOne_Drive)",
+  "settings.autoDriveDesc": "启动 GPU 时自动挂载并同步 Google 云盘（ColabOne_Drive / ColabOne_Drive_Mount）",
   "settings.assignMaxAttemptsLabel": "GPU 分配最大尝试次数",
   "settings.assignMaxAttemptsAria": "GPU 分配最大尝试次数",
   "settings.assignMaxAttemptsUnit": "次",
@@ -1702,6 +1752,10 @@ export const zhCNMessages = {
   "settings.idleProtectionTitle": "空闲自动释放保护",
   "settings.idleProtectionDesc":
     "超过 {policy} 无操作或任务时自动释放远端资源；继续操作会重置倒计时，模型下载与装载、对外 API 推理及 ComfyUI 运行期间自动暂停倒计时。",
+  "settings.releaseNeverDesc":
+    "已设为长期不释放：实例将持续运行，直到你手动停止或账号计算单元（CU）耗尽。",
+  "settings.releaseCuLimitDesc":
+    "本次连续运行累计消耗达到 {limit} CU 时，自动保存 Google 云盘并释放实例（空闲倒计时已关闭）。",
   "settings.computeSyncNote": "默认 GPU 与空闲释放时长与「远端设备」实时同步，修改后立即生效。",
   "settings.assignProxyTitle": "GPU 分配代理（仅分配阶段）",
   "settings.assignProxyTagActive": "已启用 · 仅分配",
@@ -2448,6 +2502,10 @@ export const zhCNMessages = {
   "outputGallery.noticeAlbumExported": "图集已打包导出到本地",
   "outputGallery.noticeAlbumDriveExported": "图集已全部导出至 Google 云盘",
   "outputGallery.noticeAlbumDeleted": "已删除该图集中的全部作品",
+  "outputGallery.noticeAlbumDeletedManualCloudMount":
+    "已从软件中删除该图集。其中 {count} 项云端文件由 Colab 挂载模式写入，无法自动同步删除，请在 Google 云盘中手动删除。",
+  "outputGallery.noticeAlbumDeletedManualCloudGeneric":
+    "已从软件中删除该图集。其中 {count} 项 Google 云盘文件无法自动同步删除，请在 Google 云盘中手动删除。",
   "outputGallery.multiSelectBtn": "多选分享",
   "outputGallery.multiSelectCancel": "退出多选",
   "outputGallery.multiSelectAll": "全选",

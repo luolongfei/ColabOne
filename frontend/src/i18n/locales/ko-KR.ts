@@ -19,6 +19,7 @@ export const koKRMessages: ColabOneMessages = {
   "common.delete": "삭제",
   "common.clear": "지우기",
   "common.save": "저장",
+  "common.apply": "적용",
   "common.retry": "다시 시도",
   "common.refresh": "새로고침",
   "common.collapse": "접기",
@@ -192,6 +193,9 @@ export const koKRMessages: ColabOneMessages = {
   "billing.idleOption45": "45분",
   "billing.idleOption60": "1시간",
   "billing.idleOption120": "2시간",
+  "billing.releaseModeNever": "자동 해제 안 함",
+  "billing.releaseModeCuLimitOption": "지정 CU 소비 후 해제",
+  "billing.releaseModeCuLimitShort": "{limit} CU 소비 시 해제",
   "billing.barAria": "과금 및 자동 해제 상태",
   "billing.barIdlePausedTooltip":
     "원격 작업 실행 중이므로 유휴 자동 해제가 일시 정지되었습니다 (정책: {policy})",
@@ -206,6 +210,14 @@ export const koKRMessages: ColabOneMessages = {
   "billing.barIdleCountdown": "유휴 해제 {clock}",
   "billing.barIdleCountdownShort": "유휴 {clock}",
   "billing.barIdleCountdownAria": "유휴 해제까지 {clock}, 클릭해 타이머 초기화",
+  "billing.barReleaseNever": "자동 해제 안 함",
+  "billing.barReleaseNeverShort": "해제 안 함",
+  "billing.barReleaseNeverTooltip":
+    "자동 해제 안 함으로 설정됨: 수동으로 중지하거나 계정의 컴퓨팅 유닛(CU)이 소진될 때까지 계속 실행됩니다",
+  "billing.barReleaseCuLimit": "CU 상한 {consumed}/{limit}",
+  "billing.barReleaseCuLimitShort": "{consumed}/{limit} CU",
+  "billing.barReleaseCuLimitTooltip":
+    "이번 연속 실행에서 {consumed} CU 소비, 상한 {limit} CU (남은 한도 {remaining} CU). 상한 도달 시 드라이브를 자동 저장하고 인스턴스를 해제합니다",
   "billing.barStatusInstances": "{status} (실행 중: {count}대)",
   "billing.barBurnRate": "소모 속도",
   "billing.barRemainingBalance": "남은 잔액",
@@ -535,6 +547,17 @@ export const koKRMessages: ColabOneMessages = {
   "device.idlePauseHint": "다운로드, 로드, 추론 중에는 카운트다운 자동 일시 정지",
   "device.idlePolicySummary": "{policy} 유휴 시 자동 해제",
   "device.idlePolicyHint": "유휴 시 자동 해제되며 작업 중에는 자동 일시 정지됩니다",
+  "device.releaseCuLimitAria": "자동 해제 CU 소비 상한",
+  "device.releaseNeverLive": "자동 해제 안 함 · 수동 중지 또는 CU 소진 시까지 계속 실행",
+  "device.releaseNeverSummary": "자동 해제 안 함 (수동 중지 또는 CU 소진 시까지 유지)",
+  "device.releaseNeverHint": "자동 해제가 꺼져 있습니다. 계정 CU 잔액 소비에 유의하세요",
+  "device.releaseCuLimitLive": "CU 상한 해제 · 이번 실행 {consumed} / {limit} CU 소비 (남은 한도 {remaining} CU)",
+  "device.releaseCuLimitSummary": "이번 실행에서 {limit} CU 소비 시 자동 해제",
+  "device.releaseCuLimitHint": "설정한 CU 상한에 도달하면 드라이브를 자동 저장하고 인스턴스를 해제합니다",
+  "device.releaseCuLimitPendingHint":
+    "아직 적용되지 않음: 이번 실행에서 이미 {consumed} CU를 소비했습니다. CU 상한을 확인하고 '적용'을 클릭하세요",
+  "device.releaseCuLimitImmediateWarn":
+    "이번 실행에서 이미 {consumed} CU를 소비해 해당 상한에 도달했습니다. '적용'을 클릭하면 즉시 자동 해제가 시작됩니다",
   "device.driveMountedFull": "Google 드라이브 자동 마운트됨 (My Drive / {folder}{free}) · {tail}",
   "device.driveFreeSegment": " · 여유 {size}",
   "device.drivePendingSync": "동기화 대기 {count}건",
@@ -583,6 +606,8 @@ export const koKRMessages: ColabOneMessages = {
   "device.footerBase": "모델 가중치, 외부 API 추론 및 ComfyUI 워크플로는 모두 원격 GPU에서 실행됩니다.",
   "device.footerDriveMounted":
     "모델 목록, ComfyUI 워크플로, 출력 결과물이 Google 드라이브 (ColabOne_Drive)에 자동 저장되며 해제 전 동기화됩니다.",
+  "device.footerDriveMountedFolder":
+    "모델 목록, ComfyUI 워크플로, 출력 결과물이 Google 드라이브 ({folder})에 자동 저장되며 해제 전 동기화됩니다.",
   "device.footerDriveAuto":
     "드라이브 자동 마운트 켜짐: GPU 시작 시 ColabOne_Drive를 자동 연결해 모델 목록, 워크플로 및 결과물을 영구 보관합니다.",
   "device.footerDriveUnmountedActive":
@@ -612,6 +637,10 @@ export const koKRMessages: ColabOneMessages = {
   "device.releaseConfirmSelected": "선택 항목 중지 ({count})",
   "device.toastRefreshed": "계정 과금 및 인스턴스 상태를 새로고침했습니다",
   "device.toastIdleSet": "유휴 자동 해제를 {policy}(으)로 설정했습니다",
+  "device.toastReleaseModeSet": "자동 해제 정책을 {policy}(으)로 설정했습니다",
+  "device.toastCuLimitConfirmNeeded":
+    "이번 실행에서 이미 {consumed} CU를 소비했습니다. CU 상한을 확인하거나 높인 뒤 '적용'을 클릭하세요",
+  "device.errInvalidCuLimit": "CU 소비 상한은 0.1에서 100000 사이여야 합니다",
   "device.toastThreadsSet": "원격 다운로드 동시 스레드를 {threads}개로 설정했습니다",
   "device.toastAssignMaxAttemptsSet": "GPU 할당 최대 시도 횟수를 {count}회로 설정했습니다",
   "device.toastDefaultGpuSet": "기본 GPU를 {gpu}(으)로 설정했습니다",
@@ -621,6 +650,10 @@ export const koKRMessages: ColabOneMessages = {
   "api.title": "외부 API",
   "api.subtitle":
     "원격 GPU에서 OpenAI Responses / Chat Completions 호환 API와 Codex 컨텍스트 압축을 제공합니다. {policy} 유휴 시 자동 해제됩니다.",
+  "api.subtitleNever":
+    "원격 GPU에서 OpenAI Responses / Chat Completions 호환 API와 Codex 컨텍스트 압축을 제공합니다. 자동 해제 안 함으로 설정되어 수동 중지 또는 CU 소진 시까지 계속 실행됩니다.",
+  "api.subtitleCuLimit":
+    "원격 GPU에서 OpenAI Responses / Chat Completions 호환 API와 Codex 컨텍스트 압축을 제공합니다. 이번 실행 누적 소비가 {limit} CU에 도달하면 드라이브를 저장하고 자동 해제됩니다.",
   "api.statusStopped": "꺼짐",
   "api.statusUnconfirmed": "상태 확인 중",
   "api.statusStarting": "연결 중",
@@ -1104,6 +1137,8 @@ export const koKRMessages: ColabOneMessages = {
   "comfy.gpuStoppedDesc":
     "원격 GPU가 중지 상태입니다. 먼저 GPU를 시작하면 워크플로나 네이티브 캔버스를 열 수 있습니다.",
   "comfy.runningIdleHint": "작업 및 캔버스 활동 중에는 유휴 자동 해제가 일시 정지됩니다 (정책: {policy})",
+  "comfy.runningReleaseNeverHint": "자동 해제 안 함 · 수동 중지 또는 CU 소진 시까지 인스턴스가 계속 실행됩니다",
+  "comfy.runningReleaseCuLimitHint": "CU 상한 해제 · 이번 실행 누적 소비가 {limit} CU에 도달하면 드라이브를 저장하고 자동 해제됩니다",
   "comfy.preparingDesc": "원격 GPU에서 ComfyUI 환경을 구성하고 있습니다. 완료되면 바로 실행할 수 있습니다.",
   "comfy.readyToStartDesc":
     "원격 GPU가 준비되었습니다. ComfyUI 엔진을 시작해 워크플로를 실행하거나 캔버스를 여세요.",
@@ -1167,6 +1202,8 @@ export const koKRMessages: ColabOneMessages = {
     "워크플로를 실행하면 생성된 이미지·비디오·오디오가 여기에 표시되며 미리보기, 로컬 저장 또는 Google 드라이브 직접 저장을 지원합니다.",
   "comfy.drivePersistHint":
     "Google 드라이브(My Drive / ColabOne_Drive)가 연결되어 결과물이 자동 보관되며, '드라이브로 저장'으로 outputs 폴더에 바로 저장할 수 있습니다.",
+  "comfy.drivePersistHintFolder":
+    "Google 드라이브(My Drive / {folder})가 연결되어 결과물이 자동 보관되며, '드라이브로 저장'으로 outputs 폴더에 바로 저장할 수 있습니다.",
   "comfy.localExportHint":
     "결과물은 원격 GPU에 임시 저장됩니다. 인스턴스를 해제하기 전에 로컬로 내보내거나 Google 드라이브에 영구 저장하세요.",
   "comfy.driveWaitingHint":
@@ -1202,6 +1239,8 @@ export const koKRMessages: ColabOneMessages = {
   "comfy.exportedToDrive": "드라이브 저장됨",
   "comfy.exportDriveReadyTooltip":
     "원격 GPU에서 Google 드라이브(My Drive / ColabOne_Drive / outputs)로 빠르게 직접 전송하여 영구 보관",
+  "comfy.exportDriveReadyTooltipFolder":
+    "원격 GPU에서 Google 드라이브(My Drive / {folder} / outputs)로 빠르게 직접 전송하여 영구 보관",
   "comfy.exportDriveSetupTooltip":
     "처음 사용 시 Google 드라이브 인증 설정 창이 열리며, 완료 후 결과물을 자동으로 영구 저장합니다",
   "comfy.exportDriveDoneTooltip":
@@ -1283,6 +1322,12 @@ export const koKRMessages: ColabOneMessages = {
   "comfy.noticeExportedDrive": "결과물을 Google 드라이브로 저장했습니다: {path}",
   "comfy.noticeExportedDriveExists": "이미 Google 드라이브에 저장된 결과물입니다: {path}",
   "comfy.noticeDeletedOutput": "결과물을 삭제했습니다.",
+  "comfy.noticeDeletedOutputManualCloudMount":
+    "앱에서 결과물을 삭제했습니다. 클라우드 파일은 Colab 마운트 모드로 기록되어 자동 삭제할 수 없으므로 Google 드라이브에서 직접 삭제해 주세요.",
+  "comfy.noticeDeletedOutputManualCloudNoApi":
+    "앱에서 결과물을 삭제했습니다. Google 드라이브 API 직접 연결 권한이 없어 클라우드 파일을 자동 삭제할 수 없으므로 Google 드라이브에서 직접 삭제해 주세요.",
+  "comfy.noticeDeletedOutputManualCloudGeneric":
+    "앱에서 결과물을 삭제했습니다. Google 드라이브의 파일을 자동 삭제할 수 없었으므로 필요시 Google 드라이브에서 직접 삭제해 주세요.",
   "comfy.driveModalTitleExport": "Google 드라이브로 저장",
   "comfy.driveModalTitleConfig": "Google 드라이브 설정",
   "comfy.driveModalTagExported": "저장됨",
@@ -1404,6 +1449,7 @@ export const koKRMessages: ColabOneMessages = {
   "comfy.openOutputInDrive": "드라이브에서 보기",
   "comfy.openOutputInDriveTooltip": "브라우저의 Google 드라이브에서 이 결과물 열기",
   "comfy.outputDriveSyncedTooltip": "Google 드라이브(ColabOne_Drive)에 동기화됨",
+  "comfy.outputDriveSyncedTooltipFolder": "Google 드라이브({folder})에 동기화됨",
   "comfy.outputTagSavedInDrive": "드라이브 저장됨",
   "comfy.outputTagSyncedInDrive": "드라이브 동기화됨",
   "comfy.outputTagShared": "외부 공유",
@@ -1416,6 +1462,8 @@ export const koKRMessages: ColabOneMessages = {
   "comfy.shareWorkflowBtn": "워크플로 공유",
   "comfy.exportLocalNeedDriveApiTooltip": "기본 DriveFS 기록은 GPU 없이 직접 다운로드할 수 없습니다. 드라이브에서 보기를 이용하거나 무인 드라이브 모드를 켜세요",
   "comfy.deleteDriveOutputDesc": "Google 드라이브 연결 결과물 \"{name}\"을(를) 삭제할까요? (드라이브 API 사용 시 Google 드라이브 휴지통으로 이동합니다)",
+  "comfy.deleteDriveMountOutputDesc":
+    "앱 목록에서 결과물 \"{name}\"을(를) 삭제할까요? Colab 마운트 모드로 기록된 파일이므로 클라우드 파일은 Google 드라이브에서 직접 삭제해야 합니다.",
   "comfy.driveModalConnectedAutoReleaseDesc": "Google 드라이브 \"{folder}\"에 마운트되었습니다{free}. 아래 버튼을 눌러 워크플로 완료 후 자동 동기화 및 안전한 인스턴스 해제를 켤 수 있습니다.",
   "comfy.driveAutoReleaseEnableNowBtn": "완료 후 자동 해제 켜기",
   "comfy.driveRetryAutoReleaseBtn": "자동 해제 켜기 재시도",
@@ -1707,10 +1755,12 @@ export const koKRMessages: ColabOneMessages = {
   "settings.clipboardReadFailed": "클립보드를 읽지 못했습니다. 아래 입력란에 직접 붙여넣어 주세요",
   "settings.driveHeading": "Google 드라이브",
   "settings.driveTagMounted": "마운트됨 · ColabOne_Drive",
+  "settings.driveTagMountedFolder": "마운트됨 · {folder}",
   "settings.driveTagHeadlessReady": "팝업 없음 준비됨 · 자동 마운트",
   "settings.driveTagAuthorized": "승인됨 · 네이티브 DriveFS",
   "settings.driveTagReauth": "재로그인 권한 필요",
   "settings.driveDescPrefix": "로컬 Google OAuth 자격 증명을 재사용해 전용 폴더",
+  "settings.driveDescNativeSep": "(무인 모드) 또는 네이티브 마운트 폴더",
   "settings.driveDescSuffix":
     "를 자동 마운트하여 모델 목록, ComfyUI 워크플로 및 생성 결과물을 자동으로 영구 보관합니다.",
   "settings.driveNeedScopeAlert":
@@ -1732,7 +1782,7 @@ export const koKRMessages: ColabOneMessages = {
   "settings.downloadThreadsAria": "다운로드 동시 스레드 수",
   "settings.threadsOption": "{count} 스레드",
   "settings.autoDriveLabel": "드라이브 자동 마운트",
-  "settings.autoDriveDesc": "GPU 시작 시 Google 드라이브 (ColabOne_Drive) 자동 마운트 및 동기화",
+  "settings.autoDriveDesc": "GPU 시작 시 Google 드라이브 (ColabOne_Drive / ColabOne_Drive_Mount) 자동 마운트 및 동기화",
   "settings.assignMaxAttemptsLabel": "GPU 할당 최대 시도 횟수",
   "settings.assignMaxAttemptsAria": "GPU 할당 최대 시도 횟수",
   "settings.assignMaxAttemptsUnit": "회",
@@ -1741,6 +1791,10 @@ export const koKRMessages: ColabOneMessages = {
   "settings.idleProtectionTitle": "유휴 자동 해제 보호",
   "settings.idleProtectionDesc":
     "{policy} 동안 활동이나 작업이 없으면 원격 리소스를 자동 해제합니다. 조작 시 타이머가 초기화되며 모델 다운로드·로드·API 추론·ComfyUI 실행 중에는 자동으로 일시 정지됩니다.",
+  "settings.releaseNeverDesc":
+    "자동 해제 안 함으로 설정됨: 사용자가 수동으로 중지하거나 계정의 컴퓨팅 유닛(CU)이 소진될 때까지 인스턴스가 계속 실행됩니다.",
+  "settings.releaseCuLimitDesc":
+    "이번 연속 실행의 누적 소비가 {limit} CU에 도달하면 Google 드라이브를 자동 저장하고 인스턴스를 해제합니다 (유휴 타이머 꺼짐).",
   "settings.computeSyncNote":
     "기본 GPU와 유휴 해제 시간은 '원격 기기' 페이지와 실시간 동기화되어 즉시 적용됩니다.",
   "settings.assignProxyTitle": "GPU 할당 전용 프록시",
@@ -2526,6 +2580,10 @@ export const koKRMessages: ColabOneMessages = {
   "outputGallery.noticeAlbumDriveExported":
     "앨범의 모든 항목을 Google 드라이브로 내보냈습니다",
   "outputGallery.noticeAlbumDeleted": "이 앨범의 모든 결과물을 삭제했습니다",
+  "outputGallery.noticeAlbumDeletedManualCloudMount":
+    "앱에서 앨범을 삭제했습니다. 이 중 {count}개 클라우드 파일은 Colab 마운트 모드로 기록되어 자동 삭제할 수 없으므로 Google 드라이브에서 직접 삭제해 주세요.",
+  "outputGallery.noticeAlbumDeletedManualCloudGeneric":
+    "앱에서 앨범을 삭제했습니다. 이 중 {count}개의 Google 드라이브 파일을 자동 삭제할 수 없으므로 Google 드라이브에서 직접 삭제해 주세요.",
   "outputGallery.multiSelectBtn": "다중 선택 공유",
   "outputGallery.multiSelectCancel": "선택 종료",
   "outputGallery.multiSelectAll": "전체 선택",

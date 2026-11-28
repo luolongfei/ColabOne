@@ -393,6 +393,7 @@ class ColabOneRuntime:
         self.last_active = time.time()
         self.idle_minutes = 30
         self.idle_countdown_seconds = 60
+        self.release_mode = "idle"
         self.activity_until = 0.0
         self.deadline = 0.0
         self.stopping = threading.Event()
@@ -552,6 +553,18 @@ class ColabOneRuntime:
         elapsed = (
             0 if active else max(0, now - max(self.last_active, self.activity_until))
         )
+        mode = getattr(self, "release_mode", "idle")
+        if mode not in ("idle", "never", "cu_limit"):
+            mode = "never" if self.idle_minutes <= 0 else "idle"
+        if self.idle_minutes <= 0 or mode in ("never", "cu_limit"):
+            return {
+                "phase": "disabled",
+                "remaining_seconds": 0,
+                "countdown_seconds": self.idle_countdown_seconds,
+                "idle_seconds": elapsed,
+                "server_time": now,
+                "release_mode": mode if mode in ("never", "cu_limit") else "never",
+            }
         total = self.idle_minutes * 60
         warn_window = min(self.idle_countdown_seconds, total)
         remaining = max(0, total - elapsed)
@@ -565,6 +578,7 @@ class ColabOneRuntime:
             "countdown_seconds": warn_window,
             "idle_seconds": elapsed,
             "server_time": now,
+            "release_mode": "idle",
         }
 
     def claim_auto_release(self, now=None):
@@ -599,6 +613,7 @@ class ColabOneRuntime:
             location = copy.deepcopy(self.location)
             quiescing = self.quiescing
             idle_minutes = self.idle_minutes
+            release_mode = getattr(self, "release_mode", "idle")
             deadline = self.deadline
             dirty_count = len(self._dirty_seq)
             tasks = list(self.tasks.values())
@@ -641,6 +656,7 @@ class ColabOneRuntime:
                 "comfyui_live_studio",
                 "comfyui_fashion_tryon",
                 "comfyui_share_guard",
+                "idle_release_modes",
             ],
             "comfyui": comfy_status,
             "live_studio": live_status,
@@ -656,6 +672,7 @@ class ColabOneRuntime:
             "disk_free": resources["disk"]["free_bytes"],
             "idle_remaining": idle["remaining_seconds"],
             "idle_minutes": idle_minutes,
+            "release_mode": release_mode,
             "tasks": [t.snapshot() for t in tasks],
             "drive": self.drive.status(dirty_count),
             "deadline": deadline,

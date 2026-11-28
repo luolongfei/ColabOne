@@ -51,8 +51,64 @@ const (
 	// COLABONE_MAX_ASSIGN_MAX_ATTEMPTS is the maximum allowed GPU allocation attempt count.
 	COLABONE_MAX_ASSIGN_MAX_ATTEMPTS = 100
 
+	// COLABONE_RELEASE_MODE_IDLE releases the GPU after idle_minutes of inactivity.
+	COLABONE_RELEASE_MODE_IDLE = "idle"
+	// COLABONE_RELEASE_MODE_NEVER disables automatic release until manually stopped or CU runs out.
+	COLABONE_RELEASE_MODE_NEVER = "never"
+	// COLABONE_RELEASE_MODE_CU_LIMIT releases automatically once current run CU consumption reaches release_cu_limit.
+	COLABONE_RELEASE_MODE_CU_LIMIT = "cu_limit"
+
+	COLABONE_DEFAULT_RELEASE_MODE     = COLABONE_RELEASE_MODE_IDLE
+	COLABONE_DEFAULT_RELEASE_CU_LIMIT = 10.0
+	COLABONE_MIN_RELEASE_CU_LIMIT     = 0.1
+	COLABONE_MAX_RELEASE_CU_LIMIT     = 100000.0
+
 	colabOneMaxOutputAssetOffset = 512 * 1024 * 1024
 )
+
+var validColabOneReleaseModes = map[string]bool{
+	COLABONE_RELEASE_MODE_IDLE:     true,
+	COLABONE_RELEASE_MODE_NEVER:    true,
+	COLABONE_RELEASE_MODE_CU_LIMIT: true,
+}
+
+func normalizeColabOneReleaseMode(raw any) string {
+	s, ok := raw.(string)
+	if !ok {
+		return COLABONE_DEFAULT_RELEASE_MODE
+	}
+	s = strings.TrimSpace(s)
+	if validColabOneReleaseModes[s] {
+		return s
+	}
+	return COLABONE_DEFAULT_RELEASE_MODE
+}
+
+func roundColabOneCULimit(val float64) float64 {
+	return math.Round(val*100) / 100
+}
+
+func formatColabOneCUCompact(val float64) string {
+	rounded := roundColabOneCULimit(val)
+	if math.Abs(rounded-math.Round(rounded)) < 1e-6 {
+		return fmt.Sprintf("%.0f", math.Round(rounded))
+	}
+	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.2f", rounded), "0"), ".")
+}
+
+func formatColabOneReleasePolicyZh(mode string, idleMin int, cuLimit float64) string {
+	switch normalizeColabOneReleaseMode(mode) {
+	case COLABONE_RELEASE_MODE_NEVER:
+		return "长期不释放"
+	case COLABONE_RELEASE_MODE_CU_LIMIT:
+		return fmt.Sprintf("消耗达 %s CU 自动释放", formatColabOneCUCompact(cuLimit))
+	default:
+		if idleMin < 1 {
+			idleMin = 30
+		}
+		return fmt.Sprintf("%d 分钟", idleMin)
+	}
+}
 
 // ColabOneDefaultCommonRepo describes a default recommended Hugging Face model repository.
 type ColabOneDefaultCommonRepo struct {

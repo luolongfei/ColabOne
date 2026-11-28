@@ -1306,13 +1306,22 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 			if asString(rt["state"]) != "ready" {
 				return nil, errors.New("请先启动远端 GPU 实例")
 			}
-			if !asBool(asMap(rt["drive"])["connected"]) {
+			driveMap := asMap(rt["drive"])
+			if !asBool(driveMap["connected"]) {
 				return nil, errors.New("当前实例尚未连接 Google 云盘，请先完成云盘授权与挂载")
 			}
 			if caps := asAnySlice(rt["capabilities"]); len(caps) > 0 && !c.hasRemoteCapability("comfyui_drive_export") {
 				return nil, errors.New("当前远端服务版本暂不支持作品直传 Google 云盘，请先点击顶部「立即热更新」升级远端服务后再试")
 			}
-			c.log("正在将 ComfyUI 作品直传导出至 Google 云盘 (ColabOne_Drive/outputs)", "云盘", "info")
+			baseDriveFolder := strings.TrimSpace(asString(driveMap["remote_folder"]))
+			if baseDriveFolder == "" {
+				if strings.TrimSpace(asString(driveMap["mode"])) == "colab_drivefs" {
+					baseDriveFolder = colabOneDriveFSFolderName
+				} else {
+					baseDriveFolder = colabOneDriveFolderName
+				}
+			}
+			c.log(fmt.Sprintf("正在将 ComfyUI 作品直传导出至 Google 云盘 (%s/outputs)", baseDriveFolder), "云盘", "info")
 			res, err := c.remoteLong(ctx, "POST", "comfyui/outputs/"+identity+"/export-drive", nil, 240*time.Second)
 			if err != nil {
 				if isNotFoundError(err) && !strings.Contains(err.Error(), "资源不存在") {
@@ -1345,7 +1354,7 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 			}
 			remoteFolder := asString(resMap["remote_folder"])
 			if remoteFolder == "" {
-				remoteFolder = "ColabOne_Drive/outputs"
+				remoteFolder = baseDriveFolder + "/outputs"
 			}
 			exportedName := asString(resMap["filename"])
 			if exportedName != "" {
@@ -1385,24 +1394,59 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 				res, err := c.remote(ctx, "DELETE", "comfyui/outputs/"+identity, nil, "", 0)
 				if err != nil {
 					if isNotFoundError(err) && c.hasDriveOutputRecord(identity) {
-						return c.deleteDriveOutputOffline(ctx, identity)
+						offRes, offErr := c.deleteDriveOutputOffline(ctx, identity)
+						if offErr != nil {
+							return nil, offErr
+						}
+						c.evictLocalOutputCache(identity)
+						if !asBool(offRes["manual_cloud_cleanup"]) {
+							c.log("已删除 Google 云盘作品记录", "云盘", "info")
+						}
+						return offRes, nil
 					}
 					return nil, err
 				}
 				c.evictLocalOutputCache(identity)
 				c.pruneOutputFromSnapshot(identity)
 				keepExportedRecord := false
+				manualCloudCleanupReason := ""
 				if rec := c.driveOutputRecordCopy(identity); rec != nil {
-					if exportFileID := sanitizeDriveFileID(rec.DriveFileID); exportFileID != "" {
+					exportFileID := sanitizeDriveFileID(rec.DriveFileID)
+					if exportFileID == "" && rec.DriveExported && rec.DriveMode != "colab_drivefs" {
+						if canDirectRead, _ := c.driveDirectReadReady(); canDirectRead {
+							if syncRes, syncErr := c.SyncDriveOutputs(ctx); syncErr == nil && asBool(syncRes["synced"]) {
+								if refreshed := c.driveOutputRecordCopy(identity); refreshed != nil {
+									exportFileID = sanitizeDriveFileID(refreshed.DriveFileID)
+								}
+							}
+						}
+					}
+					if exportFileID != "" {
 						trashed, trashErr := c.trashDriveFileIDs(ctx, exportFileID)
 						if trashErr != nil {
-							keepExportedRecord = true
-							c.log("已删除远端作品，但清理 Google 云盘导出副本失败（已保留云盘记录）："+SafeMessage(trashErr.Error()), "云盘", "warning")
+							if isPermanentDrivePermissionErr(trashErr) {
+								manualCloudCleanupReason = "drive_api_unavailable"
+								if rec.DriveMode == "colab_drivefs" {
+									manualCloudCleanupReason = "colab_drivefs"
+								}
+							} else {
+								keepExportedRecord = true
+								c.log("已删除远端作品，但清理 Google 云盘导出副本失败（已保留云盘记录）："+SafeMessage(trashErr.Error()), "云盘", "warning")
+							}
 						} else if !trashed {
-							keepExportedRecord = true
+							manualCloudCleanupReason = "drive_api_unavailable"
+							if rec.DriveMode == "colab_drivefs" {
+								manualCloudCleanupReason = "colab_drivefs"
+							}
 						}
 					} else if rec.DriveExported {
-						keepExportedRecord = true
+						if rec.DriveMode == "colab_drivefs" {
+							manualCloudCleanupReason = "colab_drivefs"
+						} else if canDirectRead, _ := c.driveDirectReadReady(); !canDirectRead {
+							manualCloudCleanupReason = "drive_api_unavailable"
+						} else {
+							manualCloudCleanupReason = "remote_file_unconfirmed"
+						}
 					}
 				}
 				if !keepExportedRecord {
@@ -1413,6 +1457,18 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 				if err := c.RefreshRemote(ctx, ""); err != nil {
 					return nil, err
 				}
+				if manualCloudCleanupReason != "" {
+					msg := colabOneManualCloudDeleteWarning(manualCloudCleanupReason)
+					c.log(msg, "云盘", "warning")
+					outRes := deepCopyMap(asMap(res))
+					if outRes == nil {
+						outRes = map[string]any{"ok": true}
+					}
+					outRes["manual_cloud_cleanup"] = true
+					outRes["warning_reason"] = manualCloudCleanupReason
+					outRes["warning"] = msg
+					return outRes, nil
+				}
 				c.log("已删除远端 ComfyUI 作品文件", "ComfyUI", "info")
 				return res, nil
 			}
@@ -1422,7 +1478,9 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 				return nil, err
 			}
 			c.evictLocalOutputCache(identity)
-			c.log("已删除 Google 云盘作品记录", "云盘", "info")
+			if !asBool(res["manual_cloud_cleanup"]) {
+				c.log("已删除 Google 云盘作品记录", "云盘", "info")
+			}
 			return res, nil
 		}
 		offset := 0
@@ -1897,7 +1955,18 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		return map[string]any{"ok": true}, nil
 
 	case "drive.sync", "sync":
-		return c.asyncOperation("同步 Google 云盘 (ColabOne_Drive)", func() error {
+		c.mu.Lock()
+		syncDriveMap := asMap(asMap(c.data["runtime"])["drive"])
+		syncFolder := strings.TrimSpace(asString(syncDriveMap["remote_folder"]))
+		if syncFolder == "" {
+			if strings.TrimSpace(asString(syncDriveMap["mode"])) == "colab_drivefs" {
+				syncFolder = colabOneDriveFSFolderName
+			} else {
+				syncFolder = colabOneDriveFolderName
+			}
+		}
+		c.mu.Unlock()
+		return c.asyncOperation(fmt.Sprintf("同步 Google 云盘 (%s)", syncFolder), func() error {
 			_, err := c.SyncDrive(c.rootCtx)
 			return err
 		}, nil, nil)

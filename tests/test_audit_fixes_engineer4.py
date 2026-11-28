@@ -508,7 +508,7 @@ def test_drive_trash_enoent_symlinks_export_lock_and_private_bytes(tmp_path, mon
         assert stat.S_IMODE(priv.stat().st_mode) == 0o600
 
     mount = tmp_path / "MyDrive"
-    ws = mount / "ColabOne_Drive" / "workspace"
+    ws = mount / "ColabOne_Drive_Mount" / "workspace"
     (ws / "workflows").mkdir(parents=True)
     wf_file = ws / "workflows" / "wf1.json"
     wf_file.write_text("{}", encoding="utf-8")
@@ -536,7 +536,7 @@ def test_drive_trash_enoent_symlinks_export_lock_and_private_bytes(tmp_path, mon
     bad_mount.mkdir()
     outside = tmp_path / "outside_drive"
     outside.mkdir()
-    (bad_mount / "ColabOne_Drive").symlink_to(outside, target_is_directory=True)
+    (bad_mount / "ColabOne_Drive_Mount").symlink_to(outside, target_is_directory=True)
     drv.mount_root = bad_mount
     with pytest.raises(ValueError, match="符号链接"):
         drv.remove_remote_workflow("wf1")
@@ -574,7 +574,7 @@ def test_drive_trash_enoent_symlinks_export_lock_and_private_bytes(tmp_path, mon
     assert errors == []
     assert len(results) == 2
     out_files = [
-        p for p in (mount / "ColabOne_Drive" / "outputs").iterdir() if p.is_file()
+        p for p in (mount / "ColabOne_Drive_Mount" / "outputs").iterdir() if p.is_file()
     ]
     assert len(out_files) == 2
     assert {p.read_bytes() for p in out_files} == {b"CONTENT-A", b"CONTENT-B"}

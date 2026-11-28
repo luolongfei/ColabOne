@@ -9615,3 +9615,415 @@ func TestMonitorOnceSeparatesVaultAuthAndNetworkErrorsAndAvoidsBackoffFlashing(t
 		}
 	})
 }
+
+func TestReleaseModesPersistenceConfigureAndCUAutoRelease(t *testing.T) {
+	ctx := context.Background()
+
+	// 1. Validation, persistence, reload, and backward-compatible idle_minutes reset.
+	t.Run("settings validation persistence and reload", func(t *testing.T) {
+		h := newTestHarness(t, false)
+		defer h.ctrl.Close()
+
+		// Reject invalid release_mode and out-of-range release_cu_limit.
+		if _, err := h.ctrl.SaveSettings(ctx, map[string]any{"release_mode": "invalid"}); err == nil {
+			t.Fatal("expected error for invalid release_mode")
+		}
+		if _, err := h.ctrl.SaveSettings(ctx, map[string]any{"release_mode": "cu_limit", "release_cu_limit": 0.05}); err == nil {
+			t.Fatal("expected error for release_cu_limit < 0.1")
+		}
+		if _, err := h.ctrl.SaveSettings(ctx, map[string]any{"release_mode": "cu_limit", "release_cu_limit": 100001.0}); err == nil {
+			t.Fatal("expected error for release_cu_limit > 100000")
+		}
+
+		// Save "never" mode and verify snapshot + reload.
+		if _, err := h.ctrl.SaveSettings(ctx, map[string]any{"release_mode": "never"}); err != nil {
+			t.Fatalf("SaveSettings(never) failed: %v", err)
+		}
+		settingsNever := asMap(h.ctrl.Snapshot()["settings"])
+		if asString(settingsNever["release_mode"]) != COLABONE_RELEASE_MODE_NEVER {
+			t.Fatalf("expected release_mode=never, got %#v", settingsNever)
+		}
+
+		// Save "cu_limit" with rounding and reload from vault.
+		if _, err := h.ctrl.SaveSettings(ctx, map[string]any{"release_mode": "cu_limit", "release_cu_limit": 12.567}); err != nil {
+			t.Fatalf("SaveSettings(cu_limit) failed: %v", err)
+		}
+		settingsCU := asMap(h.ctrl.Snapshot()["settings"])
+		if asString(settingsCU["release_mode"]) != COLABONE_RELEASE_MODE_CU_LIMIT || asFloatZero(settingsCU["release_cu_limit"]) != 12.57 {
+			t.Fatalf("expected release_mode=cu_limit limit=12.57, got %#v", settingsCU)
+		}
+		h.ctrl.mu.Lock()
+		h.ctrl.settings["release_mode"] = COLABONE_RELEASE_MODE_IDLE
+		h.ctrl.settings["release_cu_limit"] = 1.0
+		h.ctrl.mu.Unlock()
+		h.ctrl.loadSettings()
+		reloaded := asMap(h.ctrl.Snapshot()["settings"])
+		if asString(reloaded["release_mode"]) != COLABONE_RELEASE_MODE_CU_LIMIT || asFloatZero(reloaded["release_cu_limit"]) != 12.57 {
+			t.Fatalf("loadSettings did not preserve release_mode/cu_limit: %#v", reloaded)
+		}
+
+		// Backward compatibility: saving only idle_minutes switches back to "idle".
+		if _, err := h.ctrl.SaveSettings(ctx, map[string]any{"idle_minutes": 45}); err != nil {
+			t.Fatalf("SaveSettings(idle_minutes=45) failed: %v", err)
+		}
+		settingsIdle := asMap(h.ctrl.Snapshot()["settings"])
+		idleMinVal, _ := asInt(settingsIdle["idle_minutes"])
+		if asString(settingsIdle["release_mode"]) != COLABONE_RELEASE_MODE_IDLE || idleMinVal != 45 {
+			t.Fatalf("expected release_mode=idle idle_minutes=45, got %#v", settingsIdle)
+		}
+	})
+
+	// 2. configureRemote payloads for capable vs legacy VMs across never and cu_limit modes.
+	t.Run("configureRemote capable and legacy VMs", func(t *testing.T) {
+		h := newTestHarness(t, false)
+		defer h.ctrl.Close()
+
+		now := float64(time.Now().Unix())
+		h.ctrl.cuUsage.RecordSample("dev@example.com", now-600, 100.0, true, 12.0, 1)
+		h.ctrl.cuUsage.RecordSample("dev@example.com", now-60, 98.0, true, 12.0, 1)
+
+		// Capable VM: release_mode="never" sends idle_minutes=0 + release_mode="never".
+		h.ctrl.Update(map[string]any{
+			"account": map[string]any{"logged_in": true, "email": "dev@example.com", "balance": 98.0, "rate": 12.0},
+			"runtime": map[string]any{
+				"state":        "ready",
+				"id":           "ep-cap",
+				"capabilities": []any{"idle_release_modes"},
+			},
+		})
+		h.ctrl.mu.Lock()
+		h.ctrl.settings["release_mode"] = COLABONE_RELEASE_MODE_NEVER
+		h.ctrl.mu.Unlock()
+		if ok, err := h.ctrl.configureRemote(ctx, "ep-cap", false); err != nil || !ok {
+			t.Fatalf("configureRemote(never, capable) failed: ok=%v err=%v", ok, err)
+		}
+		h.provider.mu.Lock()
+		lastNever := h.provider.rpcCalls[len(h.provider.rpcCalls)-1]
+		h.provider.mu.Unlock()
+		bodyNever := asMap(lastNever.Body)
+		neverIdle, neverIdleOK := asInt(bodyNever["idle_minutes"])
+		if lastNever.Path != "configure" || !neverIdleOK || neverIdle != 0 || asString(bodyNever["release_mode"]) != "never" || asFloatZero(bodyNever["deadline"]) != 0 {
+			t.Fatalf("unexpected capable never configure payload: %#v", lastNever)
+		}
+
+		// Capable VM: release_mode="cu_limit" sends idle_minutes=0 + release_mode="cu_limit" + positive failsafe deadline.
+		h.ctrl.mu.Lock()
+		h.ctrl.settings["release_mode"] = COLABONE_RELEASE_MODE_CU_LIMIT
+		h.ctrl.settings["release_cu_limit"] = 10.0
+		h.ctrl.mu.Unlock()
+		if ok, err := h.ctrl.configureRemote(ctx, "ep-cap", false); err != nil || !ok {
+			t.Fatalf("configureRemote(cu_limit, capable) failed: ok=%v err=%v", ok, err)
+		}
+		h.provider.mu.Lock()
+		lastCU := h.provider.rpcCalls[len(h.provider.rpcCalls)-1]
+		h.provider.mu.Unlock()
+		bodyCU := asMap(lastCU.Body)
+		cuIdle, cuIdleOK := asInt(bodyCU["idle_minutes"])
+		if !cuIdleOK || cuIdle != 0 || asString(bodyCU["release_mode"]) != "cu_limit" || asFloatZero(bodyCU["deadline"]) <= now {
+			t.Fatalf("unexpected capable cu_limit configure payload: %#v", lastCU)
+		}
+
+		// Legacy VM (without idle_release_modes): falls back to idle_minutes=240 without release_mode.
+		h.ctrl.Update(map[string]any{
+			"runtime": map[string]any{
+				"state":        "ready",
+				"id":           "ep-legacy",
+				"capabilities": []any{"comfyui"},
+			},
+		})
+		h.ctrl.mu.Lock()
+		h.ctrl.settings["release_mode"] = COLABONE_RELEASE_MODE_NEVER
+		h.ctrl.mu.Unlock()
+		if ok, err := h.ctrl.configureRemote(ctx, "ep-legacy", false); err != nil || !ok {
+			t.Fatalf("configureRemote(never, legacy) failed: ok=%v err=%v", ok, err)
+		}
+		h.provider.mu.Lock()
+		lastLegacy := h.provider.rpcCalls[len(h.provider.rpcCalls)-1]
+		h.provider.mu.Unlock()
+		bodyLegacy := asMap(lastLegacy.Body)
+		legacyIdle, _ := asInt(bodyLegacy["idle_minutes"])
+		if legacyIdle != 240 {
+			t.Fatalf("expected legacy idle_minutes=240, got %#v", bodyLegacy)
+		}
+		if _, hasMode := bodyLegacy["release_mode"]; hasMode {
+			t.Fatalf("legacy VM payload must omit release_mode, got %#v", bodyLegacy)
+		}
+	})
+
+	// 3. Automatic CU-limit release triggers prepare-release?auto=1 + Release, while never mode never auto-releases.
+	t.Run("CU limit auto release triggers cleanly and never mode stays running", func(t *testing.T) {
+		h := newTestHarness(t, false)
+		defer h.ctrl.Close()
+
+		_ = h.vault.Set("colab", map[string]any{"token": "tok-cu"})
+		_ = h.vault.Set("runtime_sessions", map[string]any{
+			"ep-cu": map[string]any{"endpoint": "ep-cu", "gpu": "L4"},
+		})
+		_ = h.vault.Set("runtime_active_endpoint", "ep-cu")
+		h.provider.accountFn = func(context.Context) (map[string]any, error) {
+			return map[string]any{
+				"logged_in":   true,
+				"email":       "dev@example.com",
+				"balance":     94.0,
+				"rate":        6.0,
+				"assignments": 1,
+				"instances":   []any{map[string]any{"endpoint": "ep-cu"}},
+			}, nil
+		}
+
+		now := float64(time.Now().Unix())
+		// Current run has consumed 6.0 CU (100.0 -> 94.0).
+		h.ctrl.cuUsage.RecordSample("dev@example.com", now-3600, 100.0, true, 6.0, 1)
+		h.ctrl.cuUsage.RecordSample("dev@example.com", now-5, 94.0, true, 6.0, 1)
+		h.ctrl.Update(map[string]any{
+			"account": map[string]any{"logged_in": true, "email": "dev@example.com", "balance": 94.0, "rate": 6.0, "assignments": 1},
+			"runtime": map[string]any{"state": "ready", "id": "ep-cu", "capabilities": []any{"idle_release_modes"}},
+		})
+		managed := map[string]map[string]any{"ep-cu": {"endpoint": "ep-cu", "gpu": "L4"}}
+
+		// Under "never" mode, checkCUAutoRelease must NOT trigger even at 6.0 CU.
+		h.ctrl.mu.Lock()
+		h.ctrl.settings["release_mode"] = COLABONE_RELEASE_MODE_NEVER
+		h.ctrl.settings["release_cu_limit"] = 5.0
+		h.ctrl.mu.Unlock()
+		h.ctrl.checkCUAutoRelease(ctx, now, managed)
+		time.Sleep(40 * time.Millisecond)
+		h.provider.mu.Lock()
+		if len(h.provider.releaseCalls) != 0 {
+			h.provider.mu.Unlock()
+			t.Fatalf("never mode must not trigger auto-release")
+		}
+		h.provider.mu.Unlock()
+
+		// Under "cu_limit" with limit=10.0 (> 6.0 consumed), must NOT trigger yet.
+		h.ctrl.mu.Lock()
+		h.ctrl.settings["release_mode"] = COLABONE_RELEASE_MODE_CU_LIMIT
+		h.ctrl.settings["release_cu_limit"] = 10.0
+		h.ctrl.mu.Unlock()
+		h.ctrl.checkCUAutoRelease(ctx, now, managed)
+		time.Sleep(40 * time.Millisecond)
+		h.provider.mu.Lock()
+		if len(h.provider.releaseCalls) != 0 {
+			h.provider.mu.Unlock()
+			t.Fatalf("cu_limit=10 must not trigger at 6.0 CU consumed")
+		}
+		h.provider.mu.Unlock()
+
+		// Under "cu_limit" with limit=5.0 (<= 6.0 consumed), MUST call prepare-release?auto=1 and Release(ep-cu)!
+		h.ctrl.mu.Lock()
+		h.ctrl.settings["release_cu_limit"] = 5.0
+		h.ctrl.lastCUReleasePoll = 0
+		h.ctrl.mu.Unlock()
+		h.ctrl.checkCUAutoRelease(ctx, now, managed)
+
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			h.provider.mu.Lock()
+			released := len(h.provider.releaseCalls) > 0
+			h.provider.mu.Unlock()
+			if released {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		h.provider.mu.Lock()
+		defer h.provider.mu.Unlock()
+		if len(h.provider.releaseCalls) == 0 || (h.provider.releaseCalls[0] != "ep-cu" && h.provider.releaseCalls[0] != "") {
+			t.Fatalf("expected Release(ep-cu or active) after hitting CU limit, got %#v", h.provider.releaseCalls)
+		}
+		sawPrepareAuto := false
+		for _, call := range h.provider.rpcCalls {
+			if call.Method == "POST" && call.Path == "prepare-release?auto=1" && (call.Endpoint == "ep-cu" || call.Endpoint == "") {
+				sawPrepareAuto = true
+				break
+			}
+		}
+		if !sawPrepareAuto {
+			t.Fatalf("expected POST prepare-release?auto=1 before CU-limit Release, got rpcCalls=%#v", h.provider.rpcCalls)
+		}
+		for _, entry := range h.ctrl.activity.Snapshot() {
+			if strings.Contains(entry.Message, "已选择强制释放，跳过远端收尾检查") {
+				t.Fatalf("CU-limit auto-release must not log misleading force-release warning after graceful prepare-release: %+v", entry)
+			}
+		}
+	})
+
+	// 4. Regression checks: failsafe deadline stays armed when limit already reached,
+	//    transient release failure respects 20s cooldown, Release closes cuUsage on stale lag
+	//    (preserving external runs), and secondary managed instances refresh cu_limit + legacy keepalive.
+	t.Run("failsafe deadline armed at limit and transient failure cooldown", func(t *testing.T) {
+		h := newTestHarness(t, false)
+		defer h.ctrl.Close()
+
+		_ = h.vault.Set("colab", map[string]any{"token": "tok-cd"})
+		_ = h.vault.Set("runtime_sessions", map[string]any{
+			"ep-cd": map[string]any{"endpoint": "ep-cd", "gpu": "L4"},
+		})
+		_ = h.vault.Set("runtime_active_endpoint", "ep-cd")
+		h.provider.accountFn = func(context.Context) (map[string]any, error) {
+			return map[string]any{
+				"logged_in":   true,
+				"email":       "dev@example.com",
+				"balance":     90.0,
+				"rate":        6.0,
+				"assignments": 1,
+				"instances":   []any{map[string]any{"endpoint": "ep-cd"}},
+			}, nil
+		}
+		var relAttempts atomic.Int32
+		h.provider.releaseFn = func(context.Context, string, LogFunc) (map[string]any, error) {
+			relAttempts.Add(1)
+			return nil, errors.New("temporary colab 503")
+		}
+
+		now := float64(time.Now().Unix())
+		h.ctrl.cuUsage.RecordSample("dev@example.com", now-3600, 100.0, true, 6.0, 1)
+		h.ctrl.cuUsage.RecordSample("dev@example.com", now-5, 90.0, true, 6.0, 1)
+		h.ctrl.Update(map[string]any{
+			"account": map[string]any{"logged_in": true, "email": "dev@example.com", "balance": 90.0, "rate": 6.0, "assignments": 1},
+			"runtime": map[string]any{"state": "ready", "id": "ep-cd", "capabilities": []any{"idle_release_modes"}},
+		})
+
+		// Limit already exceeded (10.0 consumed >= 5.0 limit): computeCUReleaseDeadline MUST stay armed (not 0!).
+		dl := h.ctrl.computeCUReleaseDeadline(now, 5.0)
+		if dl < now+25 {
+			t.Fatalf("expected armed failsafe deadline >= now+25 when limit already reached, got %.0f (now=%.0f)", dl, now)
+		}
+
+		// Trigger first auto-release (fails transiently), wait for opBusy to clear, then call again 2s later:
+		// 20s cooldown must prevent immediate retry storm.
+		h.ctrl.mu.Lock()
+		h.ctrl.settings["release_mode"] = COLABONE_RELEASE_MODE_CU_LIMIT
+		h.ctrl.settings["release_cu_limit"] = 5.0
+		h.ctrl.mu.Unlock()
+		managed := map[string]map[string]any{"ep-cd": {"endpoint": "ep-cd", "gpu": "L4"}}
+		h.ctrl.checkCUAutoRelease(ctx, now, managed)
+		deadlineWait := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadlineWait) {
+			if relAttempts.Load() >= 1 && !h.ctrl.opBusy.Load() {
+				break
+			}
+			time.Sleep(15 * time.Millisecond)
+		}
+		if relAttempts.Load() != 1 {
+			t.Fatalf("expected 1 release attempt, got %d", relAttempts.Load())
+		}
+		h.ctrl.checkCUAutoRelease(ctx, now+2, managed)
+		time.Sleep(50 * time.Millisecond)
+		if relAttempts.Load() != 1 {
+			t.Fatalf("expected 20s retry cooldown to block immediate retry, got %d attempts", relAttempts.Load())
+		}
+	})
+
+	t.Run("Release closes cuUsage on stale lag and preserves external runs", func(t *testing.T) {
+		h := newTestHarness(t, false)
+		defer h.ctrl.Close()
+
+		_ = h.vault.Set("colab", map[string]any{"token": "tok-rel"})
+		_ = h.vault.Set("runtime_sessions", map[string]any{
+			"ep-sole": map[string]any{"endpoint": "ep-sole", "gpu": "L4"},
+		})
+		_ = h.vault.Set("runtime_active_endpoint", "ep-sole")
+		// Simulate Google API lag still reporting ep-sole immediately after release.
+		h.provider.accountFn = func(context.Context) (map[string]any, error) {
+			return map[string]any{
+				"logged_in":   true,
+				"email":       "dev@example.com",
+				"balance":     92.0,
+				"rate":        6.0,
+				"assignments": 1,
+				"instances":   []any{map[string]any{"endpoint": "ep-sole"}},
+			}, nil
+		}
+		h.provider.releaseFn = func(context.Context, string, LogFunc) (map[string]any, error) {
+			_ = h.vault.Delete("runtime_sessions")
+			_ = h.vault.Delete("runtime_active_endpoint")
+			return map[string]any{"ok": true}, nil
+		}
+
+		now := float64(time.Now().Unix())
+		h.ctrl.cuUsage.RecordSample("dev@example.com", now-3600, 100.0, true, 6.0, 1)
+		h.ctrl.cuUsage.RecordSample("dev@example.com", now-5, 92.0, true, 6.0, 1)
+		h.ctrl.Update(map[string]any{
+			"account": map[string]any{"logged_in": true, "email": "dev@example.com", "balance": 92.0, "rate": 6.0, "assignments": 1},
+			"runtime": map[string]any{"state": "ready", "id": "ep-sole"},
+		})
+
+		if err := h.ctrl.Release(ctx, true, "ep-sole"); err != nil {
+			t.Fatalf("Release(ep-sole) failed: %v", err)
+		}
+		if _, _, _, _, stillActive := h.ctrl.cuUsage.CurrentRunEffectiveConsumed("dev@example.com", now+1, 6.0, 92.0, true); stillActive {
+			t.Fatal("expected cuUsage run closed after releasing sole instance despite stale Google API lag")
+		}
+
+		// When an external instance IS genuinely still running, endCUUsageRunIfNoExternal must preserve the run.
+		h.ctrl.cuUsage.BeginRun("dev@example.com", now+2, 92.0, true)
+		h.ctrl.endCUUsageRunIfNoExternal(map[string]any{
+			"email":     "dev@example.com",
+			"instances": []any{map[string]any{"endpoint": "ep-external-notebook"}},
+		}, "ep-sole")
+		if _, _, _, _, extActive := h.ctrl.cuUsage.CurrentRunEffectiveConsumed("dev@example.com", now+3, 6.0, 92.0, true); !extActive {
+			t.Fatal("expected cuUsage run preserved when an external Colab instance is still active")
+		}
+	})
+
+	t.Run("secondary legacy instance refreshes cu_limit deadline and receives keepalive", func(t *testing.T) {
+		h := newTestHarness(t, false)
+		defer h.ctrl.Close()
+
+		_ = h.vault.Set("colab", map[string]any{"token": "tok-sec"})
+		h.provider.addManagedSession("ep-1", "L4", "STANDARD", true)
+		h.provider.addManagedSession("ep-2", "T4", "STANDARD", false)
+		h.ctrl.mu.Lock()
+		expectedRev := h.ctrl.expectedServiceRev
+		h.ctrl.mu.Unlock()
+		h.provider.rpcFn = func(_ context.Context, method, path string, body any, opts ColabOneRPCOptions) (any, error) {
+			if path == "snapshot" {
+				if opts.Endpoint == "ep-2" {
+					return map[string]any{
+						"runtime": map[string]any{"state": "ready", "id": "ep-2", "protocol": 7, "service_revision": expectedRev, "capabilities": []any{"comfyui"}, "tasks": []any{}},
+						"models":  []any{},
+					}, nil
+				}
+				return map[string]any{
+					"runtime": map[string]any{"state": "ready", "id": "ep-1", "protocol": 7, "service_revision": expectedRev, "capabilities": []any{"idle_release_modes"}, "tasks": []any{}},
+					"models":  []any{},
+				}, nil
+			}
+			return map[string]any{"ok": true}, nil
+		}
+
+		now := nowUnixFloat()
+		h.ctrl.mu.Lock()
+		h.ctrl.lastAuth = now
+		h.ctrl.lastHeartbeat = now
+		h.ctrl.lastConfig = now
+		h.ctrl.settings["release_mode"] = COLABONE_RELEASE_MODE_CU_LIMIT
+		h.ctrl.settings["release_cu_limit"] = 50.0
+		h.ctrl.instanceStates["ep-2"] = &instanceCache{
+			Runtime:             map[string]any{"state": "ready", "id": "ep-2", "capabilities": []any{"comfyui"}},
+			LastHeartbeat:       now,
+			LastConfig:          now - 90,  // > 60s cu_limit refresh window, < 600s normal window
+			LastLegacyKeepalive: now - 360, // > 300s legacy keepalive window
+		}
+		h.ctrl.mu.Unlock()
+
+		h.ctrl.MonitorOnce(ctx)
+
+		h.provider.mu.Lock()
+		defer h.provider.mu.Unlock()
+		sawSecConfigure := false
+		sawSecKeepalive := false
+		for _, call := range h.provider.rpcCalls {
+			if call.Endpoint == "ep-2" && call.Method == "POST" && call.Path == "configure" {
+				sawSecConfigure = true
+			}
+			if call.Endpoint == "ep-2" && call.Method == "POST" && call.Path == "activity" {
+				sawSecKeepalive = true
+			}
+		}
+		if !sawSecConfigure || !sawSecKeepalive {
+			t.Fatalf("expected secondary legacy instance configure (60s) and activity keepalive (300s), configure=%v keepalive=%v calls=%#v", sawSecConfigure, sawSecKeepalive, h.provider.rpcCalls)
+		}
+	})
+}

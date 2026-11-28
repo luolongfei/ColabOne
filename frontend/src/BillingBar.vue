@@ -13,6 +13,7 @@ import {
   COLABONE_BILLING_TICKER_INTERVAL_MS,
   describeColabOneBilling,
   describeColabOneRunConsumption,
+  formatColabOneCULimitValue,
   formatCountdownClock,
   formatIdlePolicyLabel,
   nextColabOneBillingTickerSlide,
@@ -21,7 +22,12 @@ import {
 } from "./billing";
 import ColabOneSkeleton from "./ColabOneSkeleton.vue";
 import { colabOneBillingSkeletonState } from "./skeletonState";
-import type { RuntimeStatus, ColabOneSnapshot } from "./types";
+import {
+  COLABONE_DEFAULT_RELEASE_CU_LIMIT,
+  type ColabOneReleaseMode,
+  type ColabOneSnapshot,
+  type RuntimeStatus,
+} from "./types";
 import {
   PhLightning,
   PhClock,
@@ -38,6 +44,8 @@ const props = defineProps<{
   idle?: RuntimeStatus["idle"];
   idleRemaining: number;
   idleMinutes: number;
+  releaseMode?: ColabOneReleaseMode;
+  releaseCuLimit?: number;
   nowMs?: number;
   loading?: boolean;
   refreshing?: boolean;
@@ -81,9 +89,52 @@ const runOverview = computed(() =>
   }),
 );
 
-const showIdle = computed(
-  () => !props.loading && props.runtimeState === "ready" && Boolean(props.idle),
+const effectiveReleaseMode = computed<ColabOneReleaseMode>(() => {
+  if (
+    props.releaseMode === "never" ||
+    props.releaseMode === "cu_limit" ||
+    props.releaseMode === "idle"
+  ) {
+    return props.releaseMode;
+  }
+  const idleMode = props.idle?.release_mode;
+  if (idleMode === "never" || idleMode === "cu_limit") {
+    return idleMode;
+  }
+  return "idle";
+});
+
+const effectiveCuLimit = computed(() =>
+  typeof props.releaseCuLimit === "number" &&
+  Number.isFinite(props.releaseCuLimit) &&
+  props.releaseCuLimit > 0
+    ? Math.round(props.releaseCuLimit * 100) / 100
+    : COLABONE_DEFAULT_RELEASE_CU_LIMIT,
 );
+
+const effectiveCuConsumed = computed(() =>
+  runOverview.value.active ? runOverview.value.consumed : 0,
+);
+
+const effectiveCuRemaining = computed(() =>
+  Math.max(0, effectiveCuLimit.value - effectiveCuConsumed.value),
+);
+
+const showIdle = computed(
+  () =>
+    !props.loading &&
+    props.runtimeState === "ready" &&
+    (Boolean(props.idle) || effectiveReleaseMode.value !== "idle"),
+);
+
+const isIdlePillActionable = computed(
+  () => effectiveReleaseMode.value === "idle",
+);
+
+function onIdlePillClick() {
+  if (!isIdlePillActionable.value) return;
+  emit("touch");
+}
 
 const showBilling = computed(
   () =>
@@ -93,7 +144,10 @@ const showBilling = computed(
     props.runtimeState !== "stopped",
 );
 
-const isIdleActive = computed(() => props.idle?.phase === "active");
+const isIdleActive = computed(
+  () =>
+    effectiveReleaseMode.value === "idle" && props.idle?.phase === "active",
+);
 
 const countdownThreshold = computed(() =>
   typeof props.idle?.countdown_seconds === "number" &&
@@ -103,22 +157,46 @@ const countdownThreshold = computed(() =>
     : 60,
 );
 
-const isImminentRelease = computed(
-  () =>
+const isImminentRelease = computed(() => {
+  if (effectiveReleaseMode.value === "never") return false;
+  if (effectiveReleaseMode.value === "cu_limit") {
+    const limit = effectiveCuLimit.value;
+    return (
+      limit > 0 &&
+      (effectiveCuRemaining.value <= 0.5 ||
+        effectiveCuConsumed.value / limit >= 0.9)
+    );
+  }
+  return (
     Boolean(props.idle) &&
     !isIdleActive.value &&
-    props.idleRemaining <= countdownThreshold.value,
-);
+    props.idleRemaining <= countdownThreshold.value
+  );
+});
 
 const countdownClock = computed(() =>
   formatCountdownClock(props.idleRemaining),
 );
 
 const idlePolicyLabel = computed(() =>
-  formatIdlePolicyLabel(props.idleMinutes),
+  formatIdlePolicyLabel(
+    props.idleMinutes,
+    effectiveReleaseMode.value,
+    effectiveCuLimit.value,
+  ),
 );
 
 const idleTooltip = computed(() => {
+  if (effectiveReleaseMode.value === "never") {
+    return t("billing.barReleaseNeverTooltip");
+  }
+  if (effectiveReleaseMode.value === "cu_limit") {
+    return t("billing.barReleaseCuLimitTooltip", {
+      consumed: effectiveCuConsumed.value.toFixed(2),
+      limit: formatColabOneCULimitValue(effectiveCuLimit.value),
+      remaining: effectiveCuRemaining.value.toFixed(2),
+    });
+  }
   if (isIdleActive.value) {
     return t("billing.barIdlePausedTooltip", { policy: idlePolicyLabel.value });
   }
@@ -134,6 +212,15 @@ const idleTooltip = computed(() => {
 });
 
 const idleAriaLabel = computed(() => {
+  if (effectiveReleaseMode.value === "never") {
+    return t("billing.barReleaseNever");
+  }
+  if (effectiveReleaseMode.value === "cu_limit") {
+    return t("billing.barReleaseCuLimit", {
+      consumed: effectiveCuConsumed.value.toFixed(2),
+      limit: formatColabOneCULimitValue(effectiveCuLimit.value),
+    });
+  }
   if (isIdleActive.value) {
     return t("billing.barIdlePaused");
   }
@@ -245,6 +332,23 @@ const enduranceLabel = computed(() => {
 });
 
 const idleButtonLabel = computed(() => {
+  if (effectiveReleaseMode.value === "never") {
+    return isCompactMobile.value
+      ? t("billing.barReleaseNeverShort")
+      : t("billing.barReleaseNever");
+  }
+  if (effectiveReleaseMode.value === "cu_limit") {
+    const limit = formatColabOneCULimitValue(effectiveCuLimit.value);
+    return isCompactMobile.value
+      ? t("billing.barReleaseCuLimitShort", {
+          consumed: effectiveCuConsumed.value.toFixed(1),
+          limit,
+        })
+      : t("billing.barReleaseCuLimit", {
+          consumed: effectiveCuConsumed.value.toFixed(2),
+          limit,
+        });
+  }
   if (isCompactMobile.value) {
     if (isIdleActive.value) {
       return t("billing.barIdlePausedShort");
@@ -411,10 +515,15 @@ onUnmounted(() => {
         :danger="isImminentRelease"
         :class="[
           'co-idle-timer',
-          { counting: isImminentRelease, busy: isIdleActive },
+          {
+            counting: isImminentRelease,
+            busy: isIdleActive,
+            'is-static': !isIdlePillActionable,
+          },
         ]"
+        :tabindex="isIdlePillActionable ? 0 : -1"
         :aria-label="idleAriaLabel"
-        @click="emit('touch')"
+        @click="onIdlePillClick"
       >
         <span class="co-idle-timer-inner">
           <PhClock
@@ -726,6 +835,22 @@ onUnmounted(() => {
   background: var(--co-soft-hover);
   border-color: var(--co-input-border);
   color: var(--co-text);
+}
+
+.co-billing-bar .co-idle-timer.is-static {
+  cursor: default;
+}
+
+.co-billing-bar .co-idle-timer.is-static:hover {
+  background: var(--co-surface);
+  border-color: var(--co-border);
+  color: var(--co-secondary-text);
+}
+
+.co-billing-bar .co-idle-timer.is-static.counting:hover {
+  background: var(--co-danger-bg);
+  border-color: var(--co-danger-border);
+  color: var(--co-danger-text);
 }
 
 .co-billing-bar .co-idle-timer.busy {

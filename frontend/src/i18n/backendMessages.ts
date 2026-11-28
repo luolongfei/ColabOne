@@ -1973,6 +1973,48 @@ function translateAllocationMetaPart(part: string, loc: ColabOneLocale): string 
   return translateColabOnePlaceName(s, loc);
 }
 
+function translateReleasePolicyLabel(
+  raw: string,
+  loc: ColabOneLocale,
+): string {
+  const s = raw.trim();
+  if (s === "长期不释放") {
+    return {
+      "zh-CN": s,
+      "en-US": "Never Auto-Release",
+      "zh-TW": "長期不釋放",
+      "zh-HK": "長期不釋放",
+      "ja-JP": "自動解放なし",
+      "ko-KR": "자동 해제 안 함",
+    }[loc];
+  }
+  const cuMatch = s.match(/^消耗达\s*([\d.]+)\s*CU 自动释放$/);
+  if (cuMatch) {
+    const limit = cuMatch[1];
+    return {
+      "zh-CN": s,
+      "en-US": `Release at ${limit} CU`,
+      "zh-TW": `消耗達 ${limit} CU 自動釋放`,
+      "zh-HK": `消耗達 ${limit} CU 自動釋放`,
+      "ja-JP": `${limit} CU 消費で自動解放`,
+      "ko-KR": `${limit} CU 소비 시 자동 해제`,
+    }[loc];
+  }
+  const minMatch = s.match(/^(\d+)\s*分钟$/);
+  if (minMatch) {
+    const mins = minMatch[1];
+    return {
+      "zh-CN": s,
+      "en-US": `${mins} min`,
+      "zh-TW": `${mins} 分鐘`,
+      "zh-HK": `${mins} 分鐘`,
+      "ja-JP": `${mins} 分`,
+      "ko-KR": `${mins}분`,
+    }[loc];
+  }
+  return translateInner(s, loc);
+}
+
 function translateSettingsSummaryPart(part: string, loc: ColabOneLocale): string {
   const s = part.trim();
   const gpuMatch = s.match(/^默认 GPU:\s*(.+)$/);
@@ -1997,6 +2039,28 @@ function translateSettingsSummaryPart(part: string, loc: ColabOneLocale): string
       "zh-HK": `閒置釋放: ${mins} 分鐘`,
       "ja-JP": `アイドル解放: ${mins} 分`,
       "ko-KR": `유휴 해제: ${mins}분`,
+    }[loc];
+  }
+  if (s === "自动释放: 长期不释放") {
+    return {
+      "zh-CN": s,
+      "en-US": "Auto-release: Never",
+      "zh-TW": "自動釋放: 長期不釋放",
+      "zh-HK": "自動釋放: 長期不釋放",
+      "ja-JP": "自動解放: なし",
+      "ko-KR": "자동 해제: 안 함",
+    }[loc];
+  }
+  const cuReleaseMatch = s.match(/^自动释放:\s*消耗达\s*([\d.]+)\s*CU 释放$/);
+  if (cuReleaseMatch) {
+    const limit = cuReleaseMatch[1];
+    return {
+      "zh-CN": s,
+      "en-US": `Auto-release: at ${limit} CU`,
+      "zh-TW": `自動釋放: 消耗達 ${limit} CU 釋放`,
+      "zh-HK": `自動釋放: 消耗達 ${limit} CU 釋放`,
+      "ja-JP": `自動解放: ${limit} CU 消費で解放`,
+      "ko-KR": `자동 해제: ${limit} CU 소비 시 해제`,
     }[loc];
   }
   const thrMatch = s.match(/^下载并发:\s*(\d+) 线程$/);
@@ -3471,6 +3535,106 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
+    re: /^正在同步自动释放策略（(.+)）$/,
+    format: (m, loc) => {
+      const policy = translateReleasePolicyLabel(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Syncing auto-release policy (${policy})`;
+        case "zh-TW":
+          return `正在同步自動釋放原則（${policy}）`;
+        case "zh-HK":
+          return `正在同步自動釋放策略（${policy}）`;
+        case "ja-JP":
+          return `自動解放ポリシーを同期中（${policy}）`;
+        case "ko-KR":
+          return `자동 해제 정책 동기화 중 (${policy})`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已达到 CU 消耗上限（([\d.]+) CU），正在自动释放实例$/,
+    format: (m, loc) => {
+      const limit = m[1];
+      switch (loc) {
+        case "en-US":
+          return `Reached CU limit (${limit} CU); auto-releasing instances`;
+        case "zh-TW":
+          return `已達到 CU 消耗上限（${limit} CU），正在自動釋放執行個體`;
+        case "zh-HK":
+          return `已達到 CU 消耗上限（${limit} CU），正在自動釋放實例`;
+        case "ja-JP":
+          return `CU 消費上限（${limit} CU）に達したため、インスタンスを自動解放しています`;
+        case "ko-KR":
+          return `CU 소비 상한(${limit} CU)에 도달하여 인스턴스를 자동 해제하는 중`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^本次运行已消耗 ([\d.]+) CU，达到设定的 ([\d.]+) CU 自动释放上限，正在保存云盘并释放实例$/,
+    format: (m, loc) => {
+      const [, consumed, limit] = m;
+      switch (loc) {
+        case "en-US":
+          return `Current run used ${consumed} CU, reaching the ${limit} CU auto-release limit; saving Drive and releasing instances`;
+        case "zh-TW":
+          return `本次運作已消耗 ${consumed} CU，達到設定的 ${limit} CU 自動釋放上限，正在儲存雲端硬碟並釋放執行個體`;
+        case "zh-HK":
+          return `本次運行已消耗 ${consumed} CU，達到設定的 ${limit} CU 自動釋放上限，正在保存雲端硬碟並釋放實例`;
+        case "ja-JP":
+          return `今回の稼働で ${consumed} CU 消費し、設定上限の ${limit} CU に達しました。ドライブを保存してインスタンスを解放しています`;
+        case "ko-KR":
+          return `이번 실행에서 ${consumed} CU를 소비하여 설정한 ${limit} CU 자동 해제 상한에 도달했습니다. 드라이브를 저장하고 인스턴스를 해제하는 중`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^自动释放前远端收尾未完全成功，仍将继续释放实例以停止计费：(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Remote pre-release cleanup did not fully succeed; continuing instance release to stop billing: ${detail}`;
+        case "zh-TW":
+          return `自動釋放前遠端收尾未完全成功，仍將繼續釋放執行個體以停止計費：${detail}`;
+        case "zh-HK":
+          return `自動釋放前遠端收尾未完全成功，仍將繼續釋放實例以停止計費：${detail}`;
+        case "ja-JP":
+          return `自動解放前のリモート終了処理が一部失敗しましたが、課金停止のためインスタンス解放を続行します: ${detail}`;
+        case "ko-KR":
+          return `자동 해제 전 원격 마무리 작업이 완전히 성공하지 않았으나, 과금 중단을 위해 인스턴스 해제를 계속 진행합니다: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已按 CU 上限（([\d.]+) CU）完成实例自动释放，本次累计消耗 ([\d.]+) CU$/,
+    format: (m, loc) => {
+      const [, limit, consumed] = m;
+      switch (loc) {
+        case "en-US":
+          return `Auto-released instances at the ${limit} CU limit (total used this run: ${consumed} CU)`;
+        case "zh-TW":
+          return `已按 CU 上限（${limit} CU）完成執行個體自動釋放，本次累計消耗 ${consumed} CU`;
+        case "zh-HK":
+          return `已按 CU 上限（${limit} CU）完成實例自動釋放，本次累計消耗 ${consumed} CU`;
+        case "ja-JP":
+          return `CU 上限（${limit} CU）によりインスタンスを自動解放しました（今回の累計消費: ${consumed} CU）`;
+        case "ko-KR":
+          return `CU 상한(${limit} CU)에 따라 인스턴스 자동 해제를 완료했습니다 (이번 누적 소비: ${consumed} CU)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
     re: /^云盘自动挂载未就绪，实例仍可正常使用：(.+)$/,
     format: (m, loc) => {
       const detail = translateInner(m[1]!, loc);
@@ -3848,6 +4012,27 @@ const PATTERN_RULES: PatternRule[] = [
           return `インスタンス ${ep} へアイドル自動解放（${mins} 分）を同期しました`;
         case "ko-KR":
           return `인스턴스 ${ep}에 유휴 자동 해제(${mins}분)를 동기화했습니다`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^已向实例 (\S+) 同步自动释放策略（(.+)）$/,
+    format: (m, loc) => {
+      const ep = m[1];
+      const policy = translateReleasePolicyLabel(m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Synced auto-release policy (${policy}) to instance ${ep}`;
+        case "zh-TW":
+          return `已向執行個體 ${ep} 同步自動釋放原則（${policy}）`;
+        case "zh-HK":
+          return `已向實例 ${ep} 同步自動釋放策略（${policy}）`;
+        case "ja-JP":
+          return `インスタンス ${ep} へ自動解放ポリシー（${policy}）を同期しました`;
+        case "ko-KR":
+          return `인스턴스 ${ep}에 자동 해제 정책(${policy})을 동기화했습니다`;
         default:
           return m[0];
       }

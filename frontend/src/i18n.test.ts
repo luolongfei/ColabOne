@@ -4122,6 +4122,9 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
       "当前尚未开启 Google 云盘 API 直连权限，无法在离线状态下删除云盘中的作品文件，请开启无感云盘 API 或在 Google 云盘中手动删除",
       "该云盘作品由 Colab 挂载模式写入，离线状态下无法通过云盘 API 删除，请在 Google 云盘中手动删除或启动实例后删除",
       "云盘作品索引同步未完成，暂无法确认远端文件位置，请稍后重试或在 Google 云盘中手动删除",
+      "已从应用列表中移除该作品；由于该文件由 Colab 挂载模式写入，无法自动同步删除云端副本，请在 Google 云盘中手动删除",
+      "已从应用列表中移除该作品；当前尚未开启 Google 云盘 API 直连权限，无法自动同步删除云端副本，请在 Google 云盘中手动删除",
+      "已从应用列表中移除该作品；暂无法自动同步删除 Google 云盘中的远端文件，请在 Google 云盘中手动删除",
       "远端返回的手机接入票据格式异常，请稍后重试或升级远端服务",
       "远端移动设备无权执行主机管理操作",
       "当前大脑模型不支持图像理解，已自动切换纯文本回复；如需看图看货，请配置支持视觉的多模态模型（如 GPT-4o / Gemini / Qwen-VL）。",
@@ -4502,5 +4505,48 @@ describe("Guest output share locale isolation and cold-load bootstrap", () => {
       expect(t("device.liveStudioRunning")).toBeTruthy();
       expect(t("device.liveStudioRunning")).not.toBe("device.liveStudioRunning");
     }
+  });
+
+  it("translates DriveFS mount-folder and auto-release mode backend messages across all locales without CJK leaks", () => {
+    const leakRe = /[\u3400-\u9fff\uf900-\ufaff（）「」，。：；“”《》【】、]/;
+    const samples = [
+      "自动释放策略不合法",
+      "CU 消耗上限必须在 0.1 至 100000 之间",
+      "自动释放策略已变更",
+      "当前无活跃实例",
+      "正在通过 Colab 原生 DriveFS 挂载 Google 云盘 (ColabOne_Drive_Mount)",
+      "授权已确认，正在远端挂载 Google 云盘 (ColabOne_Drive_Mount)",
+      "正在初始化 ColabOne_Drive_Mount 工作区并恢复持久化数据",
+      "正在通过 Google Colab 官方原生 DriveFS 挂载云盘 (ColabOne_Drive_Mount)",
+      "已通过 Google Colab 原生 DriveFS 挂载云盘 (/content/drive/MyDrive/ColabOne_Drive_Mount)",
+      "已通过 Google Colab 原生 DriveFS 自动挂载云盘 (/content/drive/MyDrive/ColabOne_Drive_Mount)",
+      "点击「立即挂载云盘」即可在浏览器一键确认 Colab 原生云盘挂载 (ColabOne_Drive_Mount)",
+      "Google 云盘同步已完成 (ColabOne_Drive_Mount)",
+      "同步 Google 云盘 (ColabOne_Drive_Mount)",
+      "远端自动释放策略已生效",
+      "正在将 ComfyUI 作品直传导出至 Google 云盘 (ColabOne_Drive_Mount/outputs)",
+      "正在同步自动释放策略（长期不释放）",
+      "正在同步自动释放策略（消耗达 12.5 CU 自动释放）",
+      "已向实例 gpu-1 同步自动释放策略（长期不释放）",
+      "已向实例 gpu-1 同步自动释放策略（消耗达 12.5 CU 自动释放）",
+      "已保存设置（默认 GPU: L4 · 自动释放: 长期不释放 · 下载并发: 8 线程）",
+      "已保存设置（默认 GPU: L4 · 自动释放: 消耗达 12.5 CU 释放 · 下载并发: 8 线程）",
+      "已达到 CU 消耗上限（12.5 CU），正在自动释放实例",
+      "本次运行已消耗 12.55 CU，达到设定的 12.5 CU 自动释放上限，正在保存云盘并释放实例",
+      "自动释放前远端收尾未完全成功，仍将继续释放实例以停止计费：timeout",
+      "已按 CU 上限（12.5 CU）完成实例自动释放，本次累计消耗 12.55 CU",
+    ];
+    for (const loc of ["en-US", "ko-KR"] as const) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      for (const sample of samples) {
+        const out = tb(sample);
+        expect(out, `${loc}: ${sample}`).not.toBe(sample);
+        expect(leakRe.test(out), `${loc} leak in "${out}"`).toBe(false);
+      }
+    }
+    setColabOneLocale("zh-TW", { persist: false, syncNative: false });
+    expect(tb("已达到 CU 消耗上限（12.5 CU），正在自动释放实例")).toContain("執行個體");
+    setColabOneLocale("zh-HK", { persist: false, syncNative: false });
+    expect(tb("已达到 CU 消耗上限（12.5 CU），正在自动释放实例")).toContain("實例");
   });
 });

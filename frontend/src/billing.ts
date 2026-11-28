@@ -1,8 +1,14 @@
 import { formatColabOneDuration } from "./colabOneDuration";
 import { colabOneLocaleCode, t, tb, type ColabOneLocale } from "./i18n";
-import type { ColabOneSnapshot } from "./types";
+import {
+  COLABONE_DEFAULT_RELEASE_CU_LIMIT,
+  type ColabOneReleaseMode,
+  type ColabOneSnapshot,
+} from "./types";
 
 export const COLABONE_DEFAULT_IDLE_MINUTES = 30;
+export const COLABONE_RELEASE_SELECT_NEVER = "never" as const;
+export const COLABONE_RELEASE_SELECT_CU_LIMIT = "cu_limit" as const;
 export const COLABONE_RUN_LIVE_INTERP_CAP_SEC = 90;
 export const COLABONE_RUN_STALE_OFFLINE_SEC = 900;
 export const COLABONE_BILLING_TICKER_INTERVAL_MS = 3000;
@@ -666,7 +672,70 @@ export function formatColabOneRunClock(
   });
 }
 
-export function formatIdlePolicyLabel(minutes?: number): string {
+export function formatColabOneCULimitValue(cu?: number): string {
+  const safe =
+    typeof cu === "number" && Number.isFinite(cu) && cu > 0
+      ? Math.round(cu * 100) / 100
+      : COLABONE_DEFAULT_RELEASE_CU_LIMIT;
+  if (Math.abs(safe - Math.round(safe)) < 1e-6) {
+    return String(Math.round(safe));
+  }
+  return safe.toFixed(2).replace(/\.?0+$/, "");
+}
+
+export function encodeColabOneReleaseSelectValue(
+  mode?: ColabOneReleaseMode,
+  minutes?: number,
+): string {
+  if (mode === "never") return COLABONE_RELEASE_SELECT_NEVER;
+  if (mode === "cu_limit") return COLABONE_RELEASE_SELECT_CU_LIMIT;
+  const safeMinutes =
+    typeof minutes === "number" && Number.isFinite(minutes) && minutes >= 1
+      ? Math.round(minutes)
+      : COLABONE_DEFAULT_IDLE_MINUTES;
+  return `idle:${safeMinutes}`;
+}
+
+export function parseColabOneReleaseSelectValue(
+  raw: unknown,
+): { mode: ColabOneReleaseMode; idleMinutes?: number } | null {
+  if (typeof raw === "number" && Number.isFinite(raw) && raw >= 1) {
+    return { mode: "idle", idleMinutes: Math.round(raw) };
+  }
+  const s = String(raw ?? "").trim();
+  if (s === COLABONE_RELEASE_SELECT_NEVER) {
+    return { mode: "never" };
+  }
+  if (s === COLABONE_RELEASE_SELECT_CU_LIMIT) {
+    return { mode: "cu_limit" };
+  }
+  const match = /^idle:(\d+)$/.exec(s);
+  if (match) {
+    const mins = Number(match[1]);
+    if (Number.isFinite(mins) && mins >= 1 && mins <= 240) {
+      return { mode: "idle", idleMinutes: mins };
+    }
+  }
+  const numeric = Number(s);
+  if (s !== "" && Number.isFinite(numeric) && numeric >= 1 && numeric <= 240) {
+    return { mode: "idle", idleMinutes: Math.round(numeric) };
+  }
+  return null;
+}
+
+export function formatIdlePolicyLabel(
+  minutes?: number,
+  releaseMode?: ColabOneReleaseMode,
+  cuLimit?: number,
+): string {
+  if (releaseMode === "never") {
+    return t("billing.releaseModeNever");
+  }
+  if (releaseMode === "cu_limit") {
+    return t("billing.releaseModeCuLimitShort", {
+      limit: formatColabOneCULimitValue(cuLimit),
+    });
+  }
   const preset = COLABONE_IDLE_RELEASE_OPTIONS.find(
     (opt) => opt.value === minutes,
   );

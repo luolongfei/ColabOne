@@ -979,6 +979,44 @@ func (s *ColabOneCUUsageStore) BeginRun(email string, startedAt float64, startBa
 	_ = s.Flush()
 }
 
+// EndRun explicitly closes an active continuous billing run when all local
+// managed instances have been released and no external instances remain. This
+// prevents delayed Google billing API settlement from bleeding a stopped run's
+// consumed CU into an immediately started subsequent run.
+func (s *ColabOneCUUsageStore) EndRun(email string, endedAt float64) {
+	if s == nil {
+		return
+	}
+	cleanEnd, ok := colabOneCleanFloat(endedAt)
+	if !ok || cleanEnd <= 0 {
+		cleanEnd = s.nowFn()
+	}
+	s.mu.Lock()
+	accountKey := colabOneCUAccountKey(email)
+	if accountKey == "" {
+		accountKey = s.activeAccountKey
+	}
+	if accountKey == "" {
+		accountKey = colabOneCUDefaultAccountKey
+	}
+	acct := s.accounts[accountKey]
+	if acct == nil || acct.CurrentRun == nil || !acct.CurrentRun.Active {
+		s.mu.Unlock()
+		return
+	}
+	if cleanEnd < acct.CurrentRun.StartedAt {
+		cleanEnd = acct.CurrentRun.StartedAt
+	}
+	acct.CurrentRun.Active = false
+	acct.CurrentRun.EndedAt = cleanEnd
+	acct.CurrentRun.Unsettled = 0
+	acct.CurrentRun.LastRate = 0
+	s.dirty = true
+	s.mu.Unlock()
+
+	_ = s.Flush()
+}
+
 // CurrentRunSnapshot returns a JSON-safe snapshot of the active or most recently
 // completed continuous billing run for email, or nil if no run has been recorded.
 func (s *ColabOneCUUsageStore) CurrentRunSnapshot(email string) map[string]any {
@@ -1764,4 +1802,84 @@ func (s *ColabOneCUUsageStore) ActiveRunStartedAt(email string) float64 {
 		return 0
 	}
 	return acct.CurrentRun.StartedAt
+}
+
+// CurrentRunEffectiveConsumed returns the live effective CU consumed during the
+// active continuous billing run (confirmed deltas + bounded live rate projection
+// matching frontend describeColabOneRunConsumption), along with the effective rate
+// and last known balance.
+func (s *ColabOneCUUsageStore) CurrentRunEffectiveConsumed(
+	email string,
+	now float64,
+	liveRate float64,
+	liveBalance float64,
+	hasLiveBalance bool,
+) (consumed float64, rate float64, balance float64, hasBalance bool, active bool) {
+	if s == nil {
+		return 0, 0, 0, false, false
+	}
+	if now <= 0 {
+		now = s.nowFn()
+	}
+	s.mu.Lock()
+	accountKey := colabOneCUAccountKey(email)
+	if accountKey == "" {
+		accountKey = s.activeAccountKey
+	}
+	if accountKey == "" {
+		accountKey = colabOneCUDefaultAccountKey
+	}
+	acct := s.accounts[accountKey]
+	if acct == nil || acct.CurrentRun == nil || !acct.CurrentRun.Active || acct.CurrentRun.StartedAt <= 0 {
+		s.mu.Unlock()
+		return 0, 0, 0, false, false
+	}
+	run := *acct.CurrentRun
+	s.mu.Unlock()
+
+	effectiveRate := liveRate
+	if effectiveRate <= 0 || math.IsNaN(effectiveRate) || math.IsInf(effectiveRate, 0) {
+		effectiveRate = run.LastRate
+	}
+	if effectiveRate < 0 || math.IsNaN(effectiveRate) || math.IsInf(effectiveRate, 0) {
+		effectiveRate = 0
+	}
+	bal := 0.0
+	hasBal := false
+	if hasLiveBalance && !math.IsNaN(liveBalance) && !math.IsInf(liveBalance, 0) {
+		bal = liveBalance
+		hasBal = true
+	} else if run.HasEndBalance && !math.IsNaN(run.EndBalance) && !math.IsInf(run.EndBalance, 0) {
+		bal = run.EndBalance
+		hasBal = true
+	}
+
+	confirmed := run.Consumed
+	if confirmed < 0 {
+		confirmed = 0
+	}
+	unsettled := run.Unsettled
+	if unsettled < 0 {
+		unsettled = 0
+	}
+	anchorTS := run.LastSampleAt
+	if anchorTS <= 0 {
+		anchorTS = run.StartedAt
+	}
+	sinceAnchor := math.Max(0, now-anchorTS)
+	balanceDepleted := hasBal && bal <= colabOneCUEpsilon && effectiveRate > 0
+
+	liveProjection := 0.0
+	if effectiveRate > 0 && !balanceDepleted && sinceAnchor <= 900.0 {
+		gapSec := math.Min(90.0, sinceAnchor)
+		rawProj := unsettled + (effectiveRate*gapSec)/3600.0
+		if hasBal {
+			liveProjection = math.Min(rawProj, math.Max(0, bal))
+		} else {
+			liveProjection = rawProj
+		}
+	}
+
+	total := colabOneRoundCU(confirmed + liveProjection)
+	return total, colabOneRoundCU(effectiveRate), colabOneRoundCU(bal), hasBal, true
 }

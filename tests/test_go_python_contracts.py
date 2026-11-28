@@ -244,6 +244,7 @@ def test_server_app_boots_offline_with_protocol_7_and_auth_contract(tmp_path, mo
             "comfyui_live_studio",
             "comfyui_fashion_tryon",
             "comfyui_share_guard",
+            "idle_release_modes",
         ]
         assert status["state"] == "ready"
         assert status["idle_minutes"] == 30

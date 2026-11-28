@@ -177,6 +177,7 @@ const (
 	colabOneDriveOutputsSchemaVer    = 2
 	colabOneDriveAPIDefaultBaseURL   = "https://www.googleapis.com/drive/v3"
 	colabOneDriveFolderName          = "ColabOne_Drive"
+	colabOneDriveFSFolderName        = "ColabOne_Drive_Mount"
 	colabOneDriveOutputsSubdir       = "outputs"
 	colabOneDriveWorkspaceSubdir     = "workspace"
 	colabOneDriveComfyOutputsSubdir  = "comfyui-outputs"
@@ -823,11 +824,15 @@ func (c *ColabOneController) recordSyncedRemoteOutputs(rt map[string]any, rawOut
 		return
 	}
 	bctx := c.currentOutputBillingContext(rt)
+	driveMode := strings.TrimSpace(asString(driveMap["mode"]))
 	remoteFolder := strings.TrimSpace(asString(driveMap["remote_folder"]))
 	if remoteFolder == "" {
-		remoteFolder = colabOneDriveFolderName
+		if driveMode == "colab_drivefs" {
+			remoteFolder = colabOneDriveFSFolderName
+		} else {
+			remoteFolder = colabOneDriveFolderName
+		}
 	}
-	driveMode := strings.TrimSpace(asString(driveMap["mode"]))
 	exportedByID := make(map[string]map[string]any)
 	if comfy := asMap(rt["comfyui"]); comfy != nil {
 		if ar := asMap(comfy["auto_release"]); ar != nil {
@@ -1001,10 +1006,21 @@ func (c *ColabOneController) recordExportedDriveOutput(identity string, exportRe
 	}
 	target.DriveSynced = true
 	target.DriveExported = true
+	if mode := strings.TrimSpace(asString(exportRes["mode"])); mode != "" {
+		target.DriveMode = mode
+	} else if target.DriveMode == "" {
+		if rtMode := strings.TrimSpace(asString(asMap(rtSnap["drive"])["mode"])); rtMode != "" && rtMode != "disabled" {
+			target.DriveMode = rtMode
+		}
+	}
 	if rf := strings.TrimSpace(asString(exportRes["remote_folder"])); rf != "" {
 		target.DriveFolder = rf
 	} else if target.DriveFolder == "" {
-		target.DriveFolder = colabOneDriveFolderName + "/" + colabOneDriveOutputsSubdir
+		baseFolder := colabOneDriveFolderName
+		if target.DriveMode == "colab_drivefs" {
+			baseFolder = colabOneDriveFSFolderName
+		}
+		target.DriveFolder = baseFolder + "/" + colabOneDriveOutputsSubdir
 	}
 	if dp := strings.TrimSpace(asString(exportRes["drive_path"])); dp != "" {
 		target.DrivePath = dp
@@ -1016,9 +1032,6 @@ func (c *ColabOneController) recordExportedDriveOutput(identity string, exportRe
 	}
 	if link := sanitizeDriveWebViewLink(asString(exportRes["drive_web_view_link"])); link != "" {
 		target.DriveWebViewLink = link
-	}
-	if mode := strings.TrimSpace(asString(exportRes["mode"])); mode != "" {
-		target.DriveMode = mode
 	}
 	target.SyncedAt = now
 	c.noteDriveOutputAddedLocked(acctKey, cleanID)
@@ -2234,6 +2247,31 @@ func (c *ColabOneController) trashDriveFileIDs(ctx context.Context, rawIDs ...st
 	return true, nil
 }
 
+func isPermanentDrivePermissionErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isQuotaProjectError(err) {
+		return true
+	}
+	var httpErr *ColabOneHTTPError
+	if errors.As(err, &httpErr) && (httpErr.StatusCode == http.StatusUnauthorized || httpErr.StatusCode == http.StatusForbidden) {
+		return true
+	}
+	return false
+}
+
+func colabOneManualCloudDeleteWarning(reason string) string {
+	switch reason {
+	case "colab_drivefs":
+		return "已从应用列表中移除该作品；由于该文件由 Colab 挂载模式写入，无法自动同步删除云端副本，请在 Google 云盘中手动删除"
+	case "drive_api_unavailable":
+		return "已从应用列表中移除该作品；当前尚未开启 Google 云盘 API 直连权限，无法自动同步删除云端副本，请在 Google 云盘中手动删除"
+	default:
+		return "已从应用列表中移除该作品；暂无法自动同步删除 Google 云盘中的远端文件，请在 Google 云盘中手动删除"
+	}
+}
+
 func (c *ColabOneController) deleteDriveOutputOffline(ctx context.Context, identity string) (map[string]any, error) {
 	cleanID := strings.ToLower(strings.TrimSpace(identity))
 	if !reHex32ID.MatchString(cleanID) {
@@ -2243,14 +2281,36 @@ func (c *ColabOneController) deleteDriveOutputOffline(ctx context.Context, ident
 	if rec == nil {
 		return nil, ErrNotFound
 	}
-	canDirectRead, _ := c.driveDirectReadReady()
-	if !canDirectRead {
-		return nil, errors.New("当前尚未开启 Google 云盘 API 直连权限，无法在离线状态下删除云盘中的作品文件，请开启无感云盘 API 或在 Google 云盘中手动删除")
-	}
 	hasValidDriveFileIDs := func(r *ColabOneDriveOutputRecord) bool {
 		return r != nil && (sanitizeDriveFileID(r.DriveFileID) != "" ||
 			sanitizeDriveFileID(r.DriveWorkspaceFileID) != "" ||
 			sanitizeDriveFileID(r.DriveWorkspaceMetaID) != "")
+	}
+	finishLocalOnly := func(reason string) (map[string]any, error) {
+		msg := colabOneManualCloudDeleteWarning(reason)
+		c.removeDriveOutputRecord(cleanID)
+		c.evictLocalOutputCache(cleanID)
+		c.pruneOutputFromSnapshot(cleanID)
+		c.log(msg, "云盘", "warning")
+		return map[string]any{
+			"ok":                   true,
+			"local_only":           true,
+			"manual_cloud_cleanup": true,
+			"warning_reason":       reason,
+			"warning":              msg,
+		}, nil
+	}
+	hadAnyID := hasValidDriveFileIDs(rec)
+	if !hadAnyID && rec.DriveMode == "colab_drivefs" {
+		return finishLocalOnly("colab_drivefs")
+	}
+	canDirectRead, _ := c.driveDirectReadReady()
+	if !canDirectRead {
+		reason := "drive_api_unavailable"
+		if rec.DriveMode == "colab_drivefs" {
+			reason = "colab_drivefs"
+		}
+		return finishLocalOnly(reason)
 	}
 	needsSiblingIDSync := func(r *ColabOneDriveOutputRecord) bool {
 		if r == nil {
@@ -2273,14 +2333,17 @@ func (c *ColabOneController) deleteDriveOutputOffline(ctx context.Context, ident
 		}
 		return false
 	}
-	hadAnyID := hasValidDriveFileIDs(rec)
 	if needsSiblingIDSync(rec) {
-		if !hadAnyID && rec.DriveMode == "colab_drivefs" {
-			return nil, errors.New("该云盘作品由 Colab 挂载模式写入，离线状态下无法通过云盘 API 删除，请在 Google 云盘中手动删除或启动实例后删除")
-		}
 		syncRes, syncErr := c.SyncDriveOutputs(ctx)
 		if syncErr != nil {
 			if !hadAnyID {
+				if isPermanentDrivePermissionErr(syncErr) {
+					reason := "drive_api_unavailable"
+					if rec.DriveMode == "colab_drivefs" {
+						reason = "colab_drivefs"
+					}
+					return finishLocalOnly(reason)
+				}
 				return nil, syncErr
 			}
 		} else if asBool(syncRes["synced"]) {
@@ -2291,22 +2354,49 @@ func (c *ColabOneController) deleteDriveOutputOffline(ctx context.Context, ident
 				return map[string]any{"ok": true}, nil
 			}
 		} else if !hadAnyID {
-			return nil, errors.New("云盘作品索引同步未完成，暂无法确认远端文件位置，请稍后重试或在 Google 云盘中手动删除")
+			return finishLocalOnly("remote_file_unconfirmed")
 		}
 		if !hasValidDriveFileIDs(rec) {
-			return nil, errors.New("云盘作品索引同步未完成，暂无法确认远端文件位置，请稍后重试或在 Google 云盘中手动删除")
+			reason := "remote_file_unconfirmed"
+			if rec.DriveMode == "colab_drivefs" {
+				reason = "colab_drivefs"
+			}
+			return finishLocalOnly(reason)
 		}
 	}
 	trashed, err := c.trashDriveFileIDs(ctx, rec.DriveFileID, rec.DriveWorkspaceFileID, rec.DriveWorkspaceMetaID)
 	if err != nil {
+		if isPermanentDrivePermissionErr(err) {
+			reason := "drive_api_unavailable"
+			if rec.DriveMode == "colab_drivefs" {
+				reason = "colab_drivefs"
+			}
+			return finishLocalOnly(reason)
+		}
 		return nil, err
 	}
 	if !trashed {
-		return nil, errors.New("当前尚未开启 Google 云盘 API 直连权限，无法在离线状态下删除云盘中的作品文件，请开启无感云盘 API 或在 Google 云盘中手动删除")
+		reason := "drive_api_unavailable"
+		if rec.DriveMode == "colab_drivefs" {
+			reason = "colab_drivefs"
+		}
+		return finishLocalOnly(reason)
 	}
 	c.removeDriveOutputRecord(cleanID)
 	c.evictLocalOutputCache(cleanID)
 	c.pruneOutputFromSnapshot(cleanID)
+	if rec.DriveMode == "colab_drivefs" &&
+		(sanitizeDriveFileID(rec.DriveWorkspaceFileID) == "" || (rec.DriveExported && sanitizeDriveFileID(rec.DriveFileID) == "")) {
+		msg := colabOneManualCloudDeleteWarning("colab_drivefs")
+		c.log(msg, "云盘", "warning")
+		return map[string]any{
+			"ok":                   true,
+			"local_only":           false,
+			"manual_cloud_cleanup": true,
+			"warning_reason":       "colab_drivefs",
+			"warning":              msg,
+		}, nil
+	}
 	return map[string]any{"ok": true}, nil
 }
 

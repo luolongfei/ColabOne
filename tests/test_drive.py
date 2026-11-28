@@ -17,6 +17,7 @@ from server.app import create_colabone_app
 from server.drive import (
     ColabOneDrive,
     COLABONE_DRIVE_FOLDER,
+    COLABONE_DRIVEFS_FOLDER,
     COLABONE_DRIVE_REMOTE,
     COLABONE_DRIVE_SPEC,
     ensure_rclone_binary,
@@ -348,6 +349,7 @@ def test_colab_drivefs_mode_local_sync_and_trash(tmp_path, monkeypatch):
     assert info["connected"] is True
     assert info["mode"] == "colab_drivefs"
     assert info["mount_path"] == str(mydrive)
+    assert info["remote_folder"] == COLABONE_DRIVEFS_FOLDER
 
     # Seed local workspace files + ignored temp files and push to DriveFS.
     (data_root / "models.json").write_text('[{"id":"m1"}]', encoding="utf-8")
@@ -360,7 +362,8 @@ def test_colab_drivefs_mode_local_sync_and_trash(tmp_path, monkeypatch):
     (data_root / "comfyui-outputs" / f"{oid}.json").write_text('{"id":"b"}', encoding="utf-8")
 
     assert drive.push_workspace() is True
-    ws = mydrive / COLABONE_DRIVE_FOLDER / "workspace"
+    ws = mydrive / COLABONE_DRIVEFS_FOLDER / "workspace"
+    assert not (mydrive / COLABONE_DRIVE_FOLDER).exists()
     assert (ws / "models.json").is_file()
     assert (ws / "workflows" / "wf1.json").is_file()
     assert not (ws / "workflows" / "wf1.json.tmp").exists()
@@ -448,13 +451,13 @@ def test_sanitize_drive_export_filename_and_drivefs_export_collision_handling(
         expected_sha256=sha1,
         expected_size=src1.stat().st_size,
     )
-    out_dir = mydrive / COLABONE_DRIVE_FOLDER / COLABONE_DRIVE_OUTPUTS_SUBDIR
+    out_dir = mydrive / COLABONE_DRIVEFS_FOLDER / COLABONE_DRIVE_OUTPUTS_SUBDIR
     assert res1["ok"] is True
     assert res1["already_exists"] is False
     assert res1["filename"] == "digital-human_720x1280.mp4"
-    assert res1["remote_folder"] == f"{COLABONE_DRIVE_FOLDER}/{COLABONE_DRIVE_OUTPUTS_SUBDIR}"
+    assert res1["remote_folder"] == f"{COLABONE_DRIVEFS_FOLDER}/{COLABONE_DRIVE_OUTPUTS_SUBDIR}"
     assert res1["drive_path"] == (
-        f"My Drive/{COLABONE_DRIVE_FOLDER}/{COLABONE_DRIVE_OUTPUTS_SUBDIR}/digital-human_720x1280.mp4"
+        f"My Drive/{COLABONE_DRIVEFS_FOLDER}/{COLABONE_DRIVE_OUTPUTS_SUBDIR}/digital-human_720x1280.mp4"
     )
     assert (out_dir / "digital-human_720x1280.mp4").read_bytes() == b"VIDEO-BYTES-ONE"
 
@@ -738,8 +741,8 @@ def test_remote_api_export_comfy_output_to_drive_endpoint(tmp_path, spec, monkey
         assert body["ok"] is True
         assert body["id"] == oid
         assert body["filename"] == "portrait_result.png"
-        assert body["drive_path"] == "My Drive/ColabOne_Drive/outputs/portrait_result.png"
-        saved_file = mydrive / COLABONE_DRIVE_FOLDER / "outputs" / "portrait_result.png"
+        assert body["drive_path"] == "My Drive/ColabOne_Drive_Mount/outputs/portrait_result.png"
+        saved_file = mydrive / COLABONE_DRIVEFS_FOLDER / "outputs" / "portrait_result.png"
         assert saved_file.is_file()
 
         # Deleting the ComfyUI output must NOT remove the permanent exported copy in outputs/.
@@ -818,7 +821,7 @@ def test_drive_live_driving_motions_cache_exclusions_trash_and_safe_stage_merge(
     (data_root / "live-avatars" / "av1" / "portrait.png").write_bytes(b"png")
 
     assert drive.push_workspace() is True
-    ws = mydrive / COLABONE_DRIVE_FOLDER / "workspace"
+    ws = mydrive / COLABONE_DRIVEFS_FOLDER / "workspace"
     assert (ws / "live-driving-motions" / "dance_01" / "clip.mp4").read_bytes() == b"mp4-driving-bytes"
     assert not (ws / "live-avatars" / "av1" / ".musetalk_cache").exists()
 
@@ -1218,7 +1221,7 @@ def test_drive_tombstones_prevent_resurrection_and_replay_offline_deletions(
     rt1._mark_dirty("live-driving-motions")
     assert rt1.sync_drive()["ok"] is True
 
-    ws = mydrive / COLABONE_DRIVE_FOLDER / "workspace"
+    ws = mydrive / COLABONE_DRIVEFS_FOLDER / "workspace"
     assert (ws / "workflows" / "wf-offline-del.json").is_file()
     assert (ws / "comfyui-outputs" / f"{oid}.json").is_file()
     assert (ws / "live-avatars" / "av_del_1").is_dir()
@@ -1262,3 +1265,29 @@ def test_drive_tombstones_prevent_resurrection_and_replay_offline_deletions(
     assert rt2.comfy.store.list_outputs() == []
     assert not (vm2_root / "live-avatars" / "av_del_1").exists()
     assert not (vm2_root / "live-driving-motions" / "dm_del_1").exists()
+
+
+def test_drivefs_and_rclone_use_distinct_folders(tmp_path, monkeypatch):
+    mydrive = tmp_path / "drive" / "MyDrive"
+    mydrive.mkdir(parents=True)
+    catalog = tmp_path / "catalog"
+    catalog.mkdir()
+
+    # 1. Colab native DriveFS uses ColabOne_Drive_Mount exclusively.
+    vm_dfs = tmp_path / "vm_dfs"
+    vm_dfs.mkdir()
+    drive_dfs = ColabOneDrive(vm_dfs, catalog, mount_root=mydrive)
+    monkeypatch.setattr(drive_dfs, "is_colab_drivefs_mounted", lambda: True)
+    info_dfs = drive_dfs.connect()
+    assert info_dfs["mode"] == "colab_drivefs"
+    assert info_dfs["remote_folder"] == COLABONE_DRIVEFS_FOLDER == "ColabOne_Drive_Mount"
+    assert drive_dfs.status()["remote_folder"] == "ColabOne_Drive_Mount"
+    assert not (mydrive / COLABONE_DRIVE_FOLDER).exists()
+
+    # 2. Headless rclone mode stays on ColabOne_Drive.
+    vm_rc = tmp_path / "vm_rc"
+    vm_rc.mkdir()
+    drive_rc = ColabOneDrive(vm_rc, catalog, mount_root=tmp_path / "mnt_rc")
+    drive_rc.mode = "rclone_sync"
+    assert drive_rc.status()["remote_folder"] == COLABONE_DRIVE_FOLDER == "ColabOne_Drive"
+    assert COLABONE_DRIVE_SPEC == f"{COLABONE_DRIVE_REMOTE}:ColabOne_Drive"

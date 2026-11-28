@@ -19,6 +19,7 @@ export const jaJPMessages: ColabOneMessages = {
   "common.delete": "削除",
   "common.clear": "クリア",
   "common.save": "保存",
+  "common.apply": "適用",
   "common.retry": "再試行",
   "common.refresh": "更新",
   "common.collapse": "折りたたむ",
@@ -192,6 +193,9 @@ export const jaJPMessages: ColabOneMessages = {
   "billing.idleOption45": "45 分",
   "billing.idleOption60": "1 時間",
   "billing.idleOption120": "2 時間",
+  "billing.releaseModeNever": "自動解放なし",
+  "billing.releaseModeCuLimitOption": "指定 CU 消費で解放",
+  "billing.releaseModeCuLimitShort": "{limit} CU 消費で解放",
   "billing.barAria": "課金および自動解放ステータス",
   "billing.barIdlePausedTooltip":
     "リモートタスク実行中のためアイドル自動解放を一時停止中（ポリシー: {policy}）",
@@ -206,6 +210,14 @@ export const jaJPMessages: ColabOneMessages = {
   "billing.barIdleCountdown": "自動解放まで {clock}",
   "billing.barIdleCountdownShort": "待機 {clock}",
   "billing.barIdleCountdownAria": "自動解放まで {clock}、クリックでリセット",
+  "billing.barReleaseNever": "自動解放なし",
+  "billing.barReleaseNeverShort": "解放なし",
+  "billing.barReleaseNeverTooltip":
+    "自動解放なしに設定済み：手動で停止するかアカウントの計算ユニット（CU）が尽きるまで稼働し続けます",
+  "billing.barReleaseCuLimit": "CU 上限 {consumed}/{limit}",
+  "billing.barReleaseCuLimitShort": "{consumed}/{limit} CU",
+  "billing.barReleaseCuLimitTooltip":
+    "今回の連続稼働で {consumed} CU 消費、上限 {limit} CU（残り {remaining} CU）。上限に達するとドライブを保存して自動解放します",
   "billing.barStatusInstances": "{status}（稼働中: {count} 台）",
   "billing.barBurnRate": "消費レート",
   "billing.barRemainingBalance": "残高",
@@ -535,6 +547,17 @@ export const jaJPMessages: ColabOneMessages = {
   "device.idlePauseHint": "ダウンロード・読み込み・推論中はカウントダウンを自動一時停止",
   "device.idlePolicySummary": "無操作 {policy} で自動解放",
   "device.idlePolicyHint": "無操作時に自動解放・タスク実行中は自動一時停止",
+  "device.releaseCuLimitAria": "自動解放する CU 消費上限",
+  "device.releaseNeverLive": "自動解放なし · 手動停止または CU が尽きるまで稼働",
+  "device.releaseNeverSummary": "自動解放なし（手動停止または CU が尽きるまで継続）",
+  "device.releaseNeverHint": "自動解放はオフです。アカウントの CU 残高消費にご注意ください",
+  "device.releaseCuLimitLive": "CU 上限解放 · 今回 {consumed} / {limit} CU 消費（残り {remaining} CU）",
+  "device.releaseCuLimitSummary": "今回の消費が {limit} CU に達すると自動解放",
+  "device.releaseCuLimitHint": "設定した CU 上限に達するとドライブを自動保存しインスタンスを解放します",
+  "device.releaseCuLimitPendingHint":
+    "未適用：今回はすでに {consumed} CU 消費済みです。CU 上限を確認し「適用」を押してください",
+  "device.releaseCuLimitImmediateWarn":
+    "今回はすでに {consumed} CU 消費しており上限に達しています。「適用」を押すと即座に自動解放されます",
   "device.driveMountedFull":
     "Google ドライブを自動マウント済み（My Drive / {folder}{free}）· {tail}",
   "device.driveFreeSegment": " · 空き {size}",
@@ -584,6 +607,8 @@ export const jaJPMessages: ColabOneMessages = {
   "device.footerBase": "モデルの重み・外部 API 推論・ComfyUI はすべてリモート GPU 上で実行されます。",
   "device.footerDriveMounted":
     "モデル一覧・ComfyUI ワークフロー・出力作品は Google ドライブ (ColabOne_Drive) へ自動保存され、解放前にも同期されます。",
+  "device.footerDriveMountedFolder":
+    "モデル一覧・ComfyUI ワークフロー・出力作品は Google ドライブ ({folder}) へ自動保存され、解放前にも同期されます。",
   "device.footerDriveAuto":
     "ドライブ自動マウント有効: GPU 起動時に ColabOne_Drive へ接続し、モデル一覧・ワークフロー・作品を永続化します。",
   "device.footerDriveUnmountedActive":
@@ -613,6 +638,10 @@ export const jaJPMessages: ColabOneMessages = {
   "device.releaseConfirmSelected": "選択項目を停止（{count}）",
   "device.toastRefreshed": "課金情報とインスタンス状態を更新しました",
   "device.toastIdleSet": "アイドル自動解放を {policy} に設定しました",
+  "device.toastReleaseModeSet": "自動解放ポリシーを {policy} に設定しました",
+  "device.toastCuLimitConfirmNeeded":
+    "今回はすでに {consumed} CU 消費済みです。CU 上限を確認または引き上げて「適用」を押してください",
+  "device.errInvalidCuLimit": "CU 消費上限は 0.1〜100000 の範囲で指定してください",
   "device.toastThreadsSet": "ダウンロード並列数を {threads} スレッドに設定しました",
   "device.toastAssignMaxAttemptsSet": "GPU 割り当ての最大試行回数を {count} 回に設定しました",
   "device.toastDefaultGpuSet": "デフォルト GPU を {gpu} に設定しました",
@@ -622,6 +651,10 @@ export const jaJPMessages: ColabOneMessages = {
   "api.title": "外部 API",
   "api.subtitle":
     "リモート GPU から OpenAI Responses / Chat Completions 互換 API と Codex コンテキスト圧縮を提供。{policy} 無操作で自動解放します。",
+  "api.subtitleNever":
+    "リモート GPU から OpenAI Responses / Chat Completions 互換 API と Codex コンテキスト圧縮を提供。自動解放なしに設定済み（手動停止または CU が尽きるまで稼働）。",
+  "api.subtitleCuLimit":
+    "リモート GPU から OpenAI Responses / Chat Completions 互換 API と Codex コンテキスト圧縮を提供。今回の累計消費が {limit} CU に達するとドライブを保存して自動解放します。",
   "api.statusStopped": "停止中",
   "api.statusUnconfirmed": "状態確認中",
   "api.statusStarting": "接続中",
@@ -1106,6 +1139,8 @@ export const jaJPMessages: ColabOneMessages = {
   "comfy.gpuStoppedDesc":
     "リモート GPU は停止中です。起動後にワークフロー実行やネイティブキャンバスを利用できます。",
   "comfy.runningIdleHint": "実行およびキャンバス操作中は自動解放を一時停止（ポリシー: {policy}）",
+  "comfy.runningReleaseNeverHint": "自動解放なしに設定済み · 手動停止または CU が尽きるまで稼働します",
+  "comfy.runningReleaseCuLimitHint": "CU 上限解放が有効 · 今回の累計消費が {limit} CU に達すると自動保存して解放します",
   "comfy.preparingDesc": "リモート GPU 上に ComfyUI 環境を構築しています。完了後にすぐ実行できます。",
   "comfy.readyToStartDesc":
     "リモート GPU は準備完了です。ComfyUI エンジンを起動してワークフローやキャンバスを使いましょう。",
@@ -1170,6 +1205,8 @@ export const jaJPMessages: ColabOneMessages = {
     "ワークフローを実行すると生成された画像・動画・音声がここに表示され、プレビュー、ローカル保存、または Google ドライブへの直接保存ができます。",
   "comfy.drivePersistHint":
     "Google ドライブ接続済み（My Drive / ColabOne_Drive）— 出力は自動永続化され、「ドライブへ保存」で outputs フォルダへ直接保存できます。",
+  "comfy.drivePersistHintFolder":
+    "Google ドライブ接続済み（My Drive / {folder}）— 出力は自動永続化され、「ドライブへ保存」で outputs フォルダへ直接保存できます。",
   "comfy.localExportHint":
     "出力はリモート GPU 上に一時保存されています。インスタンス解放前にローカル保存または Google ドライブへ保存してください。",
   "comfy.driveWaitingHint":
@@ -1205,6 +1242,8 @@ export const jaJPMessages: ColabOneMessages = {
   "comfy.exportedToDrive": "ドライブ保存済",
   "comfy.exportDriveReadyTooltip":
     "リモート GPU から Google ドライブ（My Drive / ColabOne_Drive / outputs）へ高速直接アップロードして永続保存",
+  "comfy.exportDriveReadyTooltipFolder":
+    "リモート GPU から Google ドライブ（My Drive / {folder} / outputs）へ高速直接アップロードして永続保存",
   "comfy.exportDriveSetupTooltip":
     "初回は Google ドライブ認証設定が開き、完了後に自動でクラウドへ直接保存します",
   "comfy.exportDriveDoneTooltip":
@@ -1286,6 +1325,12 @@ export const jaJPMessages: ColabOneMessages = {
   "comfy.noticeExportedDrive": "出力作品を Google ドライブへ保存しました: {path}",
   "comfy.noticeExportedDriveExists": "この作品はすでに Google ドライブに保存されています: {path}",
   "comfy.noticeDeletedOutput": "出力作品を削除しました。",
+  "comfy.noticeDeletedOutputManualCloudMount":
+    "アプリから作品を削除しました。クラウド側のファイルは Colab マウントモードで書き込まれているため自動削除できません。Google ドライブ上で手動削除してください。",
+  "comfy.noticeDeletedOutputManualCloudNoApi":
+    "アプリから作品を削除しました。Google ドライブ API 直接接続が未有効のためクラウド側のファイルは自動削除できません。Google ドライブ上で手動削除してください。",
+  "comfy.noticeDeletedOutputManualCloudGeneric":
+    "アプリから作品を削除しました。Google ドライブ上のファイルを自動削除できなかったため、必要に応じて Google ドライブ上で手動削除してください。",
   "comfy.driveModalTitleExport": "Google ドライブへ保存",
   "comfy.driveModalTitleConfig": "Google ドライブの設定",
   "comfy.driveModalTagExported": "保存済み",
@@ -1407,6 +1452,7 @@ export const jaJPMessages: ColabOneMessages = {
   "comfy.openOutputInDrive": "ドライブで開く",
   "comfy.openOutputInDriveTooltip": "ブラウザの Google ドライブでこのファイルを開く",
   "comfy.outputDriveSyncedTooltip": "Google ドライブ (ColabOne_Drive) に同期済み",
+  "comfy.outputDriveSyncedTooltipFolder": "Google ドライブ ({folder}) に同期済み",
   "comfy.outputTagSavedInDrive": "ドライブ保存済み",
   "comfy.outputTagSyncedInDrive": "ドライブ同期済み",
   "comfy.outputTagShared": "外部共有",
@@ -1419,6 +1465,8 @@ export const jaJPMessages: ColabOneMessages = {
   "comfy.shareWorkflowBtn": "ワークフローを共有",
   "comfy.exportLocalNeedDriveApiTooltip": "ネイティブ DriveFS 記録は GPU なしで直接ダウンロードできません。「ドライブで開く」を使うかポップアップ不要モードを有効にしてください",
   "comfy.deleteDriveOutputDesc": "Google ドライブ連携作品「{name}」を削除しますか？（ドライブ API 有効時は Google ドライブのゴミ箱にも移動します）",
+  "comfy.deleteDriveMountOutputDesc":
+    "作品「{name}」をアプリの一覧から削除しますか？Colab マウントモードで書き込まれているため、クラウド側のファイルは Google ドライブ上で手動削除する必要があります。",
   "comfy.driveModalConnectedAutoReleaseDesc": "Google ドライブ「{folder}」にマウント済みです{free}。下のボタンからワークフロー完了後の自動同期・インスタンス解放を有効にできます。",
   "comfy.driveAutoReleaseEnableNowBtn": "完了後自動解放をオンにする",
   "comfy.driveRetryAutoReleaseBtn": "自動解放の有効化を再試行",
@@ -1710,10 +1758,12 @@ export const jaJPMessages: ColabOneMessages = {
   "settings.clipboardReadFailed": "クリップボードを読み取れませんでした。下の入力欄へ直接貼り付けてください",
   "settings.driveHeading": "Google ドライブ",
   "settings.driveTagMounted": "マウント済み · ColabOne_Drive",
+  "settings.driveTagMountedFolder": "マウント済み · {folder}",
   "settings.driveTagHeadlessReady": "確認不要で準備完了 · 自動マウント",
   "settings.driveTagAuthorized": "認可済み · ネイティブ DriveFS",
   "settings.driveTagReauth": "再ログインによる認可が必要",
   "settings.driveDescPrefix": "ローカルの Google OAuth 認証情報を再利用し専用フォルダ",
+  "settings.driveDescNativeSep": "（ヘッドレスモード）またはネイティブマウントフォルダ",
   "settings.driveDescSuffix":
     " を自動マウントし、モデル一覧・ComfyUI ワークフロー・生成作品を永続保存します。",
   "settings.driveNeedScopeAlert":
@@ -1735,7 +1785,7 @@ export const jaJPMessages: ColabOneMessages = {
   "settings.downloadThreadsAria": "ダウンロード並列スレッド数",
   "settings.threadsOption": "{count} スレッド",
   "settings.autoDriveLabel": "ドライブ自動マウント",
-  "settings.autoDriveDesc": "GPU 起動時に Google ドライブ (ColabOne_Drive) を自動マウント・同期",
+  "settings.autoDriveDesc": "GPU 起動時に Google ドライブ (ColabOne_Drive / ColabOne_Drive_Mount) を自動マウント・同期",
   "settings.assignMaxAttemptsLabel": "GPU 割り当て最大試行回数",
   "settings.assignMaxAttemptsAria": "GPU 割り当ての最大試行回数",
   "settings.assignMaxAttemptsUnit": "回",
@@ -1744,6 +1794,10 @@ export const jaJPMessages: ColabOneMessages = {
   "settings.idleProtectionTitle": "アイドル自動解放保護",
   "settings.idleProtectionDesc":
     "{policy} 以上操作・タスクがないとリモートリソースを自動解放します。操作するとタイマーはリセットされ、モデル取得・読込・API 推論・ComfyUI 実行中は自動一時停止します。",
+  "settings.releaseNeverDesc":
+    "自動解放なしに設定済み：手動で停止するか、アカウントの計算ユニット（CU）が尽きるまでインスタンスは稼働し続けます。",
+  "settings.releaseCuLimitDesc":
+    "今回の連続稼働での累計消費が {limit} CU に達すると、Google ドライブを自動保存してインスタンスを解放します（アイドルタイマーは無効）。",
   "settings.computeSyncNote":
     "デフォルト GPU と自動解放時間は「リモートデバイス」ページと即時同期されます。",
   "settings.assignProxyTitle": "GPU 割り当て専用プロキシ",
@@ -2529,6 +2583,10 @@ export const jaJPMessages: ColabOneMessages = {
   "outputGallery.noticeAlbumDriveExported":
     "アルバムをすべて Google ドライブへエクスポートしました",
   "outputGallery.noticeAlbumDeleted": "このアルバム内のすべての作品を削除しました",
+  "outputGallery.noticeAlbumDeletedManualCloudMount":
+    "アプリからアルバムを削除しました。うち {count} 件は Colab マウントモードで書き込まれているため自動削除できません。Google ドライブ上で手動削除してください。",
+  "outputGallery.noticeAlbumDeletedManualCloudGeneric":
+    "アプリからアルバムを削除しました。うち {count} 件の Google ドライブファイルは自動削除できなかったため、Google ドライブ上で手動削除してください。",
   "outputGallery.multiSelectBtn": "複数選択で共有",
   "outputGallery.multiSelectCancel": "選択を終了",
   "outputGallery.multiSelectAll": "すべて選択",

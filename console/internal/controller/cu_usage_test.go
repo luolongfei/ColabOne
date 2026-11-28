@@ -783,3 +783,47 @@ func TestEstimateWindowCURejectsExtremeTimestampsAndLoadsIANATimezone(t *testing
 		t.Fatalf("expected America/New_York active_dates=[2025-11-22], got %#v", resNY["active_dates"])
 	}
 }
+
+func TestCurrentRunEffectiveConsumedProjectionAndDepletion(t *testing.T) {
+	base := 1763856000.0
+	now := base + 100
+	store := NewColabOneCUUsageStore(t.TempDir(), func() float64 { return now })
+
+	// No active run yet.
+	if got, _, _, _, active := store.CurrentRunEffectiveConsumed("u@example.com", now, 10.0, 50.0, true); active || got != 0 {
+		t.Fatalf("expected (0, false) before run starts, got (%.4f, %v)", got, active)
+	}
+
+	// Start active run with 1.0 CU confirmed consumption and 3.6 CU/hr rate (0.001 CU/sec).
+	store.RecordSample("u@example.com", base+100, 100.0, true, 3.6, 1)
+	store.RecordSample("u@example.com", base+1100, 99.0, true, 3.6, 1)
+
+	// 30s after last sample: 1.0 confirmed + 0.03 live projection = 1.03 CU.
+	got30, _, _, _, active30 := store.CurrentRunEffectiveConsumed("u@example.com", base+1130, 3.6, 99.0, true)
+	if !active30 || !almostEqualCU(got30, 1.03, 1e-4) {
+		t.Fatalf("expected (1.03, true) at +30s, got (%.4f, %v)", got30, active30)
+	}
+
+	// Stale 600s gap must cap projection at 90s (1.0 + 0.09 = 1.09 CU).
+	gotStale, _, _, _, activeStale := store.CurrentRunEffectiveConsumed("u@example.com", base+1700, 3.6, 99.0, true)
+	if !activeStale || !almostEqualCU(gotStale, 1.09, 1e-4) {
+		t.Fatalf("expected (1.09, true) capped at 90s, got (%.4f, %v)", gotStale, activeStale)
+	}
+
+	// Depleted balance must not extrapolate beyond confirmed consumption.
+	gotDepleted, _, _, _, activeDepleted := store.CurrentRunEffectiveConsumed("u@example.com", base+1130, 3.6, 0.0, true)
+	if !activeDepleted || !almostEqualCU(gotDepleted, 1.0, 1e-4) {
+		t.Fatalf("expected (1.0, true) when balance depleted, got (%.4f, %v)", gotDepleted, activeDepleted)
+	}
+
+	// EndRun closes the active run cleanly so a fresh BeginRun starts at 0.00 CU.
+	store.EndRun("u@example.com", base+1140)
+	if gotAfterEnd, _, _, _, activeAfterEnd := store.CurrentRunEffectiveConsumed("u@example.com", base+1145, 3.6, 99.0, true); activeAfterEnd || gotAfterEnd != 0 {
+		t.Fatalf("expected inactive run after EndRun, got (%.4f, %v)", gotAfterEnd, activeAfterEnd)
+	}
+	store.BeginRun("u@example.com", base+1150, 99.0, true)
+	gotNew, _, _, _, activeNew := store.CurrentRunEffectiveConsumed("u@example.com", base+1150, 0.0, 99.0, true)
+	if !activeNew || gotNew != 0 {
+		t.Fatalf("expected fresh run at 0.00 CU after EndRun+BeginRun, got (%.4f, %v)", gotNew, activeNew)
+	}
+}

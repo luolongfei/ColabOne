@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -408,6 +409,8 @@ func (c *ColabOneController) loadSettings() {
 		"gpu":                    COLABONE_DEFAULT_GPU,
 		"idle_minutes":           30,
 		"idle_countdown_seconds": 60,
+		"release_mode":           COLABONE_DEFAULT_RELEASE_MODE,
+		"release_cu_limit":       COLABONE_DEFAULT_RELEASE_CU_LIMIT,
 		"auto_drive":             true,
 		"download_threads":       16,
 		"assign_max_attempts":    COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS,
@@ -422,6 +425,8 @@ func (c *ColabOneController) loadSettings() {
 				"gpu",
 				"idle_minutes",
 				"idle_countdown_seconds",
+				"release_mode",
+				"release_cu_limit",
 				"auto_drive",
 				"download_threads",
 				"assign_max_attempts",
@@ -454,6 +459,13 @@ func (c *ColabOneController) loadSettings() {
 		c.settings["idle_countdown_seconds"] = countdownVal
 	} else {
 		c.settings["idle_countdown_seconds"] = 60
+	}
+
+	c.settings["release_mode"] = normalizeColabOneReleaseMode(c.settings["release_mode"])
+	if cuLimit, ok := asFloat(c.settings["release_cu_limit"]); !ok || math.IsNaN(cuLimit) || math.IsInf(cuLimit, 0) || cuLimit < COLABONE_MIN_RELEASE_CU_LIMIT || cuLimit > COLABONE_MAX_RELEASE_CU_LIMIT {
+		c.settings["release_cu_limit"] = COLABONE_DEFAULT_RELEASE_CU_LIMIT
+	} else {
+		c.settings["release_cu_limit"] = roundColabOneCULimit(cuLimit)
 	}
 
 	if _, ok := isStrictBool(c.settings["auto_drive"]); !ok {

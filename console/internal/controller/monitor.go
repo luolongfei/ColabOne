@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"sort"
 	"strings"
@@ -1019,11 +1020,26 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 			}
 			c.mu.Lock()
 			lastCfg := c.lastConfig
+			lastKeepalive := c.lastLegacyKeepalive
+			curReleaseMode, _, _, _ := c.currentReleasePolicyLocked()
+			activeRT := asMap(c.data["runtime"])
+			supportsReleaseModes := runtimeSupportsCapability(activeRT, "idle_release_modes")
 			c.mu.Unlock()
-			if now-lastCfg > 600 {
+			cfgRefreshInterval := 600.0
+			if curReleaseMode == COLABONE_RELEASE_MODE_CU_LIMIT {
+				cfgRefreshInterval = 60.0
+			}
+			if now-lastCfg > cfgRefreshInterval {
 				_, activeErr = c.configureRemote(ctx, "", true)
 				if activeErr != nil && c.isShuttingDown(ctx) {
 					return
+				}
+			}
+			if activeErr == nil && curReleaseMode != COLABONE_RELEASE_MODE_IDLE && !supportsReleaseModes && now-lastKeepalive > 300 {
+				if _, err := c.remote(ctx, "POST", "activity", map[string]any{"hold_seconds": 330}, "", 0); err == nil {
+					c.mu.Lock()
+					c.lastLegacyKeepalive = now
+					c.mu.Unlock()
 				}
 			}
 		}
@@ -1092,6 +1108,14 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 		return
 	}
 
+	if !c.opBusy.Load() && len(sessions) > 0 {
+		c.checkCUAutoRelease(ctx, now, sessions)
+	}
+
+	if c.isShuttingDown(ctx) {
+		return
+	}
+
 	// Keep any secondary managed instances alive and refreshed in parallel.
 	if !c.opBusy.Load() && c.opGen.Load() == activeOpGen {
 		remoteKeys := make([]string, 0, len(remotes))
@@ -1117,6 +1141,8 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 			entry := c.ensureInstanceStateLocked(ep)
 			entryLastHB := entry.LastHeartbeat
 			entryLastCfg := entry.LastConfig
+			entryLastKeepalive := entry.LastLegacyKeepalive
+			secReleaseMode, _, _, _ := c.currentReleasePolicyLocked()
 			c.mu.Unlock()
 
 			if now-entryLastHB > 30 {
@@ -1190,7 +1216,11 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 			if c.isShuttingDown(ctx) || c.opBusy.Load() || c.opGen.Load() != activeOpGen {
 				return
 			}
-			if now-entryLastCfg > 600 {
+			secCfgInterval := 600.0
+			if secReleaseMode == COLABONE_RELEASE_MODE_CU_LIMIT {
+				secCfgInterval = 60.0
+			}
+			if now-entryLastCfg > secCfgInterval {
 				if _, err := c.configureRemote(ctx, ep, true); err != nil {
 					if c.isShuttingDown(ctx) || c.opBusy.Load() || c.opGen.Load() != activeOpGen {
 						return
@@ -1212,8 +1242,168 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 					continue
 				}
 			}
+			if secReleaseMode != COLABONE_RELEASE_MODE_IDLE && now-entryLastKeepalive > 300 {
+				c.mu.Lock()
+				secSupportsReleaseModes := false
+				if st, ok := c.instanceStates[ep]; ok && st != nil {
+					secSupportsReleaseModes = runtimeSupportsCapability(st.Runtime, "idle_release_modes")
+				}
+				c.mu.Unlock()
+				if !secSupportsReleaseModes {
+					if _, err := c.remote(ctx, "POST", "activity", map[string]any{"hold_seconds": 330}, ep, 0); err == nil {
+						c.mu.Lock()
+						if st, ok := c.instanceStates[ep]; ok && st != nil {
+							st.LastLegacyKeepalive = now
+						}
+						c.mu.Unlock()
+					}
+				}
+			}
 		}
 	}
+}
+
+func (c *ColabOneController) checkCUAutoRelease(ctx context.Context, now float64, sessions map[string]map[string]any) {
+	if c.isShuttingDown(ctx) || c.opBusy.Load() || len(sessions) == 0 {
+		return
+	}
+	if now <= 0 {
+		now = nowUnixFloat()
+	}
+	c.mu.Lock()
+	releaseMode, _, cuLimit, _ := c.currentReleasePolicyLocked()
+	lastAuth := c.lastAuth
+	lastPoll := c.lastCUReleasePoll
+	lastAttempt := c.lastCUAutoReleaseAttempt
+	c.mu.Unlock()
+	if releaseMode != COLABONE_RELEASE_MODE_CU_LIMIT || cuLimit < COLABONE_MIN_RELEASE_CU_LIMIT {
+		return
+	}
+	if lastAttempt > 0 && now-lastAttempt < 20.0 {
+		return
+	}
+	consumed, rate, _, _, active := c.currentRunCUConsumption(now)
+	if !active {
+		return
+	}
+	approaching := rate > colabOneCUEpsilon && (cuLimit-consumed) <= (rate*60.0/3600.0)
+	if (consumed >= cuLimit-1e-6 || approaching) && c.provider != nil && now-lastAuth > 8 && now-lastPoll > 8 {
+		c.mu.Lock()
+		c.lastCUReleasePoll = now
+		c.mu.Unlock()
+		acctGen, acctCreds := c.snapshotAccountGuard()
+		if acct, err := c.provider.Account(ctx); err == nil && acct != nil {
+			if c.applyAccountRefreshIfCurrent(acctGen, acctCreds, acct, nowUnixFloat()) {
+				c.observerWake.Set()
+			}
+		}
+		if c.isShuttingDown(ctx) || c.opBusy.Load() {
+			return
+		}
+		c.mu.Lock()
+		releaseMode, _, cuLimit, _ = c.currentReleasePolicyLocked()
+		c.mu.Unlock()
+		if releaseMode != COLABONE_RELEASE_MODE_CU_LIMIT || cuLimit < COLABONE_MIN_RELEASE_CU_LIMIT {
+			return
+		}
+		consumed, _, _, _, active = c.currentRunCUConsumption(now)
+		if !active {
+			return
+		}
+	}
+	if consumed < cuLimit-1e-6 {
+		return
+	}
+	c.mu.Lock()
+	c.lastCUAutoReleaseAttempt = now
+	c.mu.Unlock()
+	if !c.triggerCUAutoRelease(consumed, cuLimit) {
+		c.mu.Lock()
+		if c.lastCUAutoReleaseAttempt == now {
+			c.lastCUAutoReleaseAttempt = 0
+		}
+		c.mu.Unlock()
+	}
+}
+
+func (c *ColabOneController) triggerCUAutoRelease(consumed, cuLimit float64) bool {
+	limitStr := formatColabOneCUCompact(cuLimit)
+	_, err := c.asyncOperation(
+		fmt.Sprintf("已达到 CU 消耗上限（%s CU），正在自动释放实例", limitStr),
+		func() error {
+			c.log(
+				fmt.Sprintf("本次运行已消耗 %.2f CU，达到设定的 %s CU 自动释放上限，正在保存云盘并释放实例", consumed, limitStr),
+				"GPU",
+				"warning",
+			)
+			sessionsMap := c.vaultSessions()
+			eps := make([]string, 0, len(sessionsMap))
+			for ep := range sessionsMap {
+				eps = append(eps, ep)
+			}
+			sort.Strings(eps)
+			if len(eps) == 0 {
+				return nil
+			}
+			activeEP := c.activeEndpointFrom(sessionsMap)
+			sort.SliceStable(eps, func(i, j int) bool {
+				if eps[i] == activeEP {
+					return false
+				}
+				if eps[j] == activeEP {
+					return true
+				}
+				return eps[i] < eps[j]
+			})
+			var firstErr error
+			for _, ep := range eps {
+				if c.stop.IsSet() {
+					return nil
+				}
+				prepCtx, cancelPrep := context.WithTimeout(c.rootCtx, 25*time.Second)
+				rpcEP := ep
+				if ep == c.activeEndpoint() {
+					rpcEP = ""
+				}
+				if _, err := c.remote(prepCtx, "POST", "prepare-release?auto=1", nil, rpcEP, 25*time.Second); err != nil {
+					c.log("自动释放前远端收尾未完全成功，仍将继续释放实例以停止计费："+SafeMessage(err.Error()), "GPU", "warning")
+				}
+				cancelPrep()
+				if err := c.releaseEndpoint(c.rootCtx, true, true, ep); err != nil && firstErr == nil {
+					firstErr = err
+				}
+			}
+			if firstErr == nil {
+				c.log(
+					fmt.Sprintf("已按 CU 上限（%s CU）完成实例自动释放，本次累计消耗 %.2f CU", limitStr, consumed),
+					"GPU",
+					"info",
+				)
+			}
+			return firstErr
+		},
+		map[string]any{
+			"kind":             "cu_auto_release",
+			"release_cu_limit": roundColabOneCULimit(cuLimit),
+			"consumed_cu":      colabOneRoundCU(consumed),
+		},
+		func() error {
+			if c.stop.IsSet() {
+				return errors.New("客户端正在关闭")
+			}
+			if len(c.vaultSessions()) == 0 {
+				return errors.New("当前无活跃实例")
+			}
+			c.mu.Lock()
+			mode, _, limit, _ := c.currentReleasePolicyLocked()
+			c.mu.Unlock()
+			if mode != COLABONE_RELEASE_MODE_CU_LIMIT || limit < COLABONE_MIN_RELEASE_CU_LIMIT {
+				return errors.New("自动释放策略已变更")
+			}
+			return nil
+		},
+	)
+	return err == nil
 }
 
 func (c *ColabOneController) effectiveMonitorWait() time.Duration {

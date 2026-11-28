@@ -633,6 +633,12 @@ export interface ColabOneLiveSessionTokenResult {
   codec?: "h264" | "jpeg" | "fmp4" | string;
 }
 
+export type ColabOneReleaseMode = "idle" | "never" | "cu_limit";
+export const COLABONE_DEFAULT_RELEASE_MODE: ColabOneReleaseMode = "idle";
+export const COLABONE_DEFAULT_RELEASE_CU_LIMIT = 10 as const;
+export const COLABONE_MIN_RELEASE_CU_LIMIT = 0.1 as const;
+export const COLABONE_MAX_RELEASE_CU_LIMIT = 100000 as const;
+
 export interface RuntimeStatus {
   public_api?: PublicAPIStatus;
   comfyui?: ComfyStatus;
@@ -656,6 +662,7 @@ export interface RuntimeStatus {
   disk_free?: number;
   idle_remaining?: number;
   idle_minutes?: number;
+  release_mode?: ColabOneReleaseMode;
   resources?: SystemResources;
   protocol?: number;
   service_revision?: string;
@@ -669,6 +676,7 @@ export interface RuntimeStatus {
     countdown_seconds: number;
     idle_seconds: number;
     server_time: number;
+    release_mode?: ColabOneReleaseMode;
   };
   deadline?: number;
   tasks?: TaskStatus[];
@@ -867,6 +875,8 @@ export interface ColabOneSnapshot {
     gpu: string;
     idle_minutes: number;
     idle_countdown_seconds: number;
+    release_mode?: ColabOneReleaseMode;
+    release_cu_limit?: number;
     auto_drive: boolean;
     download_threads: number;
     assign_max_attempts?: number;
@@ -904,6 +914,8 @@ export const createColabOneSnapshot = (): ColabOneSnapshot => ({
     gpu: COLABONE_DEFAULT_GPU,
     idle_minutes: 30,
     idle_countdown_seconds: 60,
+    release_mode: COLABONE_DEFAULT_RELEASE_MODE,
+    release_cu_limit: COLABONE_DEFAULT_RELEASE_CU_LIMIT,
     auto_drive: true,
     download_threads: 16,
     assign_max_attempts: COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS,

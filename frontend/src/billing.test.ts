@@ -4,10 +4,14 @@ import {
   COLABONE_BILLING_TICKER_INTERVAL_MS,
   COLABONE_DEFAULT_IDLE_MINUTES,
   COLABONE_IDLE_RELEASE_OPTIONS,
+  COLABONE_RELEASE_SELECT_CU_LIMIT,
+  COLABONE_RELEASE_SELECT_NEVER,
   COLABONE_RUN_LIVE_INTERP_CAP_SEC,
   describeColabOneBilling,
   describeColabOneRunConsumption,
+  encodeColabOneReleaseSelectValue,
   formatColabOneCompactRunDuration,
+  formatColabOneCULimitValue,
   formatColabOneRunClock,
   formatCountdownClock,
   formatIdlePolicyLabel,
@@ -15,6 +19,7 @@ import {
   friendlyErrorMessage,
   isTransientIpcError,
   nextColabOneBillingTickerSlide,
+  parseColabOneReleaseSelectValue,
   resolveColabOneBillingTickerSlides,
 } from "./billing";
 import { createColabOneSnapshot, type ColabOneSnapshot } from "./types";
@@ -747,5 +752,42 @@ describe("COLABONE_BILLING_TICKER_INTERVAL_MS, formatColabOneCompactRunDuration 
       checked_at: Math.floor(Date.now() / 1000),
     });
     expect(realNeg.balanceText).toBe("-1.25 CU");
+  });
+
+  it("encodes, parses, and formats never and cu_limit auto-release policies cleanly", () => {
+    expect(formatColabOneCULimitValue(10)).toBe("10");
+    expect(formatColabOneCULimitValue(12.5)).toBe("12.5");
+    expect(formatColabOneCULimitValue(12.346)).toBe("12.35");
+    expect(formatColabOneCULimitValue(Number.NaN)).toBe("10");
+
+    expect(encodeColabOneReleaseSelectValue("idle", 30)).toBe("idle:30");
+    expect(encodeColabOneReleaseSelectValue("never", 30)).toBe(
+      COLABONE_RELEASE_SELECT_NEVER,
+    );
+    expect(encodeColabOneReleaseSelectValue("cu_limit", 30)).toBe(
+      COLABONE_RELEASE_SELECT_CU_LIMIT,
+    );
+
+    expect(parseColabOneReleaseSelectValue("idle:45")).toEqual({
+      mode: "idle",
+      idleMinutes: 45,
+    });
+    expect(parseColabOneReleaseSelectValue("45")).toEqual({
+      mode: "idle",
+      idleMinutes: 45,
+    });
+    expect(parseColabOneReleaseSelectValue(COLABONE_RELEASE_SELECT_NEVER)).toEqual({
+      mode: "never",
+    });
+    expect(
+      parseColabOneReleaseSelectValue(COLABONE_RELEASE_SELECT_CU_LIMIT),
+    ).toEqual({
+      mode: "cu_limit",
+    });
+    expect(parseColabOneReleaseSelectValue("bad")).toBeNull();
+
+    expect(formatIdlePolicyLabel(30, "never", 10)).toBe("长期不释放");
+    expect(formatIdlePolicyLabel(30, "cu_limit", 12.5)).toBe("消耗达 12.5 CU 释放");
+    expect(formatIdlePolicyLabel(60, "idle", 10)).toBe("1 小时");
   });
 });

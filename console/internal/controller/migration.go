@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -1123,6 +1124,8 @@ func (c *ColabOneController) validateMigrationSettings(src *migration.ColabOneMi
 		"gpu":                                COLABONE_DEFAULT_GPU,
 		"idle_minutes":                       30,
 		"idle_countdown_seconds":             60,
+		"release_mode":                       COLABONE_DEFAULT_RELEASE_MODE,
+		"release_cu_limit":                   COLABONE_DEFAULT_RELEASE_CU_LIMIT,
 		"auto_drive":                         true,
 		"download_threads":                   16,
 		"assign_max_attempts":                COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS,
@@ -1146,6 +1149,12 @@ func (c *ColabOneController) validateMigrationSettings(src *migration.ColabOneMi
 		}
 		if v, ok := asInt(raw["idle_countdown_seconds"]); ok && v >= 0 && v <= 600 {
 			next["idle_countdown_seconds"] = v
+		}
+		if v, ok := raw["release_mode"].(string); ok && validColabOneReleaseModes[strings.TrimSpace(v)] {
+			next["release_mode"] = strings.TrimSpace(v)
+		}
+		if v, ok := asFloat(raw["release_cu_limit"]); ok && !math.IsNaN(v) && !math.IsInf(v, 0) && v >= COLABONE_MIN_RELEASE_CU_LIMIT && v <= COLABONE_MAX_RELEASE_CU_LIMIT {
+			next["release_cu_limit"] = roundColabOneCULimit(v)
 		}
 		if v, ok := isStrictBool(raw["auto_drive"]); ok {
 			next["auto_drive"] = v

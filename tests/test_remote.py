@@ -110,6 +110,7 @@ def test_status_and_snapshot_report_protocol_7_and_comfyui_capabilities(
             "comfyui_live_studio",
             "comfyui_fashion_tryon",
             "comfyui_share_guard",
+            "idle_release_modes",
         ]
         assert "comfyui" in st
         assert "live_studio" in st
@@ -1148,7 +1149,7 @@ def test_canvas_proxy_forwards_live_ws_without_cookie_and_protects_live_http():
 
 
 def test_drive_live_avatars_filter_sync_and_safe_trash(tmp_path):
-    from server.drive import ColabOneDrive, COLABONE_DRIVE_FOLDER
+    from server.drive import ColabOneDrive, COLABONE_DRIVEFS_FOLDER
 
     assert "+ /live-avatars/**" in ColabOneDrive._WORKSPACE_FILTER_ARGS
 
@@ -1173,7 +1174,7 @@ def test_drive_live_avatars_filter_sync_and_safe_trash(tmp_path):
     (root / "live-avatars" / ".trash" / "deleted_old" / "avatar.json").write_text("{}", encoding="utf-8")
 
     assert drive.push_workspace() is True
-    ws_avatars = mydrive / COLABONE_DRIVE_FOLDER / "workspace" / "live-avatars"
+    ws_avatars = mydrive / COLABONE_DRIVEFS_FOLDER / "workspace" / "live-avatars"
     assert (ws_avatars / "av_host_1" / "avatar.json").is_file()
     assert (ws_avatars / "av_host_1" / "clips" / "idle.mp4").read_bytes() == b"mp4-idle-bytes"
     assert not (ws_avatars / "av_host_1" / "clips" / "partial.mp4.tmp").exists()

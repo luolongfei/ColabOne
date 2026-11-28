@@ -37,6 +37,7 @@ type instanceCache struct {
 	RemoteWorkflowVersions map[string]float64
 	LastHeartbeat          float64
 	LastConfig             float64
+	LastLegacyKeepalive    float64
 }
 
 type releasePlanState struct {
@@ -92,6 +93,9 @@ type ColabOneController struct {
 	lastAuth                float64
 	lastConfig              float64
 	lastHeartbeat           float64
+	lastLegacyKeepalive      float64
+	lastCUReleasePoll        float64
+	lastCUAutoReleaseAttempt float64
 	pendingTouch            bool
 	lastTouch               float64
 	expectedServiceRev      string
@@ -1692,6 +1696,128 @@ func (c *ColabOneController) ConfigureRemote(ctx context.Context, endpoint strin
 	return err
 }
 
+func (c *ColabOneController) currentReleasePolicyLocked() (mode string, idleMin int, cuLimit float64, countdownSec int) {
+	mode = normalizeColabOneReleaseMode(c.settings["release_mode"])
+	idleMin, _ = asInt(c.settings["idle_minutes"])
+	if idleMin < 1 || idleMin > 240 {
+		idleMin = 30
+	}
+	cuLimit, _ = asFloat(c.settings["release_cu_limit"])
+	if math.IsNaN(cuLimit) || math.IsInf(cuLimit, 0) || cuLimit < COLABONE_MIN_RELEASE_CU_LIMIT || cuLimit > COLABONE_MAX_RELEASE_CU_LIMIT {
+		cuLimit = COLABONE_DEFAULT_RELEASE_CU_LIMIT
+	} else {
+		cuLimit = roundColabOneCULimit(cuLimit)
+	}
+	countdownSec, _ = asInt(c.settings["idle_countdown_seconds"])
+	if countdownSec < 10 || countdownSec > 300 {
+		countdownSec = 60
+	}
+	return mode, idleMin, cuLimit, countdownSec
+}
+
+func runtimeSupportsCapability(rt map[string]any, name string) bool {
+	if rt == nil || name == "" {
+		return false
+	}
+	for _, raw := range asAnySlice(rt["capabilities"]) {
+		if asString(raw) == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *ColabOneController) currentRunCUConsumption(now float64) (consumed float64, rate float64, balance float64, hasBalance bool, active bool) {
+	if c.cuUsage == nil {
+		return 0, 0, 0, false, false
+	}
+	if now <= 0 {
+		now = nowUnixFloat()
+	}
+	c.mu.Lock()
+	acct := asMap(c.data["account"])
+	email := strings.ToLower(strings.TrimSpace(asString(acct["email"])))
+	liveRate, _ := asFloat(acct["rate"])
+	liveBal, hasLiveBal := asFloat(acct["balance"])
+	c.mu.Unlock()
+	if email == "" && c.vault != nil {
+		if profVal, ok := c.vault.Get("google_profile"); ok {
+			email = strings.ToLower(strings.TrimSpace(asString(asMap(profVal)["email"])))
+		}
+	}
+	return c.cuUsage.CurrentRunEffectiveConsumed(email, now, liveRate, liveBal, hasLiveBal)
+}
+
+func (c *ColabOneController) computeCUReleaseDeadline(now, cuLimit float64) float64 {
+	if cuLimit <= 0 {
+		return 0
+	}
+	consumed, rate, _, _, active := c.currentRunCUConsumption(now)
+	if !active {
+		return 0
+	}
+	remCU := cuLimit - consumed
+	if remCU <= 0 {
+		// Limit already reached: keep a short remote failsafe deadline armed so
+		// the VM still self-terminates if the local client disconnects before
+		// checkCUAutoRelease completes.
+		if rate > colabOneCUEpsilon {
+			return math.Floor(now + 30.0)
+		}
+		return math.Floor(now + 45.0)
+	}
+	if rate <= colabOneCUEpsilon {
+		return 0
+	}
+	estSec := (remCU / rate) * 3600.0
+	const maxDeadlineHorizonSec = 30.0 * 24.0 * 3600.0
+	if estSec > maxDeadlineHorizonSec {
+		estSec = maxDeadlineHorizonSec
+	}
+	return math.Floor(now + math.Max(30.0, estSec+15.0))
+}
+
+func (c *ColabOneController) endCUUsageRunIfNoExternal(acct map[string]any, releasedTargets ...string) {
+	if c.cuUsage == nil || len(c.vaultSessions()) > 0 {
+		return
+	}
+	released := make(map[string]bool, len(releasedTargets))
+	for _, ep := range releasedTargets {
+		if trimmed := strings.TrimSpace(ep); trimmed != "" {
+			released[trimmed] = true
+		}
+	}
+	if acct != nil {
+		for _, inst := range asMapSlice(acct["instances"]) {
+			ep := strings.TrimSpace(asString(inst["endpoint"]))
+			if ep == "" {
+				ep = strings.TrimSpace(asString(inst["id"]))
+			}
+			if ep != "" && !released[ep] {
+				// Another live (external) instance is still running on this account.
+				return
+			}
+		}
+	}
+	email := ""
+	if acct != nil {
+		email = asTrimmedString(acct["email"])
+	}
+	if email == "" {
+		c.mu.Lock()
+		if acctMap := asMap(c.data["account"]); acctMap != nil {
+			email = asTrimmedString(acctMap["email"])
+		}
+		c.mu.Unlock()
+	}
+	if email == "" && c.vault != nil {
+		if profVal, ok := c.vault.Get("google_profile"); ok {
+			email = asTrimmedString(asMap(profVal)["email"])
+		}
+	}
+	c.cuUsage.EndRun(email, nowUnixFloat())
+}
+
 func (c *ColabOneController) configureRemote(ctx context.Context, endpoint string, background bool) (bool, error) {
 	startOpGen := c.opGen.Load()
 	if background && c.opBusy.Load() {
@@ -1708,25 +1834,49 @@ func (c *ColabOneController) configureRemote(ctx context.Context, endpoint strin
 		rt = asMap(c.data["runtime"])
 	} else if st := c.instanceStates[endpoint]; st != nil {
 		rt = st.Runtime
+	} else if curRT := asMap(c.data["runtime"]); asString(curRT["id"]) == endpoint {
+		rt = curRT
 	}
 	proto, hasProto := asExactInt(rt["protocol"])
-	idleMin, _ := asInt(c.settings["idle_minutes"])
-	countdownSec, _ := asInt(c.settings["idle_countdown_seconds"])
+	supportsReleaseModes := runtimeSupportsCapability(rt, "idle_release_modes")
+	releaseMode, idleMin, cuLimit, countdownSec := c.currentReleasePolicyLocked()
 	c.mu.Unlock()
 
+	now := nowUnixFloat()
 	effectiveIdle := idleMin
-	if hasProto && proto == 1 {
-		effectiveIdle = 4
+	effectiveDeadline := 0.0
+	switch releaseMode {
+	case COLABONE_RELEASE_MODE_NEVER:
+		if supportsReleaseModes {
+			effectiveIdle = 0
+		} else {
+			effectiveIdle = 240
+		}
+	case COLABONE_RELEASE_MODE_CU_LIMIT:
+		if supportsReleaseModes {
+			effectiveIdle = 0
+		} else {
+			effectiveIdle = 240
+		}
+		effectiveDeadline = c.computeCUReleaseDeadline(now, cuLimit)
+	default:
+		if hasProto && proto == 1 {
+			effectiveIdle = 4
+		}
 	}
-	if _, err := c.remote(ctx, "POST", "configure", map[string]any{
+	cfgPayload := map[string]any{
 		"idle_minutes":           effectiveIdle,
 		"idle_countdown_seconds": countdownSec,
-		"deadline":               0,
-	}, endpoint, 0); err != nil {
+		"deadline":               effectiveDeadline,
+	}
+	if supportsReleaseModes {
+		cfgPayload["release_mode"] = releaseMode
+	}
+	if _, err := c.remote(ctx, "POST", "configure", cfgPayload, endpoint, 0); err != nil {
 		return false, err
 	}
 
-	now := nowUnixFloat()
+	now = nowUnixFloat()
 	curActiveEP := c.activeEndpoint()
 	c.mu.Lock()
 	if !background || (!c.opBusy.Load() && c.opGen.Load() == startOpGen) {
@@ -1757,6 +1907,8 @@ func (c *ColabOneController) runtimeSupportsAPIAliases(endpoint string) bool {
 		rt = asMap(c.data["runtime"])
 	} else if st := c.instanceStates[endpoint]; st != nil {
 		rt = st.Runtime
+	} else if curRT := asMap(c.data["runtime"]); asString(curRT["id"]) == endpoint {
+		rt = curRT
 	}
 	if rt == nil {
 		return false
@@ -2590,7 +2742,7 @@ func (c *ColabOneController) connectColabDriveFS(ctx context.Context, silentOnly
 	c.driveProbe.Clear()
 	c.Update(map[string]any{
 		"operation": map[string]any{
-			"title":       "正在通过 Colab 原生 DriveFS 挂载 Google 云盘 (ColabOne_Drive)",
+			"title":       "正在通过 Colab 原生 DriveFS 挂载 Google 云盘 (ColabOne_Drive_Mount)",
 			"running":     true,
 			"kind":        "drive_connect",
 			"stage":       "checking",
@@ -2623,7 +2775,7 @@ func (c *ColabOneController) connectColabDriveFS(ctx context.Context, silentOnly
 				c.Update(map[string]any{
 					"auth_url": u,
 					"operation": map[string]any{
-						"title":       "正在通过 Colab 原生 DriveFS 挂载 Google 云盘 (ColabOne_Drive)",
+						"title":       "正在通过 Colab 原生 DriveFS 挂载 Google 云盘 (ColabOne_Drive_Mount)",
 						"running":     true,
 						"kind":        "drive_connect",
 						"stage":       "waiting_auth",
@@ -2640,9 +2792,9 @@ func (c *ColabOneController) connectColabDriveFS(ctx context.Context, silentOnly
 				return
 			}
 			interactiveAuth.Store(interactive)
-			title := "正在通过 Colab 原生 DriveFS 挂载 Google 云盘 (ColabOne_Drive)"
+			title := "正在通过 Colab 原生 DriveFS 挂载 Google 云盘 (ColabOne_Drive_Mount)"
 			if interactive {
-				title = "授权已确认，正在远端挂载 Google 云盘 (ColabOne_Drive)"
+				title = "授权已确认，正在远端挂载 Google 云盘 (ColabOne_Drive_Mount)"
 			}
 			c.Update(map[string]any{
 				"operation": map[string]any{
@@ -2681,7 +2833,7 @@ func (c *ColabOneController) connectColabDriveFS(ctx context.Context, silentOnly
 	}
 	c.Update(map[string]any{
 		"operation": map[string]any{
-			"title":       "正在初始化 ColabOne_Drive 工作区并恢复持久化数据",
+			"title":       "正在初始化 ColabOne_Drive_Mount 工作区并恢复持久化数据",
 			"running":     true,
 			"kind":        "drive_connect",
 			"stage":       "initializing",
@@ -2691,7 +2843,7 @@ func (c *ColabOneController) connectColabDriveFS(ctx context.Context, silentOnly
 		"auth_url":        "",
 		"drive_auth_hint": "",
 	})
-	c.log("正在初始化 ColabOne_Drive 工作区并恢复持久化数据", "云盘", "info")
+	c.log("正在初始化 ColabOne_Drive_Mount 工作区并恢复持久化数据", "云盘", "info")
 	res, err := c.remoteLong(ctx, "POST", "drive/connect", nil, 180*time.Second)
 	if err != nil {
 		return nil, err
@@ -2752,7 +2904,7 @@ func (c *ColabOneController) ConnectDrive(ctx context.Context) (map[string]any, 
 	if reason == "gcp_tos_required" {
 		c.log("当前账户尚未开通免费 GCP 配额项目，自动切换为 Google Colab 官方原生 DriveFS 挂载", "云盘", "info")
 	} else if rcloneConf == "" {
-		c.log("正在通过 Google Colab 官方原生 DriveFS 挂载云盘 (ColabOne_Drive)", "云盘", "info")
+		c.log("正在通过 Google Colab 官方原生 DriveFS 挂载云盘 (ColabOne_Drive_Mount)", "云盘", "info")
 	}
 
 	info, err := c.connectColabDriveFS(ctx, false)
@@ -2767,7 +2919,7 @@ func (c *ColabOneController) ConnectDrive(ctx context.Context) (map[string]any, 
 		return nil, err
 	}
 	c.syncRemoteAPIIDOverrides(ctx, "", false)
-	c.log("已通过 Google Colab 原生 DriveFS 挂载云盘 (/content/drive/MyDrive/ColabOne_Drive)", "云盘", "info")
+	c.log("已通过 Google Colab 原生 DriveFS 挂载云盘 (/content/drive/MyDrive/ColabOne_Drive_Mount)", "云盘", "info")
 	return info, nil
 }
 
@@ -2837,7 +2989,15 @@ func (c *ColabOneController) SyncDrive(ctx context.Context) (map[string]any, err
 		}
 		return nil, errors.New(msg)
 	}
-	c.log("Google 云盘同步已完成 (ColabOne_Drive)", "云盘", "info")
+	remoteFolder := strings.TrimSpace(asString(result["remote_folder"]))
+	if remoteFolder == "" {
+		if strings.TrimSpace(asString(result["mode"])) == "colab_drivefs" {
+			remoteFolder = colabOneDriveFSFolderName
+		} else {
+			remoteFolder = colabOneDriveFolderName
+		}
+	}
+	c.log(fmt.Sprintf("Google 云盘同步已完成 (%s)", remoteFolder), "云盘", "info")
 	return result, nil
 }
 
@@ -3273,23 +3433,42 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 	c.flushActivityLogs(startDoneLogs)
 
 	c.mu.Lock()
-	liveIdleMin, _ := asInt(c.settings["idle_minutes"])
+	liveReleaseMode, liveIdleMin, liveCULimit, _ := c.currentReleasePolicyLocked()
 	if liveIdleMin < 1 {
 		liveIdleMin = idleMin
 	}
 	c.mu.Unlock()
 
-	c.log(fmt.Sprintf("正在同步空闲自动释放策略（%d 分钟）", liveIdleMin), "GPU", "info")
+	if liveReleaseMode == COLABONE_RELEASE_MODE_IDLE {
+		c.log(fmt.Sprintf("正在同步空闲自动释放策略（%d 分钟）", liveIdleMin), "GPU", "info")
+	} else {
+		c.log(fmt.Sprintf("正在同步自动释放策略（%s）", formatColabOneReleasePolicyZh(liveReleaseMode, liveIdleMin, liveCULimit)), "GPU", "info")
+	}
 	if err := c.ConfigureRemote(ctx, ""); err != nil {
 		return rollback(err)
 	}
-	c.log("远端空闲自动释放策略已生效", "GPU", "info")
+	if liveReleaseMode == COLABONE_RELEASE_MODE_IDLE {
+		c.log("远端空闲自动释放策略已生效", "GPU", "info")
+	} else {
+		c.log("远端自动释放策略已生效", "GPU", "info")
+	}
 
 	c.mu.Lock()
-	rtIdleMin, _ := asInt(asMap(c.data["runtime"])["idle_minutes"])
+	activeStartRT := asMap(c.data["runtime"])
+	rtIdleMin, _ := asInt(activeStartRT["idle_minutes"])
+	rtReleaseMode := normalizeColabOneReleaseMode(activeStartRT["release_mode"])
+	startSupportsReleaseModes := runtimeSupportsCapability(activeStartRT, "idle_release_modes")
 	liveAutoDrive := asBool(c.settings["auto_drive"])
 	c.mu.Unlock()
-	if rcloneConf == "" && rtIdleMin != liveIdleMin {
+	expectedRTIdle := liveIdleMin
+	if liveReleaseMode != COLABONE_RELEASE_MODE_IDLE {
+		if startSupportsReleaseModes {
+			expectedRTIdle = 0
+		} else {
+			expectedRTIdle = 240
+		}
+	}
+	if rcloneConf == "" && (rtIdleMin != expectedRTIdle || (startSupportsReleaseModes && rtReleaseMode != liveReleaseMode)) {
 		if err := c.RefreshRemote(ctx, ""); err != nil {
 			return rollback(err)
 		}
@@ -3350,9 +3529,9 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 		} else if info != nil && asBool(info["connected"]) {
 			_ = c.RefreshRemote(ctx, "")
 			c.syncRemoteAPIIDOverrides(ctx, "", false)
-			c.log("已通过 Google Colab 原生 DriveFS 自动挂载云盘 (/content/drive/MyDrive/ColabOne_Drive)", "云盘", "info")
+			c.log("已通过 Google Colab 原生 DriveFS 自动挂载云盘 (/content/drive/MyDrive/ColabOne_Drive_Mount)", "云盘", "info")
 		} else {
-			c.log("点击「立即挂载云盘」即可在浏览器一键确认 Colab 原生云盘挂载 (ColabOne_Drive)", "云盘", "info")
+			c.log("点击「立即挂载云盘」即可在浏览器一键确认 Colab 原生云盘挂载 (ColabOne_Drive_Mount)", "云盘", "info")
 		}
 	}
 
@@ -3370,11 +3549,27 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 			)
 		}
 	}
+	if liveReleaseMode == COLABONE_RELEASE_MODE_CU_LIMIT {
+		// Force next monitor tick to push the freshly computed remote failsafe deadline
+		// to both active and secondary instances now that BeginRun and post-start Account
+		// rate refresh have completed.
+		c.mu.Lock()
+		c.lastConfig = 0
+		c.lastCUAutoReleaseAttempt = 0
+		for _, st := range c.instanceStates {
+			st.LastConfig = 0
+		}
+		c.mu.Unlock()
+	}
 	return nil
 }
 
 // Release tears down a single managed runtime instance (gracefully unless force is true).
 func (c *ColabOneController) Release(ctx context.Context, force bool, endpoint string) error {
+	return c.releaseEndpoint(ctx, force, false, endpoint)
+}
+
+func (c *ColabOneController) releaseEndpoint(ctx context.Context, force bool, skipForceLog bool, endpoint string) error {
 	activeEP := c.activeEndpoint()
 	target := endpoint
 	if target == "" {
@@ -3392,7 +3587,7 @@ func (c *ColabOneController) Release(ctx context.Context, force bool, endpoint s
 			return err
 		}
 		c.log("远端收尾与云盘同步已完成", "GPU", "info")
-	} else {
+	} else if !skipForceLog {
 		c.log("已选择强制释放，跳过远端收尾检查", "GPU", "warning")
 	}
 
@@ -3488,7 +3683,12 @@ func (c *ColabOneController) Release(ctx context.Context, force bool, endpoint s
 					)
 				}
 			}
+			c.endCUUsageRunIfNoExternal(acct, target)
+		} else {
+			c.endCUUsageRunIfNoExternal(nil, target)
 		}
+	} else {
+		c.endCUUsageRunIfNoExternal(nil, target)
 	}
 	return nil
 }
@@ -3654,7 +3854,12 @@ func (c *ColabOneController) ReleaseAll(ctx context.Context, planID string, forc
 				acctGen, acctCreds := c.snapshotAccountGuard()
 				if acct, err := c.provider.Account(ctx); err == nil && acct != nil {
 					c.applyAccountRefreshIfCurrent(acctGen, acctCreds, acct, 0)
+					c.endCUUsageRunIfNoExternal(acct, targets...)
+				} else {
+					c.endCUUsageRunIfNoExternal(nil, targets...)
 				}
+			} else {
+				c.endCUUsageRunIfNoExternal(nil, targets...)
 			}
 			c.observerWake.Set()
 		}()
@@ -4247,7 +4452,7 @@ func (c *ColabOneController) RemoveLocalModel(modelID string) (map[string]any, e
 func (c *ColabOneController) SaveSettings(ctx context.Context, payload map[string]any) (map[string]any, error) {
 	c.mu.Lock()
 	curGPU := asString(c.settings["gpu"])
-	curIdle, _ := asInt(c.settings["idle_minutes"])
+	curReleaseMode, curIdle, curCULimit, _ := c.currentReleasePolicyLocked()
 	curThreads, _ := asInt(c.settings["download_threads"])
 	curAssignMaxAttempts, ok := asExactInt(c.settings["assign_max_attempts"])
 	if !ok || curAssignMaxAttempts < COLABONE_MIN_ASSIGN_MAX_ATTEMPTS || curAssignMaxAttempts > COLABONE_MAX_ASSIGN_MAX_ATTEMPTS {
@@ -4256,7 +4461,7 @@ func (c *ColabOneController) SaveSettings(ctx context.Context, payload map[strin
 	c.mu.Unlock()
 
 	public := make(map[string]any)
-	for _, k := range []string{"gpu", "idle_minutes", "auto_drive", "download_threads", "assign_max_attempts", "assign_proxy_enabled"} {
+	for _, k := range []string{"gpu", "idle_minutes", "release_mode", "release_cu_limit", "auto_drive", "download_threads", "assign_max_attempts", "assign_proxy_enabled"} {
 		if v, exists := payload[k]; exists {
 			public[k] = v
 		}
@@ -4275,6 +4480,7 @@ func (c *ColabOneController) SaveSettings(ctx context.Context, payload map[strin
 	}
 
 	rawIdle := any(curIdle)
+	_, hasIdleInPayload := public["idle_minutes"]
 	if v, exists := public["idle_minutes"]; exists {
 		rawIdle = v
 	}
@@ -4282,8 +4488,32 @@ func (c *ColabOneController) SaveSettings(ctx context.Context, payload map[strin
 	if !ok || idleVal < 1 || idleVal > 240 {
 		return nil, errors.New("空闲时间必须在 1 至 240 分钟之间")
 	}
-	if _, exists := public["idle_minutes"]; exists {
+	if hasIdleInPayload {
 		public["idle_minutes"] = idleVal
+	}
+
+	releaseModeVal := curReleaseMode
+	if v, exists := public["release_mode"]; exists {
+		s, ok := v.(string)
+		if !ok || !validColabOneReleaseModes[strings.TrimSpace(s)] {
+			return nil, errors.New("自动释放策略不合法")
+		}
+		releaseModeVal = strings.TrimSpace(s)
+		public["release_mode"] = releaseModeVal
+	} else if hasIdleInPayload && curReleaseMode != COLABONE_RELEASE_MODE_IDLE {
+		// Backward-compatible callers sending only {idle_minutes} switch back to idle mode.
+		releaseModeVal = COLABONE_RELEASE_MODE_IDLE
+		public["release_mode"] = releaseModeVal
+	}
+
+	cuLimitVal := curCULimit
+	if v, exists := public["release_cu_limit"]; exists {
+		f, ok := asFloat(v)
+		if !ok || math.IsNaN(f) || math.IsInf(f, 0) || f < COLABONE_MIN_RELEASE_CU_LIMIT || f > COLABONE_MAX_RELEASE_CU_LIMIT {
+			return nil, errors.New("CU 消耗上限必须在 0.1 至 100000 之间")
+		}
+		cuLimitVal = roundColabOneCULimit(f)
+		public["release_cu_limit"] = cuLimitVal
 	}
 
 	rawThreads := any(curThreads)
@@ -4398,16 +4628,13 @@ func (c *ColabOneController) SaveSettings(ctx context.Context, payload map[strin
 
 	c.persistMu.Lock()
 	c.mu.Lock()
-	idleChanged := false
-	if newIdle, exists := public["idle_minutes"]; exists {
-		prevIdle, _ := asInt(c.settings["idle_minutes"])
-		ni, _ := asInt(newIdle)
-		idleChanged = ni != prevIdle
-	}
+	prevMode, prevIdle, prevCULimit, _ := c.currentReleasePolicyLocked()
 	prevProxyEnabled := asBool(c.settings["assign_proxy_enabled"])
 	for k, v := range public {
 		c.settings[k] = v
 	}
+	nextMode, nextIdle, nextCULimit, _ := c.currentReleasePolicyLocked()
+	idleChanged := nextMode != prevMode || nextIdle != prevIdle || math.Abs(nextCULimit-prevCULimit) > 1e-6
 	snapshotSettings := deepCopyMap(c.settings)
 	c.mu.Unlock()
 
@@ -4418,14 +4645,25 @@ func (c *ColabOneController) SaveSettings(ctx context.Context, payload map[strin
 	}
 
 	snapIdle, _ := asInt(snapshotSettings["idle_minutes"])
+	snapMode := normalizeColabOneReleaseMode(snapshotSettings["release_mode"])
+	snapCULimit, _ := asFloat(snapshotSettings["release_cu_limit"])
+	if snapCULimit < COLABONE_MIN_RELEASE_CU_LIMIT || snapCULimit > COLABONE_MAX_RELEASE_CU_LIMIT {
+		snapCULimit = COLABONE_DEFAULT_RELEASE_CU_LIMIT
+	}
 	snapThreads, _ := asInt(snapshotSettings["download_threads"])
 	snapAssignMaxAttempts, ok := asExactInt(snapshotSettings["assign_max_attempts"])
 	if !ok || snapAssignMaxAttempts < COLABONE_MIN_ASSIGN_MAX_ATTEMPTS || snapAssignMaxAttempts > COLABONE_MAX_ASSIGN_MAX_ATTEMPTS {
 		snapAssignMaxAttempts = COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS
 	}
+	releaseSummary := fmt.Sprintf("空闲释放: %d 分钟", snapIdle)
+	if snapMode == COLABONE_RELEASE_MODE_NEVER {
+		releaseSummary = "自动释放: 长期不释放"
+	} else if snapMode == COLABONE_RELEASE_MODE_CU_LIMIT {
+		releaseSummary = fmt.Sprintf("自动释放: 消耗达 %s CU 释放", formatColabOneCUCompact(snapCULimit))
+	}
 	summaryParts := []string{
 		fmt.Sprintf("默认 GPU: %s", asString(snapshotSettings["gpu"])),
-		fmt.Sprintf("空闲释放: %d 分钟", snapIdle),
+		releaseSummary,
 		fmt.Sprintf("下载并发: %d 线程", snapThreads),
 		fmt.Sprintf("分配重试上限: %d 次", snapAssignMaxAttempts),
 	}
@@ -4459,6 +4697,9 @@ func (c *ColabOneController) SaveSettings(ctx context.Context, payload map[strin
 
 	c.mu.Lock()
 	c.lastConfig = 0
+	if idleChanged {
+		c.lastCUAutoReleaseAttempt = 0
+	}
 	for _, st := range c.instanceStates {
 		st.LastConfig = 0
 	}
@@ -4495,7 +4736,7 @@ func (c *ColabOneController) SaveSettings(ctx context.Context, payload map[strin
 				}
 				isActive := ep == c.activeEndpoint()
 				c.mu.Lock()
-				curIdleMin, _ := asInt(c.settings["idle_minutes"])
+				curMode, curIdleMin, curCULimit, _ := c.currentReleasePolicyLocked()
 				var rtState string
 				if isActive {
 					rtState = asString(asMap(c.data["runtime"])["state"])
@@ -4503,7 +4744,11 @@ func (c *ColabOneController) SaveSettings(ctx context.Context, payload map[strin
 					rtState = asString(st.Runtime["state"])
 				}
 				c.mu.Unlock()
-				c.log(fmt.Sprintf("已向实例 %s 同步空闲释放时长（%d 分钟）", ep, curIdleMin), "GPU", "info")
+				if curMode == COLABONE_RELEASE_MODE_IDLE {
+					c.log(fmt.Sprintf("已向实例 %s 同步空闲释放时长（%d 分钟）", ep, curIdleMin), "GPU", "info")
+				} else {
+					c.log(fmt.Sprintf("已向实例 %s 同步自动释放策略（%s）", ep, formatColabOneReleasePolicyZh(curMode, curIdleMin, curCULimit)), "GPU", "info")
+				}
 				if isActive && rtState == "ready" {
 					_, _ = c.refreshRemote(c.rootCtx, "", true)
 				} else if rtState == "ready" {
