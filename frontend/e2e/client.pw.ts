@@ -1501,9 +1501,9 @@ test("setup offers Google login and whole-page paste without API credentials", a
   await expect(page.getByText("OAuth Client ID")).toHaveCount(0);
   await expect(page.getByText("私有网络", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "登录 Google", exact: true }).click();
-  expect((await page.evaluate(() => (window as any).__calls))[0].action).toBe(
-    "auth.colab.auto",
-  );
+  await expect
+    .poll(async () => (await page.evaluate(() => (window as any).__calls))[0]?.action)
+    .toBe("auth.colab.auto");
   await page
     .getByText("授权页返回了一段内容？点此手动粘贴", { exact: true })
     .click();
@@ -1515,9 +1515,12 @@ test("setup offers Google login and whole-page paste without API credentials", a
   await page
     .getByRole("button", { name: "自动识别并登录", exact: true })
     .click();
-  expect(
-    (await page.evaluate(() => (window as any).__calls))[1].payload.code,
-  ).toContain("Authorization complete");
+  await expect
+    .poll(
+      async () =>
+        (await page.evaluate(() => (window as any).__calls))[1]?.payload?.code,
+    )
+    .toContain("Authorization complete");
   await expect(
     page.getByRole("textbox", { name: "Google 授权内容" }),
   ).toHaveValue("");

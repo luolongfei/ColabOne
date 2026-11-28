@@ -83,12 +83,13 @@ func TestStartBackgroundAutoCheckAndCleanClose(t *testing.T) {
 		u := NewColabOneUpdater(ColabOneUpdaterConfig{
 			Backend:       backend,
 			ConfigDir:     t.TempDir(),
-			InitialDelay:  40 * time.Millisecond,
-			CheckInterval: 160 * time.Millisecond,
+			InitialDelay:  120 * time.Millisecond,
+			CheckInterval: 500 * time.Millisecond,
 		})
 		defer u.Close()
 
-		u.StartBackground()
+		// Complete the manual check before starting the background timers so slow
+		// CI filesystem I/O inside Check cannot outrun InitialDelay + CheckInterval.
 		if _, err := u.Check(context.Background(), true); err != nil {
 			t.Fatalf("manual Check failed: %v", err)
 		}
@@ -96,8 +97,10 @@ func TestStartBackgroundAutoCheckAndCleanClose(t *testing.T) {
 			t.Fatalf("expected 1 check after manual Check, got %d", got)
 		}
 
-		// Wait past InitialDelay (40ms) but well before the first periodic CheckInterval (40ms + 160ms = 200ms).
-		time.Sleep(90 * time.Millisecond)
+		u.StartBackground()
+
+		// Wait past InitialDelay (120ms) while staying well before the first periodic CheckInterval (120ms + 500ms = 620ms).
+		time.Sleep(220 * time.Millisecond)
 		if got := checks.Load(); got != 1 {
 			t.Fatalf("expected startup timer to skip duplicate check after manual Check, got %d checks", got)
 		}
@@ -105,7 +108,7 @@ func TestStartBackgroundAutoCheckAndCleanClose(t *testing.T) {
 		// Periodic CheckInterval tick must still run normally.
 		select {
 		case <-secondCheck:
-		case <-time.After(2 * time.Second):
+		case <-time.After(3 * time.Second):
 			t.Fatalf("expected periodic check after CheckInterval, got %d checks", checks.Load())
 		}
 	})
