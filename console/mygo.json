@@ -2,7 +2,7 @@
   "name": "ColabOne",
   "slug": "colabone",
   "identifier": "app.colabone.desktop",
-  "version": "0.1.28",
+  "version": "0.1.29",
   "description": "Remote GPU workspace",
   "icon": "resources/icon.png",
   "bindings": "../frontend/src/colabOneBridge.ts",
