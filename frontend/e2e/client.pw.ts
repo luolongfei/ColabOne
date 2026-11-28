@@ -1507,18 +1507,30 @@ test("setup offers Google login and whole-page paste without API credentials", a
   await page
     .getByText("授权页返回了一段内容？点此手动粘贴", { exact: true })
     .click();
-  await page
-    .getByRole("textbox", { name: "Google 授权内容" })
-    .fill(
-      "Authorization complete\n4/test-code-long-enough-for-a-valid-parser-input",
-    );
-  await page
-    .getByRole("button", { name: "自动识别并登录", exact: true })
-    .click();
+  // Wait for Ant Design Collapse height/opacity transition to finish so the
+  // submit button does not shift mid-click on macOS CI runners.
+  await expect(
+    page.locator(
+      ".co-sr-collapse .ant-collapse-content-active:not(.ant-motion-collapse)",
+    ),
+  ).toBeVisible();
+  const authInput = page.getByRole("textbox", { name: "Google 授权内容" });
+  const authPayload =
+    "Authorization complete\n4/test-code-long-enough-for-a-valid-parser-input";
+  await authInput.fill(authPayload);
+  await expect(authInput).toHaveValue(authPayload);
+  const parseLoginBtn = page.getByRole("button", {
+    name: "自动识别并登录",
+    exact: true,
+  });
+  await expect(parseLoginBtn).toBeEnabled();
+  await parseLoginBtn.click();
   await expect
     .poll(
       async () =>
-        (await page.evaluate(() => (window as any).__calls))[1]?.payload?.code,
+        (await page.evaluate(() => (window as any).__calls)).find(
+          (c: any) => c.action === "auth.colab.finish",
+        )?.payload?.code,
     )
     .toContain("Authorization complete");
   await expect(
