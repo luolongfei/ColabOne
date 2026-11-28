@@ -593,6 +593,9 @@ test("web console browser mode runs over HTTP without window.mygo, hides host-on
   expect(proxyTestCall?.payload || {}).toEqual({});
   await page.locator("#settings-assign-proxy").fill("socks5://10.0.0.2:1080");
   await expect(proxyTestBtn).toBeDisabled();
+  // Move pointer off the button first so hover always fires a fresh mouseenter
+  // after the tooltip transitions from disabled to enabled.
+  await page.locator("#settings-assign-proxy").hover();
   await page.getByTestId("settings-assign-proxy-test-wrap").hover();
   await expect(
     page.getByRole("tooltip", { name: /网页模式下请先保存代理地址/ }),
