@@ -78,6 +78,7 @@ export interface ColabOneMigrationCredentialsSummary {
   has_comfy_canvas: boolean;
   comfy_canvas_domain: string;
   has_live_external_llm: boolean;
+  has_notifications: boolean;
   configured_count: number;
 }
 
@@ -187,6 +188,15 @@ export interface ColabOneMigrationUIPrefs {
   monitor_layout?: string;
   cu_usage_metric?: string;
   logs_width?: number;
+}
+
+/**
+ * ColabOneNavigateRequest directs the desktop frontend to open a specific view
+ * after clicking a native OS notification.
+ */
+export interface ColabOneNavigateRequest {
+  tab: string;
+  open_outputs?: boolean;
 }
 
 /** ColabOneOutputShareCreateRequest configures a new guest output gallery share link. */
@@ -524,6 +534,11 @@ export const events = {
    * desktop pages so Settings stays synchronized immediately.
    */
   colaboneCloseBehavior: event<ColabOneCloseBehaviorState>("colabone-close-behavior"),
+  /**
+   * ColabOneNavigateEvent is emitted to the main window when a user clicks a
+   * native desktop notification with a target view.
+   */
+  colaboneNavigate: event<ColabOneNavigateRequest>("colabone-navigate"),
   /**
    * ColabOneUpdateEvent pushes real-time self-update state and download progress
    * changes from Go to open desktop pages.

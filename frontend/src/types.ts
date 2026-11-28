@@ -800,9 +800,70 @@ export interface ColabOneOperation {
   attempt?: number;
   next_attempt?: number;
   total_attempts?: number;
+  unlimited_attempts?: boolean;
   retry_kind?: "capacity" | "server_busy" | "network" | string;
   allocated?: boolean;
   gpu?: string;
+}
+export interface ColabOneNotificationSystemView {
+  enabled: boolean;
+  supported: boolean;
+}
+export interface ColabOneNotificationTelegramView {
+  enabled: boolean;
+  configured: boolean;
+  has_bot_token: boolean;
+  masked_bot_token: string;
+  chat_id: string;
+  api_base_url: string;
+  has_proxy: boolean;
+  masked_proxy_url: string;
+  send_preview_image: boolean;
+}
+export interface ColabOneNotificationBarkView {
+  enabled: boolean;
+  configured: boolean;
+  server_url: string;
+  has_device_key: boolean;
+  masked_device_key: string;
+  group: string;
+  sound: string;
+  level: string;
+}
+export interface ColabOneNotificationEmailView {
+  enabled: boolean;
+  configured: boolean;
+  smtp_host: string;
+  smtp_port: number;
+  security: "tls" | "starttls" | "none" | string;
+  username: string;
+  has_password: boolean;
+  from_address: string;
+  from_name: string;
+  to_addresses: string;
+  embed_preview_image: boolean;
+}
+export interface ColabOneNotificationSettings {
+  notify_gpu: boolean;
+  notify_task: boolean;
+  notify_alert: boolean;
+  system_only_when_unfocused: boolean;
+  remote_only_when_unfocused: boolean;
+  system: ColabOneNotificationSystemView;
+  telegram: ColabOneNotificationTelegramView;
+  bark: ColabOneNotificationBarkView;
+  email: ColabOneNotificationEmailView;
+}
+export interface ColabOneMigrationCredentialsSummary {
+  has_hf_token: boolean;
+  has_assign_proxy: boolean;
+  has_public_api: boolean;
+  public_api_domain: string;
+  has_comfy_canvas: boolean;
+  comfy_canvas_domain: string;
+  has_live_external_llm: boolean;
+  has_notifications?: boolean;
+  configured_count: number;
 }
 export interface ColabOneWorkflowShareSnapshotMeta {
   id: string;
@@ -833,6 +894,7 @@ export interface ColabOneSnapshot {
     masked_url: string;
     has_auth: boolean;
   };
+  notification_settings?: ColabOneNotificationSettings;
   logs: ActivityEntry[];
   runtime: RuntimeStatus;
   models: ModelSpec[];
@@ -885,9 +947,98 @@ export interface ColabOneSnapshot {
   };
 }
 export const COLABONE_DEFAULT_GPU = "G4" as const;
-export const COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS = 30 as const;
+export const COLABONE_ASSIGN_MAX_ATTEMPTS_UNLIMITED = 0 as const;
+export const COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS =
+  COLABONE_ASSIGN_MAX_ATTEMPTS_UNLIMITED;
+export const COLABONE_DEFAULT_FINITE_ASSIGN_MAX_ATTEMPTS = 30 as const;
 export const COLABONE_MIN_ASSIGN_MAX_ATTEMPTS = 1 as const;
 export const COLABONE_MAX_ASSIGN_MAX_ATTEMPTS = 100 as const;
+
+export type ColabOneAssignRetryMode = "unlimited" | "limited";
+
+export function isColabOneAssignAttemptsUnlimited(
+  attempts: number | null | undefined,
+): boolean {
+  return (
+    attempts === undefined ||
+    attempts === null ||
+    attempts === COLABONE_ASSIGN_MAX_ATTEMPTS_UNLIMITED
+  );
+}
+
+export function normalizeColabOneFiniteAssignAttempts(
+  raw: unknown,
+): number | null {
+  if (raw === null || raw === undefined || raw === "") return null;
+  const num = Number(raw);
+  if (!Number.isFinite(num)) return null;
+  const rounded = Math.round(num);
+  return Math.min(
+    COLABONE_MAX_ASSIGN_MAX_ATTEMPTS,
+    Math.max(COLABONE_MIN_ASSIGN_MAX_ATTEMPTS, rounded),
+  );
+}
+
+export function normalizeColabOneAssignAttempts(raw: unknown): number | null {
+  if (raw === null || raw === undefined || raw === "") return null;
+  const num = Number(raw);
+  if (!Number.isFinite(num)) return null;
+  const rounded = Math.round(num);
+  if (rounded === COLABONE_ASSIGN_MAX_ATTEMPTS_UNLIMITED) {
+    return COLABONE_ASSIGN_MAX_ATTEMPTS_UNLIMITED;
+  }
+  return Math.min(
+    COLABONE_MAX_ASSIGN_MAX_ATTEMPTS,
+    Math.max(COLABONE_MIN_ASSIGN_MAX_ATTEMPTS, rounded),
+  );
+}
+
+export const createColabOneDefaultNotificationSettings =
+  (): ColabOneNotificationSettings => ({
+    notify_gpu: true,
+    notify_task: true,
+    notify_alert: true,
+    system_only_when_unfocused: true,
+    remote_only_when_unfocused: false,
+    system: {
+      enabled: true,
+      supported: true,
+    },
+    telegram: {
+      enabled: false,
+      configured: false,
+      has_bot_token: false,
+      masked_bot_token: "",
+      chat_id: "",
+      api_base_url: "",
+      has_proxy: false,
+      masked_proxy_url: "",
+      send_preview_image: true,
+    },
+    bark: {
+      enabled: false,
+      configured: false,
+      server_url: "https://api.day.app",
+      has_device_key: false,
+      masked_device_key: "",
+      group: "ColabOne",
+      sound: "",
+      level: "",
+    },
+    email: {
+      enabled: false,
+      configured: false,
+      smtp_host: "",
+      smtp_port: 465,
+      security: "tls",
+      username: "",
+      has_password: false,
+      from_address: "",
+      from_name: "ColabOne",
+      to_addresses: "",
+      embed_preview_image: true,
+    },
+  });
 
 export const createColabOneSnapshot = (): ColabOneSnapshot => ({
   active_endpoint: "",
@@ -910,6 +1061,7 @@ export const createColabOneSnapshot = (): ColabOneSnapshot => ({
     masked_url: "",
     has_auth: false,
   },
+  notification_settings: createColabOneDefaultNotificationSettings(),
   settings: {
     gpu: COLABONE_DEFAULT_GPU,
     idle_minutes: 30,

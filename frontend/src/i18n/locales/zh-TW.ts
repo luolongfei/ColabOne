@@ -528,6 +528,18 @@ export const zhTWMessages: ColabOneMessages = {
     "分配請求未成功，{seconds} 秒後自動重試分配 {gpu}（第 {next}/{total} 次）",
   "device.waitingRetryNetworkSoon":
     "分配請求未成功，即將重試分配 {gpu}（第 {next}/{total} 次）",
+  "device.waitingRetryCapacityUnlimited":
+    "Google 算力緊張，{seconds} 秒後自動重試分配 {gpu}（第 {next} 次）",
+  "device.waitingRetryCapacityUnlimitedSoon":
+    "Google 算力緊張，即將重試分配 {gpu}（第 {next} 次）",
+  "device.waitingRetryServerBusyUnlimited":
+    "Google 分配服務忙碌，{seconds} 秒後自動重試分配 {gpu}（第 {next} 次）",
+  "device.waitingRetryServerBusyUnlimitedSoon":
+    "Google 分配服務忙碌，即將重試分配 {gpu}（第 {next} 次）",
+  "device.waitingRetryNetworkUnlimited":
+    "分配請求未成功，{seconds} 秒後自動重試分配 {gpu}（第 {next} 次）",
+  "device.waitingRetryNetworkUnlimitedSoon":
+    "分配請求未成功，即將重試分配 {gpu}（第 {next} 次）",
   "device.toastAllocationCancelled": "已取消 GPU 分配",
   "device.idlePaused": "工作執行中 · 自動釋放已暫停",
   "device.idleCountdownRemaining": "剩餘",
@@ -630,6 +642,8 @@ export const zhTWMessages: ColabOneMessages = {
   "device.errInvalidCuLimit": "CU 消耗上限必須介於 0.1 至 100000 之間",
   "device.toastThreadsSet": "已將遠端下載並行數設為 {threads} 執行緒",
   "device.toastAssignMaxAttemptsSet": "已將 GPU 分配最大嘗試次數設為 {count} 次",
+  "device.toastAssignMaxAttemptsUnlimited":
+    "已將 GPU 分配重試策略設為不限次數（直到成功）",
   "device.toastDefaultGpuSet": "已將預設 GPU 設為 {gpu}",
   "device.toastSettingsSaved": "設定已儲存",
 
@@ -1818,11 +1832,16 @@ export const zhTWMessages: ColabOneMessages = {
   "settings.threadsOption": "{count} 執行緒",
   "settings.autoDriveLabel": "雲端硬碟自動掛載",
   "settings.autoDriveDesc": "啟動 GPU 時自動掛載並同步 Google 雲端硬碟（ColabOne_Drive / ColabOne_Drive_Mount）",
-  "settings.assignMaxAttemptsLabel": "GPU 分配最大嘗試次數",
+  "settings.assignMaxAttemptsLabel": "GPU 分配重試策略",
   "settings.assignMaxAttemptsAria": "GPU 分配最大嘗試次數",
+  "settings.assignRetryModeAria": "GPU 分配重試模式",
+  "settings.assignRetryModeUnlimited": "不限次數（直到成功）",
+  "settings.assignRetryModeLimited": "限制最大次數",
   "settings.assignMaxAttemptsUnit": "次",
+  "settings.assignMaxAttemptsUnlimitedDesc":
+    "算力緊張或請求忙碌時持續自動排隊重試，直到成功分配出 GPU；採指數退避（2 / 4 / 8 / 16 / 32 / 60 秒，上限 60 秒），遇不可重試錯誤或手動取消時自動停止。",
   "settings.assignMaxAttemptsDesc":
-    "算力緊張或請求繁忙時自動排隊重試的總嘗試次數上限（1–100 次，預設 30 次）。每次重試採指數退避（2s、4s、8s、16s、32s），達 32 秒後後續間隔固定為 32 秒；設為 1 次則不自動重試。",
+    "算力緊張或請求忙碌時自動排隊重試的總嘗試次數上限（1–100 次）。採指數退避（2 / 4 / 8 / 16 / 32 / 60 秒，上限 60 秒），遇不可重試錯誤或手動取消時立即停止；設為 1 次則不自動重試。",
   "settings.idleProtectionTitle": "閒置自動釋放保護",
   "settings.idleProtectionDesc":
     "超過 {policy} 無操作或工作時自動釋放遠端資源；繼續操作會重設倒數，模型下載與載入、對外 API 推論及 ComfyUI 執行期間自動暫停倒數。",
@@ -2075,7 +2094,7 @@ export const zhTWMessages: ColabOneMessages = {
     "包含 OAuth 自動續期憑證、帳號資訊與免彈窗 Google 雲端硬碟配額專案，匯入後無須重新登入。",
   "migration.moduleCredentialsTitle": "第三方金鑰與公網隧道",
   "migration.moduleCredentialsDesc":
-    "包含 Hugging Face Token、GPU 分配代理、對外 API 與 ComfyUI 畫布的固定網域和 Tunnel Token。",
+    "包含 Hugging Face Token、GPU 分配代理、通知推播憑證、對外 API 與 ComfyUI 畫布的固定網域和 Tunnel Token。",
   "migration.moduleSettingsTitle": "全部軟體與外觀設定",
   "migration.moduleSettingsDesc":
     "包含預設 GPU、閒置釋放、下載執行緒、自動雲端硬碟、淺／深色主題、語言、隱私遮罩、關閉行為與更新偏好。",
@@ -2093,6 +2112,7 @@ export const zhTWMessages: ColabOneMessages = {
   "migration.summaryNotSignedIn": "未登入",
   "migration.summaryDriveReady": "雲端硬碟免彈窗就緒",
   "migration.summaryConfiguredCount": "已設定 {count} 項",
+  "migration.summaryNotifications": "通知管道",
   "migration.summaryEmpty": "暫無資料",
   "migration.summaryIdleMinutes": "閒置 {minutes} 分鐘",
   "migration.summaryThreads": "{count} 執行緒",
@@ -2694,6 +2714,156 @@ export const zhTWMessages: ColabOneMessages = {
   "outputShare.guestEmptyDesc":
     "原作品可能已被分享者刪除，或遠端算力已離線且未同步至雲端硬碟。",
   "outputShare.guestFooter": "由 ColabOne 安全唯讀分享提供支援",
+
+  // Notifications
+  "notifications.sectionTitle": "通知推播",
+  "notifications.prefsTitle": "通知情境與時機",
+  "notifications.prefsDesc":
+    "選擇需要推播的關鍵事件，並控制桌面系統通知與遠端管道在前景與背景的觸發時機。",
+  "notifications.activeChannelsTag": "已啟用 {count} 個管道",
+  "notifications.noActiveChannelsTag": "未啟用管道",
+  "notifications.eventGpuTitle": "GPU 執行個體動態",
+  "notifications.eventGpuDesc": "分配成功、自動釋放",
+  "notifications.eventTaskTitle": "作品與工作完成",
+  "notifications.eventTaskDesc": "成品產出、模型下載與載入完成",
+  "notifications.eventAlertTitle": "異常失敗與人工介入",
+  "notifications.eventAlertDesc": "分配或工作失敗、斷線、授權失效",
+  "notifications.systemUnfocusedTitle": "系統通知僅在視窗未聚焦時顯示",
+  "notifications.systemUnfocusedDesc":
+    "正在檢視 ColabOne 視窗時保持安靜，切至背景或最小化時再顯示系統提醒。",
+  "notifications.remoteUnfocusedTitle": "遠端管道僅在背景時推播",
+  "notifications.remoteUnfocusedDesc":
+    "關閉時，Telegram、Bark 與電子郵件無論視窗是否在前景都會即時送達。",
+  "notifications.statusEnabled": "已啟用",
+  "notifications.statusDisabled": "未啟用",
+  "notifications.statusConfigured": "已設定",
+  "notifications.statusUnsupported": "目前環境不支援",
+  "notifications.configureBtn": "設定",
+  "notifications.editBtn": "編輯",
+  "notifications.saveBtn": "儲存設定",
+  "notifications.testBtn": "傳送測試",
+  "notifications.clearBtn": "清除設定",
+  "notifications.testSaveFirstHint": "請先儲存設定後再測試",
+  "notifications.testNeedConfigHint": "請先完成設定並儲存後再測試",
+  "notifications.toastSaved": "通知設定已儲存",
+  "notifications.toastChannelSaved": "{channel} 設定已儲存",
+  "notifications.toastChannelCleared": "已清除 {channel} 設定",
+  "notifications.toastChannelEnabled": "已開啟 {channel}",
+  "notifications.toastChannelDisabled": "已關閉 {channel}",
+  "notifications.toastTestSent": "已傳送 {channel} 測試通知",
+  "notifications.toastConfigureFirst": "請先填寫並儲存 {channel} 設定",
+  "notifications.systemTitle": "系統通知",
+  "notifications.systemDesc":
+    "透過 Windows / macOS 系統通知中心顯示原生提醒，點擊通知可直接跳轉至對應頁面。",
+  "notifications.systemSwitchAria": "啟用系統通知",
+  "notifications.telegramTitle": "Telegram 機器人",
+  "notifications.telegramDesc":
+    "透過 Telegram Bot 即時推播狀態與作品預覽圖，支援自訂反向代理 API 與代理。",
+  "notifications.telegramSwitchAria": "啟用 Telegram 機器人通知",
+  "notifications.telegramBotTokenLabel": "Bot Token",
+  "notifications.telegramBotTokenPlaceholder": "123456789:AAH...",
+  "notifications.telegramBotTokenSavedPlaceholder":
+    "已儲存 Bot Token，輸入新值可覆蓋更新",
+  "notifications.telegramBotTokenSavedWithMask": "已儲存：{mask}（輸入新值可更新）",
+  "notifications.telegramChatIdLabel": "Chat ID",
+  "notifications.telegramChatIdPlaceholder": "例如 123456789 或 -1001234567890",
+  "notifications.telegramChatIdHint": "支援使用者 ID、群組 ID 或頻道 @username",
+  "notifications.telegramApiBaseLabel": "自訂 API 位址（選用反向代理）",
+  "notifications.telegramApiBasePlaceholder": "https://api.telegram.org",
+  "notifications.telegramProxyLabel": "代理位址（選用，HTTP / SOCKS5）",
+  "notifications.telegramProxyPlaceholder":
+    "http://127.0.0.1:7890 或 socks5://127.0.0.1:1080",
+  "notifications.telegramProxySavedPlaceholder":
+    "已儲存代理位址，輸入新位址可更新",
+  "notifications.telegramProxySavedWithMask": "已儲存：{mask}（輸入新位址可更新）",
+  "notifications.telegramClearProxyBtn": "清除代理",
+  "notifications.telegramUndoClearProxyBtn": "復原清除",
+  "notifications.telegramProxyWillClearHint":
+    "將在點擊「儲存設定」後清除已儲存的代理位址",
+  "notifications.telegramPreviewTitle": "作品產出成功時附帶預覽圖",
+  "notifications.telegramPreviewDesc":
+    "ComfyUI 產出圖片作品時隨訊息自動傳送預覽縮圖。",
+  "notifications.barkTitle": "Bark 推播",
+  "notifications.barkDesc":
+    "極速推播至 iPhone / iPad / Mac 上的 Bark 用戶端，支援自建伺服器。",
+  "notifications.barkSwitchAria": "啟用 Bark 推播",
+  "notifications.barkServerLabel": "推播網址 / 伺服器",
+  "notifications.barkServerPlaceholder":
+    "https://api.day.app 或直接貼上完整推播連結",
+  "notifications.barkServerHint":
+    "支援貼上含 Key 的完整推播連結，將自動辨識並拆分伺服器與 Device Key",
+  "notifications.barkSplitToast": "已自動拆分 Bark 伺服器位址與 Device Key",
+  "notifications.barkKeyLabel": "Device Key",
+  "notifications.barkKeyPlaceholder": "輸入 Bark App 中的推播金鑰",
+  "notifications.barkKeySavedPlaceholder": "已儲存 Device Key，輸入新值可更新",
+  "notifications.barkKeySavedWithMask": "已儲存：{mask}（輸入新值可更新）",
+  "notifications.barkGroupLabel": "分組",
+  "notifications.barkGroupPlaceholder": "ColabOne",
+  "notifications.barkSoundLabel": "鈴聲",
+  "notifications.barkSoundDefault": "系統預設",
+  "notifications.barkLevelLabel": "中斷層級",
+  "notifications.barkLevelAuto": "自動（依事件層級）",
+  "notifications.barkLevelActive": "一般提醒 (active)",
+  "notifications.barkLevelTimeSensitive": "時效性提醒 (timeSensitive)",
+  "notifications.barkLevelPassive": "靜音送達 (passive)",
+  "notifications.emailTitle": "電子郵件通知 (SMTP)",
+  "notifications.emailDesc":
+    "透過 SMTP 傳送精簡排版 HTML 通知郵件，支援常見信箱一鍵預設與作品預覽內嵌。",
+  "notifications.emailSwitchAria": "啟用電子郵件通知",
+  "notifications.emailPresetsLabel": "常見信箱預設",
+  "notifications.emailPresetQQ": "QQ 信箱",
+  "notifications.emailPreset163": "網易 163",
+  "notifications.emailPresetGmail": "Gmail",
+  "notifications.emailPresetOutlook": "Outlook",
+  "notifications.emailPresetICloud": "iCloud",
+  "notifications.emailHostLabel": "SMTP 伺服器",
+  "notifications.emailHostPlaceholder": "smtp.qq.com",
+  "notifications.emailPortLabel": "連接埠",
+  "notifications.emailSecurityLabel": "加密方式",
+  "notifications.emailSecurityTls": "SSL / TLS",
+  "notifications.emailSecurityStarttls": "STARTTLS",
+  "notifications.emailSecurityNone": "不加密",
+  "notifications.emailUsernameLabel": "寄件者帳號 / 信箱",
+  "notifications.emailUsernamePlaceholder": "you@example.com",
+  "notifications.emailPasswordLabel": "密碼 / 授權碼",
+  "notifications.emailPasswordPlaceholder": "輸入 SMTP 授權碼或應用程式專用密碼",
+  "notifications.emailPasswordSavedPlaceholder":
+    "已儲存授權碼，輸入新值可覆蓋更新",
+  "notifications.emailFromAddressLabel": "寄件位址（選用）",
+  "notifications.emailFromAddressPlaceholder": "留空則預設使用寄件者帳號",
+  "notifications.emailFromNameLabel": "寄件者名稱",
+  "notifications.emailFromNamePlaceholder": "ColabOne",
+  "notifications.emailToLabel": "收件者信箱",
+  "notifications.emailToPlaceholder": "a@example.com, b@example.com",
+  "notifications.emailToHint": "支援多位收件者，請以逗號或分號分隔",
+  "notifications.emailEmbedPreviewTitle": "郵件內嵌作品預覽圖",
+  "notifications.emailEmbedPreviewDesc":
+    "傳送精簡優雅的 HTML 通知郵件，並在作品產出成功時自動內嵌預覽圖。",
+  "notifications.unsavedDraftTag": "未儲存",
+  "notifications.clearConfirmTitle": "確定要清除 {channel} 設定嗎？",
+  "notifications.clearConfirmDesc":
+    "已儲存的權杖、金鑰或密碼將永久移除，並自動關閉此管道。",
+  "notifications.emailClearPasswordBtn": "清除密碼",
+  "notifications.emailUndoClearPasswordBtn": "復原清除",
+  "notifications.emailPasswordWillClearHint":
+    "將在點擊「儲存設定」後清除已儲存的密碼或授權碼",
+  "notifications.systemWebHostNote":
+    "目前為網頁主控台模式：系統通知僅於主機桌面端顯示，不會推播至遠端瀏覽器。",
+  "notifications.webDesktopOnlyEditNotice":
+    "為保護本機網路安全，服務位址、代理與憑證僅支援在主機桌面端修改；網頁端仍可切換開關、傳送測試或清除已儲存設定。",
+  "notifications.valTelegramNeedToken": "請填寫 Bot Token",
+  "notifications.valTelegramNeedChatId": "請填寫 Chat ID",
+  "notifications.valBarkNeedServer": "請填寫有效的 Bark 推播網址",
+  "notifications.valBarkNeedKey":
+    "請填寫 Device Key 或貼上含 Key 的完整推播連結",
+  "notifications.valEmailNeedHost": "請填寫 SMTP 伺服器位址",
+  "notifications.valEmailInvalidPort": "SMTP 連接埠須介於 1 至 65535 之間",
+  "notifications.valEmailNeedFromForNonEmailUser":
+    "寄件者帳號不是信箱位址，請填寫有效的「寄件位址」",
+  "notifications.valEmailInvalidFrom": "請填寫有效的寄件者信箱位址",
+  "notifications.valEmailNeedRecipients": "請至少填寫一個收件者信箱",
+  "notifications.valEmailInvalidRecipients":
+    "收件者信箱格式有誤，請檢查並以逗號或分號分隔",
 
   // Location
   "location.tooltipWithZone": "執行個體位置：{full} ({zone})",

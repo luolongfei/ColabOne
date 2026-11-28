@@ -426,3 +426,122 @@ func TestLiveExternalLLMMigrationSummaryRoundTripAndRedaction(t *testing.T) {
 		t.Fatal("summary JSON leaked live_external_llm api_key")
 	}
 }
+
+func TestNotificationsMigrationSummaryRoundTripAndRedaction(t *testing.T) {
+	p := samplePayload()
+	secrets := map[string]string{
+		"telegram_bot_token": "987654321:AAH-super-secret-telegram-token",
+		"telegram_proxy_url": "socks5://tguser:tgpass-secret@proxy.internal:1080",
+		"bark_device_key":    "bark-device-secret-key-xyz789",
+		"email_password":     "smtp-app-secret-password-456",
+	}
+	p.Credentials.Notifications = map[string]any{
+		"telegram_bot_token": secrets["telegram_bot_token"],
+		"telegram_proxy_url": secrets["telegram_proxy_url"],
+		"bark_device_key":    secrets["bark_device_key"],
+		"email_password":     secrets["email_password"],
+	}
+	// Also verify assign_max_attempts: 0 (unlimited) round-trips cleanly.
+	p.Settings.Controller["assign_max_attempts"] = 0
+
+	formatted := fmt.Sprintf("%s %#v", p.Credentials, p.Credentials)
+	if !strings.Contains(formatted, "HasNotifications:true") {
+		t.Fatalf("expected HasNotifications:true in formatted credentials, got %s", formatted)
+	}
+	for key, val := range secrets {
+		if strings.Contains(formatted, val) {
+			t.Fatalf("Credentials String/GoString leaked notifications %s: %s", key, formatted)
+		}
+	}
+
+	raw, err := SealPayloadWithParams(p, "pass123456", testFastKDF())
+	if err != nil {
+		t.Fatalf("SealPayloadWithParams failed: %v", err)
+	}
+	rawStr := string(raw)
+	for key, val := range secrets {
+		if strings.Contains(rawStr, val) {
+			t.Fatalf("sealed archive leaked notifications %s", key)
+		}
+	}
+
+	opened, err := OpenPayload(raw, "pass123456")
+	if err != nil {
+		t.Fatalf("OpenPayload failed: %v", err)
+	}
+	if opened.Credentials == nil || len(opened.Credentials.Notifications) != len(secrets) {
+		t.Fatalf("Notifications did not round-trip: %#v", opened.Credentials)
+	}
+	for key, wantVal := range secrets {
+		if gotVal, _ := opened.Credentials.Notifications[key].(string); gotVal != wantVal {
+			t.Fatalf("Notifications[%q] = %q, want %q", key, gotVal, wantVal)
+		}
+	}
+
+	// Verify assign_max_attempts: 0 (unlimited) is preserved cleanly on round-trip.
+	if opened.Settings == nil || opened.Settings.Controller == nil {
+		t.Fatalf("Settings.Controller missing after round-trip")
+	}
+	rawMaxAttempts, exists := opened.Settings.Controller["assign_max_attempts"]
+	if !exists || asInt(rawMaxAttempts) != 0 {
+		t.Fatalf("assign_max_attempts did not round-trip as 0: exists=%v val=%#v", exists, rawMaxAttempts)
+	}
+
+	summaries := BuildModuleSummaries(opened)
+	var credSum *ColabOneMigrationCredentialsSummary
+	var settingsMod *ColabOneMigrationModuleSummary
+	for i := range summaries {
+		switch summaries[i].ID {
+		case ModuleCredentials:
+			credSum = summaries[i].Credentials
+		case ModuleSettings:
+			settingsMod = &summaries[i]
+		}
+	}
+	if credSum == nil || !credSum.HasNotifications || credSum.ConfiguredCount != 5 {
+		t.Fatalf("unexpected credentials summary with notifications: %+v", credSum)
+	}
+	if settingsMod == nil || !settingsMod.HasData || settingsMod.Settings == nil || settingsMod.Settings.GPU != "L4" {
+		t.Fatalf("unexpected settings summary with assign_max_attempts=0: %+v", settingsMod)
+	}
+
+	sumJSON, _ := json.Marshal(summaries)
+	for key, val := range secrets {
+		if bytes.Contains(sumJSON, []byte(val)) {
+			t.Fatalf("summary JSON leaked notifications %s", key)
+		}
+	}
+
+	// Empty/whitespace-only Notifications must not count as configured.
+	emptyCreds := &ColabOneMigrationCredentialsData{
+		Notifications: map[string]any{
+			"telegram_bot_token": "   ",
+			"bark_device_key":    "",
+			"email_password":     "\t\n",
+		},
+	}
+	if strings.Contains(emptyCreds.String(), "HasNotifications:true") {
+		t.Fatalf("expected HasNotifications:false for whitespace-only notifications, got %s", emptyCreds.String())
+	}
+	emptySum := summarizeCredentials(emptyCreds)
+	if emptySum.HasNotifications || emptySum.ConfiguredCount != 0 {
+		t.Fatalf("expected empty notifications summary not configured, got %+v", emptySum)
+	}
+
+	// Credentials module with only Notifications configured reports HasData=true and ConfiguredCount=1.
+	onlyNotifPayload := &ColabOneMigrationPayload{
+		SchemaVersion:   COLABONE_MIGRATION_SCHEMA_VERSION,
+		IncludedModules: []string{ModuleCredentials},
+		Credentials: &ColabOneMigrationCredentialsData{
+			Notifications: map[string]any{"bark_device_key": "bark-only-secret"},
+		},
+	}
+	onlySummaries := BuildModuleSummaries(onlyNotifPayload)
+	for _, s := range onlySummaries {
+		if s.ID == ModuleCredentials {
+			if !s.HasData || s.Credentials == nil || !s.Credentials.HasNotifications || s.Credentials.ConfiguredCount != 1 {
+				t.Fatalf("unexpected notifications-only credentials module summary: %+v", s)
+			}
+		}
+	}
+}

@@ -58,7 +58,7 @@ var (
 		`(?i)\bBasic[` + unicodeSpace + `]+[^` + unicodeSpace + `,;]+`,
 	)
 	credentialPattern = regexp.MustCompile(
-		`(?:ya29\.[\w.-]+|1//[\w./+-]{12,}|hf_[\w-]+|co_web_[\w-]{20,}|co_(?:gal|wf)_[A-Za-z0-9._-]{16,}|co_[\w-]{40,}|\bsk-[A-Za-z0-9._-]{10,}\b|eyJ[A-Za-z0-9_+/=-]+\.eyJ[A-Za-z0-9_+/=-]+\.[A-Za-z0-9_+/=-]+|eyJ[A-Za-z0-9_+/=-]{20,}|4/[\w./+%-]{12,}|GOCSPX-[A-Za-z0-9_-]{12,})`,
+		`(?:ya29\.[\w.-]+|1//[\w./+-]{12,}|hf_[\w-]+|co_web_[\w-]{20,}|co_(?:gal|wf)_[A-Za-z0-9._-]{16,}|co_[\w-]{40,}|\bsk-[A-Za-z0-9._-]{10,}\b|eyJ[A-Za-z0-9_+/=-]+\.eyJ[A-Za-z0-9_+/=-]+\.[A-Za-z0-9_+/=-]+|eyJ[A-Za-z0-9_+/=-]{20,}|4/[\w./+%-]{12,}|GOCSPX-[A-Za-z0-9_-]{12,}|(?i:bot)\d{5,}(?::|%3[aA])[A-Za-z0-9_-]{8,})`,
 	)
 
 	diskLineReplacer = strings.NewReplacer("\r", " ", "\n", " ")
@@ -76,6 +76,18 @@ func SafeMessage(message string) string {
 	return truncateRunes(text, maxMessageRunes)
 }
 
+func hasTelegramBotTokenHint(text string) bool {
+	for i := 0; i+3 < len(text); i++ {
+		if (text[i]|0x20) == 'b' &&
+			(text[i+1]|0x20) == 'o' &&
+			(text[i+2]|0x20) == 't' &&
+			text[i+3] >= '0' && text[i+3] <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
 func redactCredentials(text string) string {
 	if !strings.Contains(text, "ya29.") &&
 		!strings.Contains(text, "1//") &&
@@ -84,7 +96,8 @@ func redactCredentials(text string) string {
 		!strings.Contains(text, "sk-") &&
 		!strings.Contains(text, "eyJ") &&
 		!strings.Contains(text, "4/") &&
-		!strings.Contains(text, "GOCSPX-") {
+		!strings.Contains(text, "GOCSPX-") &&
+		!hasTelegramBotTokenHint(text) {
 		return text
 	}
 	return credentialPattern.ReplaceAllLiteralString(text, redactedCredential)

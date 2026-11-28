@@ -8,7 +8,6 @@ package outboundlog
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -56,7 +55,7 @@ var (
 	outboundLineReplacer = strings.NewReplacer("\r", " ", "\n", " ", "\t", " ")
 
 	outboundSecretTokenRe = regexp.MustCompile(
-		`(?i)(?:Bearer\s+[^\s,'"\x60;}\]]+|Basic\s+[^\s,'"\x60;}\]]+|ya29\.[\w.-]+|1//[\w./+-]{12,}|hf_[\w-]+|co_web_[\w-]{20,}|co_(?:gal|wf)_[A-Za-z0-9._-]{16,}|co_[\w-]{40,}|\bsk-[A-Za-z0-9._-]{10,}\b|eyJ[A-Za-z0-9_+/=-]+\.eyJ[A-Za-z0-9_+/=-]+\.[A-Za-z0-9_+/=-]+|eyJ[A-Za-z0-9_+/=-]{20,}|4/[\w./+%-]{12,}|GOCSPX-[A-Za-z0-9_-]{12,})`,
+		`(?i)(?:Bearer\s+[^\s,'"\x60;}\]]+|Basic\s+[^\s,'"\x60;}\]]+|ya29\.[\w.-]+|1//[\w./+-]{12,}|hf_[\w-]+|co_web_[\w-]{20,}|co_(?:gal|wf)_[A-Za-z0-9._-]{16,}|co_[\w-]{40,}|\bsk-[A-Za-z0-9._-]{10,}\b|eyJ[A-Za-z0-9_+/=-]+\.eyJ[A-Za-z0-9_+/=-]+\.[A-Za-z0-9_+/=-]+|eyJ[A-Za-z0-9_+/=-]{20,}|4/[\w./+%-]{12,}|GOCSPX-[A-Za-z0-9_-]{12,}|bot\d{5,}(?::|%3[aA])[A-Za-z0-9_-]{8,})`,
 	)
 
 	outboundUserInfoURLRe = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)([^\s/@"'<>]+@)`)
@@ -131,7 +130,7 @@ type ColabOneOutboundLogger struct {
 
 // NewColabOneOutboundLogger creates a bounded outbound request logger.
 // When maxTotalBytes <= 0, COLABONE_OUTBOUND_LOG_MAX_BYTES (20 MiB) is used.
-// Positive values below COLABONE_OUTBOUND_LOG_MIN_BYTES (4 KiB) are clamped to 4 KiB.
+// Positive values below COLABONE_OUTBOUND_LOG_MIN_BYTES (16 KiB) are clamped to 16 KiB.
 // When logPath is empty, Record is a safe no-op.
 func NewColabOneOutboundLogger(logPath string, maxTotalBytes int64) *ColabOneOutboundLogger {
 	trimmed := strings.TrimSpace(logPath)
@@ -176,11 +175,15 @@ func (l *ColabOneOutboundLogger) Close() {
 // Record sanitizes and persists a single outbound request record.
 // It is thread-safe, never panics, and never lets active + backup exceed maxTotalBytes.
 func (l *ColabOneOutboundLogger) Record(rec ColabOneOutboundRecord) {
+	l.recordInternal(rec, false)
+}
+
+func (l *ColabOneOutboundLogger) recordInternal(rec ColabOneOutboundRecord, queryPreSanitized bool) {
 	if l == nil || l.logPath == "" {
 		return
 	}
 
-	sanitized := sanitizeOutboundRecord(rec)
+	sanitized := sanitizeOutboundRecordInternal(rec, queryPreSanitized)
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -211,10 +214,15 @@ func (l *ColabOneOutboundLogger) RecordURL(rec ColabOneOutboundRecord, rawURL st
 	if l == nil || l.logPath == "" {
 		return
 	}
+	queryPreSanitized := false
 	if u, err := url.Parse(strings.TrimSpace(rawURL)); err == nil && u != nil {
+		hadQuery := rec.Query != ""
 		applySanitizedURL(&rec, u)
+		if !hadQuery {
+			queryPreSanitized = true
+		}
 	}
-	l.Record(rec)
+	l.recordInternal(rec, queryPreSanitized)
 }
 
 func (l *ColabOneOutboundLogger) appendDiskLocked(line []byte) {
@@ -351,14 +359,28 @@ func WrapTransport(
 	if base == nil {
 		base = http.DefaultTransport
 	}
+	comp := strings.TrimSpace(component)
+	proxy := strings.TrimSpace(proxyLabel)
 	if existing, ok := base.(*ColabOneOutboundTransport); ok && existing != nil && existing.Logger == logger {
-		return base
+		if existing.Component == comp && existing.Proxy == proxy {
+			return base
+		}
+		inner := existing.Base
+		if inner == nil {
+			inner = http.DefaultTransport
+		}
+		return &ColabOneOutboundTransport{
+			Base:      inner,
+			Logger:    logger,
+			Component: comp,
+			Proxy:     proxy,
+		}
 	}
 	return &ColabOneOutboundTransport{
 		Base:      base,
 		Logger:    logger,
-		Component: strings.TrimSpace(component),
-		Proxy:     strings.TrimSpace(proxyLabel),
+		Component: comp,
+		Proxy:     proxy,
 	}
 }
 
@@ -470,7 +492,7 @@ func (t *ColabOneOutboundTransport) RoundTrip(req *http.Request) (*http.Response
 		rec.Detail = strings.Join(details, " ")
 	}
 
-	t.Logger.Record(rec)
+	t.Logger.recordInternal(rec, req.URL != nil)
 	return resp, err
 }
 
@@ -492,6 +514,9 @@ func SanitizeQuery(rawQuery string) string {
 	trimmed := strings.TrimSpace(rawQuery)
 	if trimmed == "" {
 		return ""
+	}
+	if trimmed == redactedPlaceholder {
+		return redactedPlaceholder
 	}
 	vals, err := url.ParseQuery(trimmed)
 	if err != nil {
@@ -565,6 +590,10 @@ func isSensitiveQueryKey(key string) bool {
 }
 
 func sanitizeOutboundRecord(rec ColabOneOutboundRecord) ColabOneOutboundRecord {
+	return sanitizeOutboundRecordInternal(rec, false)
+}
+
+func sanitizeOutboundRecordInternal(rec ColabOneOutboundRecord, queryPreSanitized bool) ColabOneOutboundRecord {
 	comp := cleanSimpleField(scrubTokens(rec.Component), maxComponentRunes)
 	if comp == "" {
 		comp = "outbound"
@@ -572,6 +601,14 @@ func sanitizeOutboundRecord(rec ColabOneOutboundRecord) ColabOneOutboundRecord {
 	method := strings.ToUpper(cleanSimpleField(rec.Method, maxMethodRunes))
 	if method == "" {
 		method = "REQUEST"
+	}
+	query := ""
+	if strings.TrimSpace(rec.Query) != "" {
+		if queryPreSanitized {
+			query = truncateRunes(stripControl(scrubTokens(rec.Query)), maxQueryRunes)
+		} else {
+			query = SanitizeQuery(rec.Query)
+		}
 	}
 	out := ColabOneOutboundRecord{
 		Timestamp:  cleanSimpleField(rec.Timestamp, 40),
@@ -582,7 +619,7 @@ func sanitizeOutboundRecord(rec ColabOneOutboundRecord) ColabOneOutboundRecord {
 		Scheme:     strings.ToLower(cleanSimpleField(rec.Scheme, maxSchemeRunes)),
 		Host:       cleanSimpleField(scrubTokens(rec.Host), maxHostRunes),
 		Path:       cleanPathField(rec.Path),
-		Query:      truncateRunes(stripControl(scrubTokens(rec.Query)), maxQueryRunes),
+		Query:      query,
 		StatusCode: rec.StatusCode,
 		OK:         rec.OK,
 		DurationMs: rec.DurationMs,
@@ -601,10 +638,10 @@ func sanitizeOutboundRecord(rec ColabOneOutboundRecord) ColabOneOutboundRecord {
 		out.RespBytes = 0
 	}
 	if strings.TrimSpace(rec.Detail) != "" {
-		out.Detail = truncateRunes(stripControl(activity.SafeMessage(rec.Detail)), maxDetailRunes)
+		out.Detail = truncateRunes(stripControl(scrubTokens(activity.SafeMessage(rec.Detail))), maxDetailRunes)
 	}
 	if strings.TrimSpace(rec.Error) != "" {
-		out.Error = truncateRunes(stripControl(activity.SafeMessage(rec.Error)), maxErrorRunes)
+		out.Error = truncateRunes(stripControl(scrubTokens(activity.SafeMessage(rec.Error))), maxErrorRunes)
 	}
 	return out
 }
@@ -695,10 +732,27 @@ func marshalBoundedJSONLine(rec ColabOneOutboundRecord) []byte {
 	if len(line) <= maxRecordLineBytes {
 		return line
 	}
-	// Ultimate fallback so line length never exceeds maxRecordLineBytes.
-	fallback := fmt.Sprintf(
-		`{"ts":%q,"seq":%d,"component":%q,"method":%q,"status_code":%d,"ok":%t,"duration_ms":%d}`+"\n",
-		rec.Timestamp, rec.Seq, rec.Component, rec.Method, rec.StatusCode, rec.OK, rec.DurationMs,
-	)
-	return []byte(fallback)
+	// Ultimate fallback so line length never exceeds maxRecordLineBytes while remaining valid JSON.
+	type minimalRecord struct {
+		Timestamp  string `json:"ts"`
+		Seq        uint64 `json:"seq"`
+		Component  string `json:"component"`
+		Method     string `json:"method"`
+		StatusCode int    `json:"status_code"`
+		OK         bool   `json:"ok"`
+		DurationMs int64  `json:"duration_ms"`
+	}
+	raw, err := json.Marshal(minimalRecord{
+		Timestamp:  truncateRunes(rec.Timestamp, 40),
+		Seq:        rec.Seq,
+		Component:  truncateRunes(rec.Component, maxComponentRunes),
+		Method:     truncateRunes(rec.Method, maxMethodRunes),
+		StatusCode: rec.StatusCode,
+		OK:         rec.OK,
+		DurationMs: rec.DurationMs,
+	})
+	if err != nil {
+		return nil
+	}
+	return append(raw, '\n')
 }

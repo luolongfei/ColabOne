@@ -969,3 +969,56 @@ export function colabOneOnOutputSharesState(
     return () => {};
   }
 }
+
+export interface ColabOneNavigatePayload {
+  tab?: string;
+  open_outputs?: boolean;
+}
+
+export function colabOneOnNavigate(
+  listener: (payload: ColabOneNavigatePayload) => void,
+): () => void {
+  const cleanups: (() => void)[] = [];
+  const dispatch = (raw: unknown) => {
+    if (!raw || typeof raw !== "object") return;
+    const rec = raw as Record<string, unknown>;
+    listener({
+      tab: typeof rec.tab === "string" ? rec.tab : undefined,
+      open_outputs: Boolean(rec.open_outputs),
+    });
+  };
+
+  if (
+    typeof window !== "undefined" &&
+    typeof window.addEventListener === "function"
+  ) {
+    const onDomEvent = (evt: Event) => {
+      dispatch((evt as CustomEvent<unknown>)?.detail);
+    };
+    window.addEventListener("colabone:navigate", onDomEvent);
+    cleanups.push(() =>
+      window.removeEventListener("colabone:navigate", onDomEvent),
+    );
+  }
+
+  if (hasMyGoEventBridge()) {
+    try {
+      const unsubscribe = events.colaboneNavigate.on((payload) =>
+        dispatch(payload),
+      );
+      if (typeof unsubscribe === "function") cleanups.push(unsubscribe);
+    } catch {
+      // Ignore bridge subscription errors in non-desktop environments.
+    }
+  }
+
+  return () => {
+    for (const fn of cleanups) {
+      try {
+        fn();
+      } catch {
+        // Ignore cleanup errors.
+      }
+    }
+  };
+}

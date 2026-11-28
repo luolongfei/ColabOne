@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/fstest"
@@ -375,5 +377,103 @@ func TestMyGoConfigIncludesMacOSMicrophoneUsageDescription(t *testing.T) {
 	desc, _ := cfg.MacOS.InfoPlist["NSMicrophoneUsageDescription"].(string)
 	if desc == "" {
 		t.Fatalf("mygo.json missing macos.infoPlist.NSMicrophoneUsageDescription")
+	}
+}
+
+func TestDesktopNotificationTargetsDedupeBoundedAndColdRecreateNavigate(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		order   []string
+		emitted []ColabOneNavigateRequest
+	)
+	d := &ColabOneDesktop{
+		isAppReadyFn: func() bool { return true },
+		runOnMainFn:  func(fn func()) { fn() },
+		showMain: func() {
+			mu.Lock()
+			order = append(order, "show")
+			mu.Unlock()
+		},
+		emitNavigateFn: func(_ *mygo.Window, req ColabOneNavigateRequest) error {
+			mu.Lock()
+			order = append(order, "nav:"+req.Tab)
+			emitted = append(emitted, req)
+			mu.Unlock()
+			return nil
+		},
+	}
+
+	// 1. systemNotificationsSupported and isMainWindowFocused read atomic flags with zero main-thread RPCs.
+	if d.systemNotificationsSupported() {
+		t.Fatal("expected notificationsSupported false before ready")
+	}
+	d.notificationsSupported.Store(true)
+	if !d.systemNotificationsSupported() {
+		t.Fatal("expected notificationsSupported true when ready and not quitting")
+	}
+	d.appQuitting.Store(true)
+	if d.systemNotificationsSupported() || d.isMainWindowFocused() {
+		t.Fatal("expected false when appQuitting is true")
+	}
+	d.appQuitting.Store(false)
+
+	// 2. Bounded notifTargets map caps at colabOneMaxNotifTargets (64).
+	for i := 0; i < colabOneMaxNotifTargets+10; i++ {
+		d.rememberNotificationTarget(fmt.Sprintf("notif-%d", i), ColabOneNavigateRequest{Tab: "device"})
+	}
+	d.notifMu.Lock()
+	gotLen := len(d.notifTargets)
+	_, hasEvicted := d.notifTargets["notif-0"]
+	_, hasLatest := d.notifTargets[fmt.Sprintf("notif-%d", colabOneMaxNotifTargets+9)]
+	d.notifMu.Unlock()
+	if gotLen != colabOneMaxNotifTargets || hasEvicted || !hasLatest {
+		t.Fatalf("expected bounded notifTargets len=%d evicted=false latest=true, got len=%d evicted=%v latest=%v", colabOneMaxNotifTargets, gotLen, hasEvicted, hasLatest)
+	}
+
+	// 3. Cold-recreated window (mainPageReady=false): click stores pendingNavigate and emits on notifyInitialSnapshotSettled.
+	d.rememberNotificationTarget("cold-click-1", ColabOneNavigateRequest{Tab: "comfy", OpenOutputs: true})
+	if !d.handleNotificationClickByID("cold-click-1") {
+		t.Fatal("expected first click for cold-click-1 to be handled")
+	}
+	// Duplicate click for the same ID (e.g. both n.OnClick and App.OnNotificationClick firing) must be deduped.
+	if d.handleNotificationClickByID("cold-click-1") {
+		t.Fatal("expected duplicate click for cold-click-1 to be suppressed")
+	}
+	if d.lastNotifClickAt.Load() == 0 {
+		t.Fatal("expected lastNotifClickAt timestamp updated")
+	}
+	mu.Lock()
+	if len(emitted) != 0 {
+		mu.Unlock()
+		t.Fatalf("expected navigate deferred while mainPageReady=false, got %+v", emitted)
+	}
+	mu.Unlock()
+
+	d.notifyInitialSnapshotSettled()
+	mu.Lock()
+	if len(emitted) != 1 || emitted[0].Tab != "comfy" || !emitted[0].OpenOutputs {
+		mu.Unlock()
+		t.Fatalf("expected deferred navigate emitted on notifyInitialSnapshotSettled, got %+v", emitted)
+	}
+	mu.Unlock()
+
+	// 4. Ready window (mainPageReady=true): show and navigate execute sequentially in order.
+	mu.Lock()
+	order = nil
+	emitted = nil
+	mu.Unlock()
+	d.rememberNotificationTarget("live-click-2", ColabOneNavigateRequest{Tab: "models"})
+	if !d.handleNotificationClickByID("live-click-2") {
+		t.Fatal("expected live-click-2 to be handled")
+	}
+	mu.Lock()
+	gotOrder := append([]string(nil), order...)
+	gotEmitted := append([]ColabOneNavigateRequest(nil), emitted...)
+	mu.Unlock()
+	if len(gotOrder) != 2 || gotOrder[0] != "show" || gotOrder[1] != "nav:models" {
+		t.Fatalf("expected sequential [show nav:models], got %v", gotOrder)
+	}
+	if len(gotEmitted) != 1 || gotEmitted[0].Tab != "models" || gotEmitted[0].OpenOutputs {
+		t.Fatalf("unexpected live navigate event: %+v", gotEmitted)
 	}
 }

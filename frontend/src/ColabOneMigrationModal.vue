@@ -651,7 +651,23 @@ function libraryCompactText(mod: ColabOneMigrationModuleSummary): string {
                       })
                     }}
                   </ATag>
-                  <ATag v-else :bordered="false">{{ t("migration.summaryEmpty") }}</ATag>
+                  <ATag
+                    v-if="mod.credentials?.has_notifications"
+                    color="purple"
+                    :bordered="false"
+                    data-testid="migration-export-credentials-notifications-tag"
+                  >
+                    {{ t("migration.summaryNotifications") }}
+                  </ATag>
+                  <ATag
+                    v-if="
+                      (mod.credentials?.configured_count || 0) === 0 &&
+                      !mod.credentials?.has_notifications
+                    "
+                    :bordered="false"
+                  >
+                    {{ t("migration.summaryEmpty") }}
+                  </ATag>
                 </template>
                 <!-- Settings summary -->
                 <template v-else-if="mod.id === 'settings'">
@@ -923,7 +939,23 @@ function libraryCompactText(mod: ColabOneMigrationModuleSummary): string {
                       })
                     }}
                   </ATag>
-                  <ATag v-else :bordered="false">{{ t("migration.summaryEmpty") }}</ATag>
+                  <ATag
+                    v-if="mod.credentials?.has_notifications"
+                    color="purple"
+                    :bordered="false"
+                    data-testid="migration-import-credentials-notifications-tag"
+                  >
+                    {{ t("migration.summaryNotifications") }}
+                  </ATag>
+                  <ATag
+                    v-if="
+                      (mod.credentials?.configured_count || 0) === 0 &&
+                      !mod.credentials?.has_notifications
+                    "
+                    :bordered="false"
+                  >
+                    {{ t("migration.summaryEmpty") }}
+                  </ATag>
                 </template>
                 <template v-else-if="mod.id === 'settings'">
                   <span class="co-mig-meta-text">{{ settingsCompactText(mod) }}</span>

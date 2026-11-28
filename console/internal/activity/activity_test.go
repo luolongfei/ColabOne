@@ -2211,3 +2211,53 @@ func TestSafeMessageRedactsShareTokens(t *testing.T) {
 		t.Fatalf("share tokens leaked in SafeMessage: %q", got)
 	}
 }
+
+func TestSafeMessageRedactsTelegramBotTokens(t *testing.T) {
+	cases := []struct {
+		name      string
+		in        string
+		want      string
+		forbidden []string
+	}{
+		{
+			name:      "colon_bot_token_min_length",
+			in:        "Telegram error on /bot12345:ABCDEFGH/sendMessage",
+			want:      "Telegram error on /[凭据已隐藏]/sendMessage",
+			forbidden: []string{"12345:ABCDEFGH", "ABCDEFGH"},
+		},
+		{
+			name:      "percent_3A_uppercase_and_lowercase",
+			in:        "encoded bot12345678%3AAA_SecretToken99 and bot98765432%3aBB-SecretToken88",
+			want:      "encoded [凭据已隐藏] and [凭据已隐藏]",
+			forbidden: []string{"AA_SecretToken99", "BB-SecretToken88"},
+		},
+		{
+			name:      "uppercase_BOT_prefix",
+			in:        "BOT555666777:XyZ_1234-5678 failed",
+			want:      "[凭据已隐藏] failed",
+			forbidden: []string{"XyZ_1234-5678"},
+		},
+		{
+			name: "short_or_unrelated_text_preserved",
+			in:   "robot123 and bot1234:short77 ok",
+			want: "robot123 and bot1234:short77 ok",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SafeMessage(tc.in)
+			if got != tc.want {
+				t.Errorf("SafeMessage(%q):\n got: %q\nwant: %q", tc.in, got, tc.want)
+			}
+			for _, secret := range tc.forbidden {
+				if strings.Contains(got, secret) {
+					t.Errorf("SafeMessage(%q) leaked %q in %q", tc.in, secret, got)
+				}
+			}
+			if again := SafeMessage(got); again != got {
+				t.Errorf("SafeMessage not idempotent: first=%q second=%q", got, again)
+			}
+		})
+	}
+}

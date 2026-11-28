@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/luolongfei/ColabOne/console/internal/fsutil"
+	"github.com/luolongfei/ColabOne/console/internal/notifier"
 )
 
 // colabOneRenameReplace renames src onto dst with Windows-resilient bounded jittered retry.
@@ -416,6 +417,7 @@ func (c *ColabOneController) loadSettings() {
 		"assign_max_attempts":    COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS,
 		"assign_proxy_enabled":   false,
 		"locale":                 "",
+		"notifications":          notifier.DefaultConfig().PublicSettingsMap(),
 	}
 	settingsPath := filepath.Join(c.directory, "settings.json")
 	if rawBytes, existed, err := readRegularFileBounded(settingsPath, colabOneMaxLocalConfigJSONBytes); err == nil && existed {
@@ -436,6 +438,7 @@ func (c *ColabOneController) loadSettings() {
 				"default_gpu_policy",
 				"default_assign_max_attempts_policy",
 				"locale",
+				"notifications",
 			}
 			for _, k := range allowed {
 				if val, ok := saved[k]; ok {
@@ -493,7 +496,7 @@ func (c *ColabOneController) loadSettings() {
 	}
 
 	maxAttempts, ok := asExactInt(c.settings["assign_max_attempts"])
-	if !ok || maxAttempts < COLABONE_MIN_ASSIGN_MAX_ATTEMPTS || maxAttempts > COLABONE_MAX_ASSIGN_MAX_ATTEMPTS {
+	if !ok || !isValidColabOneAssignMaxAttempts(maxAttempts) {
 		c.settings["assign_max_attempts"] = COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS
 	} else {
 		c.settings["assign_max_attempts"] = maxAttempts
@@ -529,16 +532,17 @@ func (c *ColabOneController) loadSettings() {
 		c.settings["default_gpu_policy"] = COLABONE_DEFAULT_GPU_POLICY_VERSION
 	}
 
-	// Migrate legacy 20-attempt default to 30 once upgraded while preserving explicit non-20 selections.
+	// Reset all legacy finite attempt defaults once to unlimited retries (0) on policy v2 upgrade.
+	// Any subsequent explicit user save stamps policy v2 and is preserved across reloads.
 	defaultAssignAttemptsPolicy, ok := asExactInt(c.settings["default_assign_max_attempts_policy"])
 	if !ok || defaultAssignAttemptsPolicy < COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS_POLICY_VERSION {
-		if v, ok := asExactInt(c.settings["assign_max_attempts"]); ok && v == 20 {
-			c.settings["assign_max_attempts"] = COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS
-		}
+		c.settings["assign_max_attempts"] = COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS
 		c.settings["default_assign_max_attempts_policy"] = COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS_POLICY_VERSION
 	} else {
 		c.settings["default_assign_max_attempts_policy"] = defaultAssignAttemptsPolicy
 	}
+
+	c.settings["notifications"] = notifier.LoadConfigFromMaps(asMap(c.settings["notifications"]), nil).PublicSettingsMap()
 }
 
 // ---------------------------------------------------------------------------

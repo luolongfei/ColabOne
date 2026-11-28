@@ -539,6 +539,18 @@ export const koKRMessages: ColabOneMessages = {
     "할당 요청 실패 · {seconds}초 후 {gpu} 자동 재시도 ({next}/{total}회 시도)",
   "device.waitingRetryNetworkSoon":
     "할당 요청 실패 · 곧 {gpu} 재시도 ({next}/{total}회 시도)",
+  "device.waitingRetryCapacityUnlimited":
+    "Google 연산 리소스 부족 · {seconds}초 후 {gpu} 할당 자동 재시도 ({next}회 시도)",
+  "device.waitingRetryCapacityUnlimitedSoon":
+    "Google 연산 리소스 부족 · 곧 {gpu} 할당 재시도 ({next}회 시도)",
+  "device.waitingRetryServerBusyUnlimited":
+    "Google 할당 서비스 혼잡 · {seconds}초 후 {gpu} 할당 자동 재시도 ({next}회 시도)",
+  "device.waitingRetryServerBusyUnlimitedSoon":
+    "Google 할당 서비스 혼잡 · 곧 {gpu} 할당 재시도 ({next}회 시도)",
+  "device.waitingRetryNetworkUnlimited":
+    "할당 요청 실패 · {seconds}초 후 {gpu} 자동 재시도 ({next}회 시도)",
+  "device.waitingRetryNetworkUnlimitedSoon":
+    "할당 요청 실패 · 곧 {gpu} 재시도 ({next}회 시도)",
   "device.toastAllocationCancelled": "GPU 할당이 취소되었습니다",
   "device.idlePaused": "작업 중 · 자동 해제 일시 정지",
   "device.idleCountdownRemaining": "자동 해제까지",
@@ -643,6 +655,8 @@ export const koKRMessages: ColabOneMessages = {
   "device.errInvalidCuLimit": "CU 소비 상한은 0.1에서 100000 사이여야 합니다",
   "device.toastThreadsSet": "원격 다운로드 동시 스레드를 {threads}개로 설정했습니다",
   "device.toastAssignMaxAttemptsSet": "GPU 할당 최대 시도 횟수를 {count}회로 설정했습니다",
+  "device.toastAssignMaxAttemptsUnlimited":
+    "GPU 할당 재시도 정책을 무제한 (성공할 때까지)으로 설정했습니다",
   "device.toastDefaultGpuSet": "기본 GPU를 {gpu}(으)로 설정했습니다",
   "device.toastSettingsSaved": "설정이 저장되었습니다",
 
@@ -1858,11 +1872,16 @@ export const koKRMessages: ColabOneMessages = {
   "settings.threadsOption": "{count} 스레드",
   "settings.autoDriveLabel": "드라이브 자동 마운트",
   "settings.autoDriveDesc": "GPU 시작 시 Google 드라이브 (ColabOne_Drive / ColabOne_Drive_Mount) 자동 마운트 및 동기화",
-  "settings.assignMaxAttemptsLabel": "GPU 할당 최대 시도 횟수",
+  "settings.assignMaxAttemptsLabel": "GPU 할당 재시도 정책",
   "settings.assignMaxAttemptsAria": "GPU 할당 최대 시도 횟수",
+  "settings.assignRetryModeAria": "GPU 할당 재시도 모드",
+  "settings.assignRetryModeUnlimited": "무제한 (성공할 때까지)",
+  "settings.assignRetryModeLimited": "최대 횟수 제한",
   "settings.assignMaxAttemptsUnit": "회",
+  "settings.assignMaxAttemptsUnlimitedDesc":
+    "GPU가 혼잡할 때 할당될 때까지 자동으로 대기하며 계속 재시도합니다. 지수 백오프 (2 / 4 / 8 / 16 / 32 / 60초, 최대 60초)가 적용되며 재시도 불가능한 오류나 수동 취소 시 중지됩니다.",
   "settings.assignMaxAttemptsDesc":
-    "GPU 혼잡 시 자동 재시도를 포함한 총 할당 시도 횟수 상한입니다(1–100회, 기본 30회). 재시도 간격은 지수 백오프(2s, 4s, 8s, 16s, 32s)로 증가하며 이후 32초로 고정됩니다. 1로 설정하면 자동 재시도를 사용하지 않습니다.",
+    "GPU 혼잡 시 자동 재시도를 포함한 총 할당 시도 횟수 상한입니다 (1-100회). 지수 백오프 (2 / 4 / 8 / 16 / 32 / 60초, 최대 60초)가 적용되며 재시도 불가능한 오류나 수동 취소 시 즉시 중지됩니다. 1로 설정하면 자동 재시도를 사용하지 않습니다.",
   "settings.idleProtectionTitle": "유휴 자동 해제 보호",
   "settings.idleProtectionDesc":
     "{policy} 동안 활동이나 작업이 없으면 원격 리소스를 자동 해제합니다. 조작 시 타이머가 초기화되며 모델 다운로드·로드·API 추론·ComfyUI 실행 중에는 자동으로 일시 정지됩니다.",
@@ -2125,7 +2144,7 @@ export const koKRMessages: ColabOneMessages = {
     "자동 갱신 OAuth 자격 증명, 프로필 정보, 팝업 없는 Google 드라이브 할당량 프로젝트를 포함하여 재로그인 없이 사용할 수 있습니다.",
   "migration.moduleCredentialsTitle": "외부 키 및 공개 터널 설정",
   "migration.moduleCredentialsDesc":
-    "Hugging Face Token, GPU 할당 프록시, 외부 API 및 ComfyUI 캔버스의 고정 도메인과 Tunnel Token을 포함합니다.",
+    "Hugging Face Token, GPU 할당 프록시, 알림 채널 자격 증명, 외부 API 및 ComfyUI 캔버스의 고정 도메인과 Tunnel Token을 포함합니다.",
   "migration.moduleSettingsTitle": "모든 앱 및 화면 설정",
   "migration.moduleSettingsDesc":
     "기본 GPU, 유휴 해제, 다운로드 스레드, 자동 드라이브, 테마, 언어, 프라이버시 기본값, 닫기 동작 및 업데이트 설정을 포함합니다.",
@@ -2143,6 +2162,7 @@ export const koKRMessages: ColabOneMessages = {
   "migration.summaryNotSignedIn": "로그인 안 됨",
   "migration.summaryDriveReady": "드라이브 자동 연동 준비됨",
   "migration.summaryConfiguredCount": "{count}개 설정됨",
+  "migration.summaryNotifications": "알림 채널",
   "migration.summaryEmpty": "데이터 없음",
   "migration.summaryIdleMinutes": "유휴 {minutes}분",
   "migration.summaryThreads": "{count} 스레드",
@@ -2772,6 +2792,156 @@ export const koKRMessages: ColabOneMessages = {
   "outputShare.guestEmptyDesc":
     "원본 결과물이 공유자에 의해 삭제되었거나, 원격 연산 환경이 오프라인이고 클라우드에 동기화되지 않았을 수 있습니다.",
   "outputShare.guestFooter": "ColabOne 보안 읽기 전용 공유 기능으로 제공됩니다",
+
+  // Notifications
+  "notifications.sectionTitle": "알림 전송",
+  "notifications.prefsTitle": "알림 이벤트 및 전송 시점",
+  "notifications.prefsDesc":
+    "알림을 받을 주요 이벤트를 선택하고 데스크톱 시스템 알림과 원격 채널의 전송 시점을 제어합니다.",
+  "notifications.activeChannelsTag": "{count}개 활성",
+  "notifications.noActiveChannelsTag": "모두 꺼짐",
+  "notifications.eventGpuTitle": "GPU 인스턴스 상태",
+  "notifications.eventGpuDesc": "할당 완료, 자동 해제",
+  "notifications.eventTaskTitle": "결과물 및 작업 완료",
+  "notifications.eventTaskDesc": "생성물 완성, 모델 다운로드 및 로드 완료",
+  "notifications.eventAlertTitle": "오류 및 수동 확인 필요",
+  "notifications.eventAlertDesc": "할당/작업 실패, 연결 끊김, 인증 만료",
+  "notifications.systemUnfocusedTitle": "창이 비활성 상태일 때만 시스템 알림 표시",
+  "notifications.systemUnfocusedDesc":
+    "ColabOne 창을 보고 있을 때는 조용히 유지하고, 최소화되거나 백그라운드일 때만 OS 알림을 띄웁니다.",
+  "notifications.remoteUnfocusedTitle": "백그라운드일 때만 원격 채널로 전송",
+  "notifications.remoteUnfocusedDesc":
+    "끄면 창 포커스 여부와 관계없이 Telegram, Bark, 이메일이 즉시 전송됩니다.",
+  "notifications.statusEnabled": "활성화됨",
+  "notifications.statusDisabled": "꺼짐",
+  "notifications.statusConfigured": "설정됨",
+  "notifications.statusUnsupported": "지원되지 않음",
+  "notifications.configureBtn": "설정",
+  "notifications.editBtn": "편집",
+  "notifications.saveBtn": "설정 저장",
+  "notifications.testBtn": "테스트 전송",
+  "notifications.clearBtn": "설정 삭제",
+  "notifications.testSaveFirstHint": "테스트하기 전에 먼저 설정을 저장해 주세요",
+  "notifications.testNeedConfigHint": "설정을 완료하고 저장한 뒤 테스트할 수 있습니다",
+  "notifications.toastSaved": "알림 설정이 저장되었습니다",
+  "notifications.toastChannelSaved": "{channel} 설정이 저장되었습니다",
+  "notifications.toastChannelCleared": "{channel} 설정이 삭제되었습니다",
+  "notifications.toastChannelEnabled": "{channel} 알림을 켰습니다",
+  "notifications.toastChannelDisabled": "{channel} 알림을 껐습니다",
+  "notifications.toastTestSent": "{channel} 테스트 알림을 전송했습니다",
+  "notifications.toastConfigureFirst": "먼저 {channel} 설정을 입력하고 저장해 주세요",
+  "notifications.systemTitle": "시스템 알림",
+  "notifications.systemDesc":
+    "Windows / macOS 알림 센터로 기본 알림을 표시합니다. 알림을 클릭하면 해당 페이지로 바로 이동합니다.",
+  "notifications.systemSwitchAria": "시스템 알림 활성화",
+  "notifications.telegramTitle": "Telegram 봇",
+  "notifications.telegramDesc":
+    "Telegram Bot으로 실시간 상태와 결과물 미리보기 이미지를 전송하며 사용자 지정 API 주소와 프록시를 지원합니다.",
+  "notifications.telegramSwitchAria": "Telegram 봇 알림 활성화",
+  "notifications.telegramBotTokenLabel": "Bot Token",
+  "notifications.telegramBotTokenPlaceholder": "123456789:AAH...",
+  "notifications.telegramBotTokenSavedPlaceholder":
+    "Bot Token 저장됨 - 새 값을 입력하면 덮어씁니다",
+  "notifications.telegramBotTokenSavedWithMask": "저장됨: {mask} (새 값 입력 시 업데이트)",
+  "notifications.telegramChatIdLabel": "Chat ID",
+  "notifications.telegramChatIdPlaceholder": "예: 123456789 또는 -1001234567890",
+  "notifications.telegramChatIdHint": "사용자 ID, 그룹 ID 또는 채널 @username 지원",
+  "notifications.telegramApiBaseLabel": "사용자 지정 API 주소 (선택 · 리버스 프록시)",
+  "notifications.telegramApiBasePlaceholder": "https://api.telegram.org",
+  "notifications.telegramProxyLabel": "프록시 주소 (선택 · HTTP / SOCKS5)",
+  "notifications.telegramProxyPlaceholder":
+    "http://127.0.0.1:7890 또는 socks5://127.0.0.1:1080",
+  "notifications.telegramProxySavedPlaceholder":
+    "프록시 저장됨 - 새 주소를 입력하면 업데이트됩니다",
+  "notifications.telegramProxySavedWithMask": "저장됨: {mask} (새 주소 입력 시 업데이트)",
+  "notifications.telegramClearProxyBtn": "프록시 삭제",
+  "notifications.telegramUndoClearProxyBtn": "삭제 취소",
+  "notifications.telegramProxyWillClearHint":
+    "'설정 저장'을 클릭하면 저장된 프록시 주소가 삭제됩니다",
+  "notifications.telegramPreviewTitle": "결과물 생성 시 미리보기 이미지 첨부",
+  "notifications.telegramPreviewDesc":
+    "ComfyUI 이미지 결과물이 생성되면 썸네일을 함께 전송합니다.",
+  "notifications.barkTitle": "Bark 푸시",
+  "notifications.barkDesc":
+    "iPhone / iPad / Mac의 Bark 앱으로 빠르게 푸시 알림을 전송하며 자체 호스팅 서버를 지원합니다.",
+  "notifications.barkSwitchAria": "Bark 푸시 알림 활성화",
+  "notifications.barkServerLabel": "푸시 주소 / 서버",
+  "notifications.barkServerPlaceholder":
+    "https://api.day.app 또는 전체 푸시 URL 붙여넣기",
+  "notifications.barkServerHint":
+    "Key가 포함된 전체 URL을 붙여넣으면 서버 주소와 Device Key를 자동으로 분리합니다",
+  "notifications.barkSplitToast": "Bark 서버 주소와 Device Key를 자동으로 분리했습니다",
+  "notifications.barkKeyLabel": "Device Key",
+  "notifications.barkKeyPlaceholder": "Bark 앱의 푸시 키 입력",
+  "notifications.barkKeySavedPlaceholder": "Device Key 저장됨 - 새 값을 입력하면 업데이트됩니다",
+  "notifications.barkKeySavedWithMask": "저장됨: {mask} (새 값 입력 시 업데이트)",
+  "notifications.barkGroupLabel": "그룹",
+  "notifications.barkGroupPlaceholder": "ColabOne",
+  "notifications.barkSoundLabel": "알림음",
+  "notifications.barkSoundDefault": "시스템 기본값",
+  "notifications.barkLevelLabel": "중단 수준",
+  "notifications.barkLevelAuto": "자동 (이벤트 중요도 기준)",
+  "notifications.barkLevelActive": "기본 알림 (active)",
+  "notifications.barkLevelTimeSensitive": "긴급 알림 (timeSensitive)",
+  "notifications.barkLevelPassive": "조용히 전달 (passive)",
+  "notifications.emailTitle": "이메일 알림 (SMTP)",
+  "notifications.emailDesc":
+    "SMTP를 통해 깔끔한 HTML 알림 메일을 전송하며 주요 메일 프리셋과 결과물 미리보기 내장을 지원합니다.",
+  "notifications.emailSwitchAria": "이메일 알림 활성화",
+  "notifications.emailPresetsLabel": "주요 메일 프리셋",
+  "notifications.emailPresetQQ": "QQ 메일",
+  "notifications.emailPreset163": "NetEase 163",
+  "notifications.emailPresetGmail": "Gmail",
+  "notifications.emailPresetOutlook": "Outlook",
+  "notifications.emailPresetICloud": "iCloud",
+  "notifications.emailHostLabel": "SMTP 서버",
+  "notifications.emailHostPlaceholder": "smtp.qq.com",
+  "notifications.emailPortLabel": "포트",
+  "notifications.emailSecurityLabel": "암호화 방식",
+  "notifications.emailSecurityTls": "SSL / TLS",
+  "notifications.emailSecurityStarttls": "STARTTLS",
+  "notifications.emailSecurityNone": "암호화 안 함",
+  "notifications.emailUsernameLabel": "발신 계정 / 이메일",
+  "notifications.emailUsernamePlaceholder": "you@example.com",
+  "notifications.emailPasswordLabel": "비밀번호 / 앱 비밀번호",
+  "notifications.emailPasswordPlaceholder": "SMTP 인증 코드 또는 앱 전용 비밀번호 입력",
+  "notifications.emailPasswordSavedPlaceholder":
+    "저장됨 - 새 값을 입력하면 덮어씁니다",
+  "notifications.emailFromAddressLabel": "발신 주소 (선택)",
+  "notifications.emailFromAddressPlaceholder": "비워 두면 발신 계정을 기본으로 사용",
+  "notifications.emailFromNameLabel": "발신자 이름",
+  "notifications.emailFromNamePlaceholder": "ColabOne",
+  "notifications.emailToLabel": "수신 이메일",
+  "notifications.emailToPlaceholder": "a@example.com, b@example.com",
+  "notifications.emailToHint": "여러 수신자는 쉼표 또는 세미콜론으로 구분해 입력할 수 있습니다",
+  "notifications.emailEmbedPreviewTitle": "이메일에 결과물 미리보기 이미지 포함",
+  "notifications.emailEmbedPreviewDesc":
+    "정돈된 HTML 형식으로 전송하며 결과물 생성 알림에는 미리보기 이미지를 본문에 포함합니다.",
+  "notifications.unsavedDraftTag": "저장 안 됨",
+  "notifications.clearConfirmTitle": "{channel} 설정을 삭제하시겠습니까?",
+  "notifications.clearConfirmDesc":
+    "저장된 토큰, 키 또는 비밀번호가 영구적으로 삭제되며 이 채널이 자동으로 꺼집니다.",
+  "notifications.emailClearPasswordBtn": "비밀번호 삭제",
+  "notifications.emailUndoClearPasswordBtn": "삭제 취소",
+  "notifications.emailPasswordWillClearHint":
+    "'설정 저장'을 클릭하면 저장된 비밀번호가 삭제됩니다",
+  "notifications.systemWebHostNote":
+    "웹 콘솔 모드: 시스템 알림은 호스트 데스크톱 컴퓨터에만 표시되며 원격 브라우저에는 표시되지 않습니다.",
+  "notifications.webDesktopOnlyEditNotice":
+    "로컬 네트워크 보안을 위해 주소, 프록시 및 자격 증명은 호스트 데스크톱 앱에서만 수정할 수 있습니다. 웹에서는 켜기/끄기, 테스트 전송 및 저장된 설정 삭제를 사용할 수 있습니다.",
+  "notifications.valTelegramNeedToken": "Bot Token을 입력해 주세요",
+  "notifications.valTelegramNeedChatId": "Chat ID를 입력해 주세요",
+  "notifications.valBarkNeedServer": "유효한 Bark 서버 주소를 입력해 주세요",
+  "notifications.valBarkNeedKey":
+    "Device Key를 입력하거나 Key가 포함된 전체 푸시 URL을 붙여 넣어 주세요",
+  "notifications.valEmailNeedHost": "SMTP 서버 주소를 입력해 주세요",
+  "notifications.valEmailInvalidPort": "SMTP 포트는 1에서 65535 사이여야 합니다",
+  "notifications.valEmailNeedFromForNonEmailUser":
+    "발신 계정이 이메일 형식이 아니므로 유효한 '발신 주소'를 입력해 주세요",
+  "notifications.valEmailInvalidFrom": "유효한 발신 이메일 주소를 입력해 주세요",
+  "notifications.valEmailNeedRecipients": "수신 이메일 주소를 하나 이상 입력해 주세요",
+  "notifications.valEmailInvalidRecipients":
+    "수신 이메일 주소 형식이 올바르지 않습니다. 쉼표 또는 세미콜론으로 구분해 확인해 주세요",
 
   // Location
   "location.tooltipWithZone": "인스턴스 위치: {full} ({zone})",

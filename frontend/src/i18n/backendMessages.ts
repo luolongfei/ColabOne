@@ -2075,6 +2075,16 @@ function translateSettingsSummaryPart(part: string, loc: ColabOneLocale): string
       "ko-KR": `다운로드 동시성: ${thr}스레드`,
     }[loc];
   }
+  if (s === "分配重试上限: 不限次数（直到成功）") {
+    return {
+      "zh-CN": s,
+      "en-US": "Max allocation attempts: Unlimited (until succeeded)",
+      "zh-TW": "分配重試上限: 不限次數（直到成功）",
+      "zh-HK": "分配重試上限: 不限次數（直到成功）",
+      "ja-JP": "割り当て試行上限: 無制限（成功するまで）",
+      "ko-KR": "할당 시도 상한: 무제한 (성공할 때까지)",
+    }[loc];
+  }
   const retryCapMatch = s.match(/^分配重试上限:\s*(\d+) 次$/);
   if (retryCapMatch) {
     const count = retryCapMatch[1];
@@ -4882,6 +4892,26 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
+    re: /^Google 算力紧张，正在排队分配 (\S+)（第 (\d+) 次）$/,
+    format: (m, loc) => {
+      const [, gpu, cur] = m;
+      switch (loc) {
+        case "en-US":
+          return `Google GPU capacity is tight; queuing for ${gpu} (attempt #${cur})`;
+        case "zh-TW":
+          return `Google 算力緊張，正在排隊分配 ${gpu}（第 ${cur} 次）`;
+        case "zh-HK":
+          return `Google 算力緊張，正在排隊分配 ${gpu}（第 ${cur} 次）`;
+        case "ja-JP":
+          return `Google の計算リソースが逼迫中 · ${gpu} の割り当てを待機中（${cur} 回目）`;
+        case "ko-KR":
+          return `Google 연산 리소스 부족 · ${gpu} 할당 대기 중 (${cur}회 시도)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
     re: /^Google 分配服务繁忙，正在重试分配 (\S+)（第 (\d+)\/(\d+) 次）$/,
     format: (m, loc) => {
       const [, gpu, cur, total] = m;
@@ -4902,6 +4932,26 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
+    re: /^Google 分配服务繁忙，正在重试分配 (\S+)（第 (\d+) 次）$/,
+    format: (m, loc) => {
+      const [, gpu, cur] = m;
+      switch (loc) {
+        case "en-US":
+          return `Google allocation service is busy; retrying ${gpu} (attempt #${cur})`;
+        case "zh-TW":
+          return `Google 分配服務忙碌，正在重試分配 ${gpu}（第 ${cur} 次）`;
+        case "zh-HK":
+          return `Google 分配服務繁忙，正在重試分配 ${gpu}（第 ${cur} 次）`;
+        case "ja-JP":
+          return `Google の割り当てサービスが混雑中 · ${gpu} の割り当てを再試行中（${cur} 回目）`;
+        case "ko-KR":
+          return `Google 할당 서비스 혼잡 · ${gpu} 할당 재시도 중 (${cur}회 시도)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
     re: /^正在排队分配 (\S+)（算力池较紧张 · 第 (\d+)\/(\d+) 次）$/,
     format: (m, loc) => {
       const [, gpu, cur, total] = m;
@@ -4916,6 +4966,26 @@ const PATTERN_RULES: PatternRule[] = [
           return `${gpu} の割り当てを待機中（計算リソース混雑 · ${cur}/${total} 回目）`;
         case "ko-KR":
           return `${gpu} 할당 대기 중 (리소스 혼잡 · ${cur}/${total}회 시도)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在排队分配 (\S+)（算力池较紧张 · 第 (\d+) 次）$/,
+    format: (m, loc) => {
+      const [, gpu, cur] = m;
+      switch (loc) {
+        case "en-US":
+          return `Queuing for ${gpu} (pool congested · attempt #${cur})`;
+        case "zh-TW":
+          return `正在排隊分配 ${gpu}（算力池較緊張 · 第 ${cur} 次）`;
+        case "zh-HK":
+          return `正在排隊分配 ${gpu}（算力池較緊張 · 第 ${cur} 次）`;
+        case "ja-JP":
+          return `${gpu} の割り当てを待機中（計算リソース混雑 · ${cur} 回目）`;
+        case "ko-KR":
+          return `${gpu} 할당 대기 중 (리소스 혼잡 · ${cur}회 시도)`;
         default:
           return m[0];
       }
@@ -4956,6 +5026,26 @@ const PATTERN_RULES: PatternRule[] = [
           return `${gpu} を割り当て中（${cur}/${total} 回目）`;
         case "ko-KR":
           return `${gpu} 할당 중 (${cur}/${total}회 시도)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^正在分配 (\S+)（第 (\d+) 次）$/,
+    format: (m, loc) => {
+      const [, gpu, cur] = m;
+      switch (loc) {
+        case "en-US":
+          return `Allocating ${gpu} (attempt #${cur})`;
+        case "zh-TW":
+          return `正在分配 ${gpu}（第 ${cur} 次）`;
+        case "zh-HK":
+          return `正在分配 ${gpu}（第 ${cur} 次）`;
+        case "ja-JP":
+          return `${gpu} を割り当て中（${cur} 回目）`;
+        case "ko-KR":
+          return `${gpu} 할당 중 (${cur}회 시도)`;
         default:
           return m[0];
       }
@@ -5012,6 +5102,36 @@ const PATTERN_RULES: PatternRule[] = [
     },
   },
   {
+    re: /^Google Colab 当前 (\S+) 算力紧张，暂未分配出 GPU（(?:耗时 (\d+(?:\.\d+)?) 秒 · )?(HTTP \d+)），(\d+) 秒后自动重试（第 (\d+) 次）$/,
+    format: (m, loc) => {
+      const [, gpu, elapsed, code, sec, cur] = m;
+      const detail = elapsed
+        ? {
+            "zh-CN": `耗时 ${elapsed} 秒 · ${code}`,
+            "en-US": `${elapsed}s · ${code}`,
+            "zh-TW": `耗時 ${elapsed} 秒 · ${code}`,
+            "zh-HK": `耗時 ${elapsed} 秒 · ${code}`,
+            "ja-JP": `${elapsed} 秒経過 · ${code}`,
+            "ko-KR": `${elapsed}초 경과 · ${code}`,
+          }[loc]
+        : code!;
+      switch (loc) {
+        case "en-US":
+          return `Google Colab ${gpu} capacity is currently tight and no GPU was allocated (${detail}); retrying in ${sec}s (attempt #${cur})`;
+        case "zh-TW":
+          return `Google Colab 目前 ${gpu} 算力緊張，暫未分配出 GPU（${detail}），${sec} 秒後自動重試（第 ${cur} 次）`;
+        case "zh-HK":
+          return `Google Colab 目前 ${gpu} 算力緊張，暫未分配出 GPU（${detail}），${sec} 秒後自動重試（第 ${cur} 次）`;
+        case "ja-JP":
+          return `現在 Google Colab の ${gpu} 計算リソースが逼迫しており、GPU が割り当てられませんでした（${detail}）。${sec} 秒後に自動再試行します（${cur} 回目）`;
+        case "ko-KR":
+          return `현재 Google Colab의 ${gpu} 연산 리소스가 부족하여 GPU가 할당되지 않았습니다 (${detail}). ${sec}초 후 자동 재시도합니다 (${cur}회)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
     re: /^Google Colab 当前 (\S+) 分配服务繁忙，暂未分配出 GPU（(?:耗时 (\d+(?:\.\d+)?) 秒 · )?(HTTP \d+)），(\d+) 秒后自动重试（第 (\d+)\/(\d+) 次）$/,
     format: (m, loc) => {
       const [, gpu, elapsed, code, sec, cur, total] = m;
@@ -5036,6 +5156,36 @@ const PATTERN_RULES: PatternRule[] = [
           return `現在 Google Colab の ${gpu} 割り当てサービスが混雑しており、GPU が割り当てられませんでした（${detail}）。${sec} 秒後に自動再試行します（${cur}/${total} 回目）`;
         case "ko-KR":
           return `현재 Google Colab의 ${gpu} 할당 서비스가 혼잡하여 GPU가 할당되지 않았습니다 (${detail}). ${sec}초 후 자동 재시도합니다 (${cur}/${total}회)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Google Colab 当前 (\S+) 分配服务繁忙，暂未分配出 GPU（(?:耗时 (\d+(?:\.\d+)?) 秒 · )?(HTTP \d+)），(\d+) 秒后自动重试（第 (\d+) 次）$/,
+    format: (m, loc) => {
+      const [, gpu, elapsed, code, sec, cur] = m;
+      const detail = elapsed
+        ? {
+            "zh-CN": `耗时 ${elapsed} 秒 · ${code}`,
+            "en-US": `${elapsed}s · ${code}`,
+            "zh-TW": `耗時 ${elapsed} 秒 · ${code}`,
+            "zh-HK": `耗時 ${elapsed} 秒 · ${code}`,
+            "ja-JP": `${elapsed} 秒経過 · ${code}`,
+            "ko-KR": `${elapsed}초 경과 · ${code}`,
+          }[loc]
+        : code!;
+      switch (loc) {
+        case "en-US":
+          return `Google Colab ${gpu} allocation service is currently busy and no GPU was allocated (${detail}); retrying in ${sec}s (attempt #${cur})`;
+        case "zh-TW":
+          return `Google Colab 目前 ${gpu} 分配服務忙碌，暫未分配出 GPU（${detail}），${sec} 秒後自動重試（第 ${cur} 次）`;
+        case "zh-HK":
+          return `Google Colab 目前 ${gpu} 分配服務繁忙，暫未分配出 GPU（${detail}），${sec} 秒後自動重試（第 ${cur} 次）`;
+        case "ja-JP":
+          return `現在 Google Colab の ${gpu} 割り当てサービスが混雑しており、GPU が割り当てられませんでした（${detail}）。${sec} 秒後に自動再試行します（${cur} 回目）`;
+        case "ko-KR":
+          return `현재 Google Colab의 ${gpu} 할당 서비스가 혼잡하여 GPU가 할당되지 않았습니다 (${detail}). ${sec}초 후 자동 재시도합니다 (${cur}회)`;
         default:
           return m[0];
       }
@@ -5086,6 +5236,56 @@ const PATTERN_RULES: PatternRule[] = [
           return `Google Colab の ${gpu} GPU 割り当てが一時的に混雑またはタイムアウトしました（${detail}）。${sec} 秒後に自動再試行します（${cur}/${total} 回目）`;
         case "ko-KR":
           return `Google Colab ${gpu} GPU 할당이 일시적으로 혼잡하거나 시간 초과되었습니다 (${detail}). ${sec}초 후 자동 재시도합니다 (${cur}/${total}회)`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Google Colab 分配 (\S+) GPU 暂时繁忙或超时（(?:耗时 (\d+(?:\.\d+)?) 秒 · )?(HTTP \d+|请求超时|网络异常)），(\d+) 秒后自动重试（第 (\d+) 次）$/,
+    format: (m, loc) => {
+      const [, gpu, elapsed, reasonRaw, sec, cur] = m;
+      const reason =
+        reasonRaw === "请求超时"
+          ? {
+              "zh-CN": "请求超时",
+              "en-US": "request timeout",
+              "zh-TW": "請求逾時",
+              "zh-HK": "請求逾時",
+              "ja-JP": "タイムアウト",
+              "ko-KR": "요청 시간 초과",
+            }[loc]
+          : reasonRaw === "网络异常"
+            ? {
+                "zh-CN": "网络异常",
+                "en-US": "network error",
+                "zh-TW": "網路異常",
+                "zh-HK": "網絡異常",
+                "ja-JP": "ネットワークエラー",
+                "ko-KR": "네트워크 오류",
+              }[loc]
+            : reasonRaw!;
+      const detail = elapsed
+        ? {
+            "zh-CN": `耗时 ${elapsed} 秒 · ${reason}`,
+            "en-US": `${elapsed}s · ${reason}`,
+            "zh-TW": `耗時 ${elapsed} 秒 · ${reason}`,
+            "zh-HK": `耗時 ${elapsed} 秒 · ${reason}`,
+            "ja-JP": `${elapsed} 秒経過 · ${reason}`,
+            "ko-KR": `${elapsed}초 경과 · ${reason}`,
+          }[loc]
+        : reason;
+      switch (loc) {
+        case "en-US":
+          return `Google Colab ${gpu} allocation temporarily busy or timed out (${detail}); retrying in ${sec}s (attempt #${cur})`;
+        case "zh-TW":
+          return `Google Colab 分配 ${gpu} GPU 暫時忙碌或逾時（${detail}），${sec} 秒後自動重試（第 ${cur} 次）`;
+        case "zh-HK":
+          return `Google Colab 分配 ${gpu} GPU 暫時繁忙或逾時（${detail}），${sec} 秒後自動重試（第 ${cur} 次）`;
+        case "ja-JP":
+          return `Google Colab の ${gpu} GPU 割り当てが一時的に混雑またはタイムアウトしました（${detail}）。${sec} 秒後に自動再試行します（${cur} 回目）`;
+        case "ko-KR":
+          return `Google Colab ${gpu} GPU 할당이 일시적으로 혼잡하거나 시간 초과되었습니다 (${detail}). ${sec}초 후 자동 재시도합니다 (${cur}회)`;
         default:
           return m[0];
       }
@@ -18610,7 +18810,229 @@ const PATTERN_RULES: PatternRule[] = [
       }
     },
   },
+  // === Notification logs & errors ===
+  {
+    re: /^已保存通知设置\s*·\s*已启用通知渠道[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const channels = translateNotificationChannelList(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Notification settings saved · Enabled channels: ${channels}`;
+        case "zh-TW":
+          return `已儲存通知設定 · 已啟用通知管道：${channels}`;
+        case "zh-HK":
+          return `已儲存通知設定 · 已啟用通知渠道：${channels}`;
+        case "ja-JP":
+          return `通知設定を保存しました · 有効な通知チャネル: ${channels}`;
+        case "ko-KR":
+          return `알림 설정 저장됨 · 활성 알림 채널: ${channels}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^通知渠道测试发送成功[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const ch = translateNotificationChannelName(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Test notification delivered via ${ch}`;
+        case "zh-TW":
+          return `通知管道測試傳送成功：${ch}`;
+        case "zh-HK":
+          return `通知渠道測試傳送成功：${ch}`;
+        case "ja-JP":
+          return `通知チャネルのテスト送信に成功しました: ${ch}`;
+        case "ko-KR":
+          return `알림 채널 테스트 전송 성공: ${ch}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^通知渠道\s+(\S+)\s+发送失败[：:]\s*(.+)$/s,
+    format: (m, loc) => {
+      const ch = translateNotificationChannelName(m[1]!, loc);
+      const detail = translateInner(m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to send via ${ch}: ${detail}`;
+        case "zh-TW":
+          return `通知管道 ${ch} 傳送失敗：${detail}`;
+        case "zh-HK":
+          return `通知渠道 ${ch} 傳送失敗：${detail}`;
+        case "ja-JP":
+          return `通知チャネル ${ch} への送信に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `${ch} 알림 채널 전송 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^测试通知渠道\s+(\S+)\s+失败[：:]\s*(.+)$/s,
+    format: (m, loc) => {
+      const ch = translateNotificationChannelName(m[1]!, loc);
+      const detail = translateInner(m[2]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Test failed for ${ch}: ${detail}`;
+        case "zh-TW":
+          return `測試通知管道 ${ch} 失敗：${detail}`;
+        case "zh-HK":
+          return `測試通知渠道 ${ch} 失敗：${detail}`;
+        case "ja-JP":
+          return `通知チャネル ${ch} のテストに失敗しました: ${detail}`;
+        case "ko-KR":
+          return `${ch} 알림 채널 테스트 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^通知队列已满，已跳过事件[：:]\s*(.+)$/,
+    format: (m, loc) => {
+      const ev = m[1]!.trim();
+      switch (loc) {
+        case "en-US":
+          return `Notification queue is full; skipped event: ${ev}`;
+        case "zh-TW":
+          return `通知佇列已滿，已略過事件：${ev}`;
+        case "zh-HK":
+          return `通知佇列已滿，已跳過事件：${ev}`;
+        case "ja-JP":
+          return `通知キューが満杯のためイベントをスキップしました: ${ev}`;
+        case "ko-KR":
+          return `알림 대기열이 가득 차 이벤트를 건너뛰었습니다: ${ev}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^保存通知凭据失败[：:]\s*(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to save notification credentials: ${detail}`;
+        case "zh-TW":
+          return `儲存通知憑證失敗：${detail}`;
+        case "zh-HK":
+          return `儲存通知憑證失敗：${detail}`;
+        case "ja-JP":
+          return `通知認証情報の保存に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `알림 자격 증명 저장 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^清除通知凭据失败[：:]\s*(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to clear notification credentials: ${detail}`;
+        case "zh-TW":
+          return `清除通知憑證失敗：${detail}`;
+        case "zh-HK":
+          return `清除通知憑證失敗：${detail}`;
+        case "ja-JP":
+          return `通知認証情報の削除に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `알림 자격 증명 삭제 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^写入通知推送凭据失败[：:]\s*(.+)$/s,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to write notification push credentials: ${detail}`;
+        case "zh-TW":
+          return `寫入通知推播憑證失敗：${detail}`;
+        case "zh-HK":
+          return `寫入通知推送憑證失敗：${detail}`;
+        case "ja-JP":
+          return `通知配信の認証情報書き込みに失敗しました: ${detail}`;
+        case "ko-KR":
+          return `알림 푸시 자격 증명 쓰기 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
 ];
+
+function translateNotificationChannelName(
+  raw: string,
+  loc: ColabOneLocale,
+): string {
+  const trimmed = raw.trim();
+  const lower = trimmed.toLowerCase();
+  if (lower === "system" || trimmed === "系统通知") {
+    switch (loc) {
+      case "en-US":
+        return "System Notifications";
+      case "zh-TW":
+        return "系統通知";
+      case "zh-HK":
+        return "系統通知";
+      case "ja-JP":
+        return "システム通知";
+      case "ko-KR":
+        return "시스템 알림";
+      default:
+        return "系统通知";
+    }
+  }
+  if (lower === "telegram") return "Telegram";
+  if (lower === "bark") return "Bark";
+  if (lower === "email" || trimmed === "邮件") {
+    switch (loc) {
+      case "en-US":
+        return "Email";
+      case "zh-TW":
+        return "電子郵件";
+      case "zh-HK":
+        return "電郵";
+      case "ja-JP":
+        return "メール";
+      case "ko-KR":
+        return "이메일";
+      default:
+        return "邮件";
+    }
+  }
+  return translateInner(trimmed, loc);
+}
+
+function translateNotificationChannelList(
+  raw: string,
+  loc: ColabOneLocale,
+): string {
+  const items = raw
+    .split(/[、,，]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => translateNotificationChannelName(s, loc));
+  if (items.length === 0) return raw.trim();
+  if (loc === "en-US" || loc === "ko-KR") {
+    return items.join(", ");
+  }
+  return items.join("、");
+}
 
 function translateLiveProvisionStage(
   stage: string,

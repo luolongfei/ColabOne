@@ -14,6 +14,7 @@ import (
 
 	"github.com/luolongfei/ColabOne/console/internal/live"
 	"github.com/luolongfei/ColabOne/console/internal/migration"
+	"github.com/luolongfei/ColabOne/console/internal/notifier"
 )
 
 const (
@@ -175,6 +176,11 @@ func (c *ColabOneController) exportMigrationCredentials() *migration.ColabOneMig
 			out.LiveExternalLLM = deepCopyMap(m)
 		}
 	}
+	if v, ok := c.vault.Get(colabOneVaultNotificationSecretsKey); ok {
+		if m := asMap(v); len(m) > 0 {
+			out.Notifications = deepCopyMap(m)
+		}
+	}
 	return out
 }
 
@@ -309,6 +315,7 @@ type preparedMigrationCredentials struct {
 	publicAPI       map[string]any
 	comfyCanvas     map[string]any
 	liveExternalLLM map[string]any
+	notifications   map[string]any
 }
 
 type preparedMigrationLibraryWorkflows struct {
@@ -406,7 +413,19 @@ func (c *ColabOneController) ApplyMigrationPayload(
 				hasProxyAfter = true
 			}
 		}
-		prepSettings, err = c.validateMigrationSettings(payload.Settings, hasProxyAfter)
+		var notifSecretsAfter map[string]any
+		if prepCreds != nil {
+			notifSecretsAfter = prepCreds.notifications
+		} else if c.vault != nil {
+			c.vaultConfigMu.Lock()
+			if raw, ok := c.vault.Get(colabOneVaultNotificationSecretsKey); ok {
+				if m := asMap(raw); m != nil {
+					notifSecretsAfter = deepCopyMap(m)
+				}
+			}
+			c.vaultConfigMu.Unlock()
+		}
+		prepSettings, err = c.validateMigrationSettings(payload.Settings, hasProxyAfter, notifSecretsAfter)
 		if err != nil {
 			return nil, err
 		}
@@ -451,7 +470,7 @@ func (c *ColabOneController) ApplyMigrationPayload(
 		vaultKeysToTouch = append(vaultKeysToTouch, "colab", "google_profile", "cloud_project")
 	}
 	if prepCreds != nil {
-		vaultKeysToTouch = append(vaultKeysToTouch, "hf", "assign_proxy", "public_api", "comfyui_canvas", colabOneVaultLiveExternalLLMKey)
+		vaultKeysToTouch = append(vaultKeysToTouch, "hf", "assign_proxy", "public_api", "comfyui_canvas", colabOneVaultLiveExternalLLMKey, colabOneVaultNotificationSecretsKey)
 	}
 	vaultBackups := make(map[string]vaultBackupEntry, len(vaultKeysToTouch))
 	if c.vault != nil {
@@ -521,6 +540,10 @@ func (c *ColabOneController) ApplyMigrationPayload(
 			rollbackVault()
 			return nil, fmt.Errorf("写入实时演播外部 LLM 配置失败：%w", err)
 		}
+		if err := applyVaultKey(colabOneVaultNotificationSecretsKey, prepCreds.notifications, len(prepCreds.notifications) > 0); err != nil {
+			rollbackVault()
+			return nil, fmt.Errorf("写入通知推送凭据失败：%w", err)
+		}
 	}
 
 	// If credentials cleared assign_proxy while settings module wasn't imported, disable assign_proxy_enabled cleanly.
@@ -577,25 +600,57 @@ func (c *ColabOneController) ApplyMigrationPayload(
 		}
 	}
 
-	if prepSettings != nil || needDisableProxyFlag {
+	if prepSettings != nil || prepCreds != nil {
+		needWriteSettings := false
 		c.mu.Lock()
 		prevSettings = deepCopyMap(c.settings)
 		if prepSettings != nil {
 			c.settings = deepCopyMap(prepSettings)
-		} else if needDisableProxyFlag {
-			c.settings["assign_proxy_enabled"] = false
+			needWriteSettings = true
+		} else {
+			if needDisableProxyFlag {
+				c.settings["assign_proxy_enabled"] = false
+				needWriteSettings = true
+			}
+			// When importing credentials without settings, reconcile any enabled
+			// notification channels whose required secrets were cleared or missing.
+			if curNotifPublic := asMap(c.settings["notifications"]); curNotifPublic != nil {
+				cfg := notifier.LoadConfigFromMaps(curNotifPublic, prepCreds.notifications)
+				notifChanged := false
+				if cfg.Telegram.Enabled && !cfg.TelegramConfigured() {
+					cfg.Telegram.Enabled = false
+					notifChanged = true
+				}
+				if cfg.Bark.Enabled && !cfg.BarkConfigured() {
+					cfg.Bark.Enabled = false
+					notifChanged = true
+				}
+				if cfg.Email.Enabled && !cfg.EmailConfigured() {
+					cfg.Email.Enabled = false
+					notifChanged = true
+				}
+				if notifChanged {
+					c.settings["notifications"] = cfg.PublicSettingsMap()
+					needWriteSettings = true
+				}
+			}
 		}
-		nextSettings := deepCopyMap(c.settings)
+		var nextSettings map[string]any
+		if needWriteSettings {
+			nextSettings = deepCopyMap(c.settings)
+		}
 		c.mu.Unlock()
-		if err := AtomicJSON(filepath.Join(c.directory, "settings.json"), nextSettings); err != nil {
-			c.mu.Lock()
-			c.settings = prevSettings
-			c.mu.Unlock()
-			c.persistMu.Unlock()
-			rollbackVault()
-			return nil, fmt.Errorf("写入软件设置失败：%w", err)
+		if needWriteSettings {
+			if err := AtomicJSON(filepath.Join(c.directory, "settings.json"), nextSettings); err != nil {
+				c.mu.Lock()
+				c.settings = prevSettings
+				c.mu.Unlock()
+				c.persistMu.Unlock()
+				rollbackVault()
+				return nil, fmt.Errorf("写入软件设置失败：%w", err)
+			}
+			wroteSettings = true
 		}
-		wroteSettings = true
 	}
 
 	if prepLibWF != nil {
@@ -1116,10 +1171,44 @@ func (c *ColabOneController) validateMigrationCredentials(src *migration.ColabOn
 			}
 		}
 	}
+	if len(src.Notifications) > 0 {
+		cleanNotif := make(map[string]any, 4)
+		allowedSecretKeys := []string{
+			notifier.SecretTelegramBotToken,
+			notifier.SecretTelegramProxyURL,
+			notifier.SecretBarkDeviceKey,
+			notifier.SecretEmailPassword,
+		}
+		for _, k := range allowedSecretKeys {
+			rawVal := strings.TrimSpace(asString(src.Notifications[k]))
+			if rawVal == "" {
+				continue
+			}
+			if len(rawVal) > 1024 {
+				return nil, fmt.Errorf("迁移文件中的通知凭据 %s 长度超出限制", k)
+			}
+			for _, r := range rawVal {
+				if unicode.IsControl(r) {
+					return nil, fmt.Errorf("迁移文件中的通知凭据 %s 包含非法控制字符", k)
+				}
+			}
+			if k == notifier.SecretTelegramProxyURL && c.assignProxy != nil {
+				parsed, err := c.assignProxy.ParseAssignProxy(rawVal)
+				if err != nil {
+					return nil, fmt.Errorf("迁移文件中的 Telegram 代理地址无效：%w", err)
+				}
+				rawVal = parsed.NormalizedURL
+			}
+			cleanNotif[k] = rawVal
+		}
+		if len(cleanNotif) > 0 {
+			prep.notifications = cleanNotif
+		}
+	}
 	return prep, nil
 }
 
-func (c *ColabOneController) validateMigrationSettings(src *migration.ColabOneMigrationSettingsData, hasProxyAfter bool) (map[string]any, error) {
+func (c *ColabOneController) validateMigrationSettings(src *migration.ColabOneMigrationSettingsData, hasProxyAfter bool, notifSecretsAfter map[string]any) (map[string]any, error) {
 	next := map[string]any{
 		"gpu":                                COLABONE_DEFAULT_GPU,
 		"idle_minutes":                       30,
@@ -1135,6 +1224,7 @@ func (c *ColabOneController) validateMigrationSettings(src *migration.ColabOneMi
 		"rclone_drive_policy":                1,
 		"default_gpu_policy":                 COLABONE_DEFAULT_GPU_POLICY_VERSION,
 		"default_assign_max_attempts_policy": COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS_POLICY_VERSION,
+		"notifications":                      notifier.DefaultConfig().PublicSettingsMap(),
 	}
 	if src == nil {
 		return next, nil
@@ -1162,9 +1252,9 @@ func (c *ColabOneController) validateMigrationSettings(src *migration.ColabOneMi
 		if v, ok := asExactInt(raw["download_threads"]); ok && (v == 16 || v == 32) {
 			next["download_threads"] = v
 		}
-		if v, ok := asExactInt(raw["assign_max_attempts"]); ok && v >= COLABONE_MIN_ASSIGN_MAX_ATTEMPTS && v <= COLABONE_MAX_ASSIGN_MAX_ATTEMPTS {
+		if v, ok := asExactInt(raw["assign_max_attempts"]); ok && isValidColabOneAssignMaxAttempts(v) {
 			srcPolicy, hasPolicy := asExactInt(raw["default_assign_max_attempts_policy"])
-			if (!hasPolicy || srcPolicy < COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS_POLICY_VERSION) && v == 20 {
+			if !hasPolicy || srcPolicy < COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS_POLICY_VERSION {
 				v = COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS
 			}
 			next["assign_max_attempts"] = v
@@ -1174,6 +1264,19 @@ func (c *ColabOneController) validateMigrationSettings(src *migration.ColabOneMi
 		}
 		if v, ok := raw["locale"].(string); ok && (v == "" || validColabOneLocales[v]) {
 			next["locale"] = v
+		}
+		if rawNotif := asMap(raw["notifications"]); rawNotif != nil {
+			cfg := notifier.LoadConfigFromMaps(rawNotif, notifSecretsAfter)
+			if cfg.Telegram.Enabled && !cfg.TelegramConfigured() {
+				cfg.Telegram.Enabled = false
+			}
+			if cfg.Bark.Enabled && !cfg.BarkConfigured() {
+				cfg.Bark.Enabled = false
+			}
+			if cfg.Email.Enabled && !cfg.EmailConfigured() {
+				cfg.Email.Enabled = false
+			}
+			next["notifications"] = cfg.PublicSettingsMap()
 		}
 	}
 	// If controller settings carried auto-detected locale ("") while UI prefs recorded

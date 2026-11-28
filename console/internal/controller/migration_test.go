@@ -849,3 +849,73 @@ func TestControllerMigrationAssignMaxAttemptsPolicyUpgradeAndPreservation(t *tes
 		}
 	})
 }
+
+func TestControllerMigrationCredentialsOnlyReconcilesOrphanNotificationChannels(t *testing.T) {
+	dir := t.TempDir()
+	vault := NewColabOneMemoryVault()
+	ctrl := NewColabOneController(ColabOneControllerConfig{
+		Root:           dir,
+		ConfigDir:      dir,
+		Vault:          vault,
+		ServiceBundler: defaultMockBundler(),
+	})
+	defer ctrl.Close()
+
+	// Configure and enable Telegram + Bark channels with secrets in vault.
+	if _, err := ctrl.Command(context.Background(), "notifications.save", map[string]any{
+		"notify_gpu": true,
+		"telegram": map[string]any{
+			"enabled":   true,
+			"bot_token": "123456:OLD_SECRET_TOKEN",
+			"chat_id":   "99887766",
+		},
+		"bark": map[string]any{
+			"enabled":    true,
+			"server_url": "https://api.day.app",
+			"device_key": "OLD_BARK_KEY",
+		},
+	}); err != nil {
+		t.Fatalf("initial notifications.save failed: %v", err)
+	}
+
+	// Import credentials-only bundle with empty notification secrets (no settings module).
+	credsOnlyPayload := &migration.ColabOneMigrationPayload{
+		SchemaVersion:   migration.COLABONE_MIGRATION_SCHEMA_VERSION,
+		IncludedModules: []string{migration.ModuleCredentials},
+		Credentials: &migration.ColabOneMigrationCredentialsData{
+			HFToken: "hf_new_token_1234567890",
+		},
+	}
+	if _, err := ctrl.ApplyMigrationPayload(context.Background(), credsOnlyPayload, []string{migration.ModuleCredentials}); err != nil {
+		t.Fatalf("ApplyMigrationPayload(credentials only) failed: %v", err)
+	}
+
+	// Orphan enabled flags must now be reconciled to false in memory AND on disk.
+	ns := asMap(ctrl.Snapshot()["notification_settings"])
+	if asBool(asMap(ns["telegram"])["enabled"]) {
+		t.Fatalf("expected telegram.enabled reconciled to false after clearing secrets, got %#v", ns["telegram"])
+	}
+	if asBool(asMap(ns["bark"])["enabled"]) {
+		t.Fatalf("expected bark.enabled reconciled to false after clearing secrets, got %#v", ns["bark"])
+	}
+
+	// Subsequent partial notifications.save (toggling notify_gpu) must succeed without failing validation.
+	if _, err := ctrl.Command(context.Background(), "notifications.save", map[string]any{
+		"notify_gpu": false,
+	}); err != nil {
+		t.Fatalf("subsequent partial notifications.save after credentials-only import failed: %v", err)
+	}
+
+	// Verify persisted reconciliation survives cold reload.
+	reloaded := NewColabOneController(ColabOneControllerConfig{
+		Root:           dir,
+		ConfigDir:      dir,
+		Vault:          vault,
+		ServiceBundler: defaultMockBundler(),
+	})
+	defer reloaded.Close()
+	rns := asMap(reloaded.Snapshot()["notification_settings"])
+	if asBool(asMap(rns["telegram"])["enabled"]) || asBool(asMap(rns["bark"])["enabled"]) || asBool(rns["notify_gpu"]) {
+		t.Fatalf("reloaded notification_settings mismatch: %#v", rns)
+	}
+}

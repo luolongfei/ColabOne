@@ -1145,14 +1145,14 @@ func TestAllocateTranslatesExhausted503504412And400WithShapeFallback(t *testing.
 
 func TestAllocateDefaultBackoffScheduleAndCancelInterrupt(t *testing.T) {
 	wantDelays := []time.Duration{
-		2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second,
-		32 * time.Second, 32 * time.Second, 32 * time.Second, 32 * time.Second, 32 * time.Second,
-		32 * time.Second, 32 * time.Second, 32 * time.Second, 32 * time.Second, 32 * time.Second,
-		32 * time.Second, 32 * time.Second, 32 * time.Second, 32 * time.Second, 32 * time.Second,
-		32 * time.Second, 32 * time.Second, 32 * time.Second, 32 * time.Second, 32 * time.Second,
-		32 * time.Second, 32 * time.Second, 32 * time.Second, 32 * time.Second, 32 * time.Second,
+		2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 32 * time.Second,
+		60 * time.Second, 60 * time.Second, 60 * time.Second, 60 * time.Second, 60 * time.Second,
+		60 * time.Second, 60 * time.Second, 60 * time.Second, 60 * time.Second, 60 * time.Second,
+		60 * time.Second, 60 * time.Second, 60 * time.Second, 60 * time.Second, 60 * time.Second,
+		60 * time.Second, 60 * time.Second, 60 * time.Second, 60 * time.Second, 60 * time.Second,
+		60 * time.Second, 60 * time.Second, 60 * time.Second, 60 * time.Second,
 	}
-	if len(wantDelays) != COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS-1 {
+	if len(wantDelays) != COLABONE_DEFAULT_FINITE_ASSIGN_MAX_ATTEMPTS-1 {
 		t.Fatalf("unexpected expected delay count: %d", len(wantDelays))
 	}
 	if !reflect.DeepEqual(DefaultAssignRetryDelays(), wantDelays) {
@@ -1243,14 +1243,14 @@ func TestAssignRetryDelaysScheduleAndCustomMaxAttempts(t *testing.T) {
 		8 * time.Second,
 		16 * time.Second,
 		32 * time.Second,
-		32 * time.Second,
-		32 * time.Second,
+		60 * time.Second,
+		60 * time.Second,
 	}
 	if got := AssignRetryDelays(8); !reflect.DeepEqual(got, want8) {
 		t.Fatalf("AssignRetryDelays(8) = %v, want %v", got, want8)
 	}
 
-	// Custom MaxAttempts=7: verifies exponential backoff 2 -> 4 -> 8 -> 16 -> 32 -> 32 and exact stage denominators.
+	// Custom MaxAttempts=7: verifies exponential backoff 2, 4, 8, 16, 32, 60 and exact stage denominators.
 	posts := 0
 	var waited []int
 	var stages []string
@@ -1279,7 +1279,7 @@ func TestAssignRetryDelaysScheduleAndCustomMaxAttempts(t *testing.T) {
 		t.Fatalf("expected 7 POST attempts, got %d", posts)
 	}
 	// 6 backoff sleeps + 1 final 2s reconciliation pause before final GetAssignment.
-	wantWaited := []int{2, 4, 8, 16, 32, 32, 2}
+	wantWaited := []int{2, 4, 8, 16, 32, 60, 2}
 	if !reflect.DeepEqual(waited, wantWaited) {
 		t.Fatalf("waited mismatch: got=%v want=%v", waited, wantWaited)
 	}
@@ -1320,6 +1320,80 @@ func TestAssignRetryDelaysScheduleAndCustomMaxAttempts(t *testing.T) {
 	}
 	if postsSingle != 1 || waitsSingle != 0 {
 		t.Fatalf("expected 1 POST and 0 waits for MaxAttempts=1, got posts=%d waits=%d", postsSingle, waitsSingle)
+	}
+}
+
+func TestAllocateUnlimitedRetriesUntilSuccessAndCancel(t *testing.T) {
+	// Unlimited mode retries past the legacy 30-attempt limit with 60s capped backoff until assigned.
+	posts := 0
+	var waited []int
+	var stages []string
+	var retryStates []map[string]any
+	client := &fakeColabClient{
+		postAssign: func(ctx context.Context, nbh, token, variant, accel, shape string) (*Assignment, error) {
+			posts++
+			if posts <= 35 {
+				return nil, &ColabRequestError{StatusCode: 503}
+			}
+			return &Assignment{
+				Endpoint:         "gpu-g4-unlimited-ok",
+				RuntimeProxyInfo: makeProxyInfo("gpu-g4-unlimited-ok"),
+			}, nil
+		},
+	}
+	p := NewColabOneProvider(ColabOneProviderConfig{
+		Vault:         newMemoryVault(),
+		ClientFactory: func(string) (ColabClient, error) { return client, nil },
+		SleepFn: func(ctx context.Context, d time.Duration) error {
+			waited = append(waited, int(d.Seconds()))
+			return nil
+		},
+	})
+	sess, err := p.Allocate(context.Background(), "G4", AllocateOptions{
+		UnlimitedAttempts: true,
+		OnStage:           func(st string) { stages = append(stages, st) },
+		OnRetryState:      func(info map[string]any) { retryStates = append(retryStates, cloneMap(info)) },
+	})
+	if err != nil {
+		t.Fatalf("unlimited Allocate failed: %v", err)
+	}
+	if sess.Endpoint != "gpu-g4-unlimited-ok" || posts != 36 {
+		t.Fatalf("unexpected unlimited allocate result: ep=%s posts=%d", sess.Endpoint, posts)
+	}
+	if len(waited) != 35 {
+		t.Fatalf("expected 35 backoff waits, got %d", len(waited))
+	}
+	wantPrefix := []int{2, 4, 8, 16, 32, 60, 60}
+	if !reflect.DeepEqual(waited[:len(wantPrefix)], wantPrefix) || waited[len(waited)-1] != 60 {
+		t.Fatalf("unexpected unlimited backoff schedule: prefix=%v last=%d", waited[:len(wantPrefix)], waited[len(waited)-1])
+	}
+	if len(stages) == 0 || stages[0] != "Google 算力紧张，正在排队分配 G4（第 2 次）" || stages[len(stages)-1] != "Google 算力紧张，正在排队分配 G4（第 36 次）" {
+		t.Fatalf("unexpected unlimited stage strings: first=%q last=%q", stages[0], stages[len(stages)-1])
+	}
+	sawUnlimitedWaiting := false
+	for _, st := range retryStates {
+		if boolVal(st["waiting_retry"]) && boolVal(st["unlimited_attempts"]) && intVal(st["total_attempts"]) == 0 && intVal(st["next_attempt"]) == 36 {
+			sawUnlimitedWaiting = true
+		}
+	}
+	if !sawUnlimitedWaiting {
+		t.Fatalf("expected unlimited waiting retry state with total_attempts=0, got %#v", retryStates[len(retryStates)-2:])
+	}
+
+	// Non-retryable 412 still stops immediately in unlimited mode.
+	posts412 := 0
+	client412 := &fakeColabClient{
+		postAssign: func(ctx context.Context, nbh, token, variant, accel, shape string) (*Assignment, error) {
+			posts412++
+			return nil, &ColabRequestError{StatusCode: 412}
+		},
+	}
+	p412 := NewColabOneProvider(ColabOneProviderConfig{
+		Vault:         newMemoryVault(),
+		ClientFactory: func(string) (ColabClient, error) { return client412, nil },
+	})
+	if _, err := p412.Allocate(context.Background(), "G4", AllocateOptions{UnlimitedAttempts: true}); err == nil || posts412 != 1 {
+		t.Fatalf("expected immediate 412 stop in unlimited mode, posts=%d err=%v", posts412, err)
 	}
 }
 
@@ -2783,12 +2857,95 @@ func TestStartReuseExistingAndIncompleteDeploymentError(t *testing.T) {
 		t.Fatalf("expected incomplete deployment error, got %v", err)
 	}
 
-	// Session + remote exists -> directly reuses without allocating
+	// Session + remote exists -> directly reuses without allocating and marks reused=true
 	_ = p.SaveRemote(map[string]any{"endpoint": "ep-ready", "gpu": "T4", "deadline": 0}, true)
 	rem, err := p.Start(context.Background(), "T4", nil, StartOptions{})
-	if err != nil || rem["endpoint"] != "ep-ready" {
-		t.Fatalf("expected direct reuse of ep-ready, got rem=%#v err=%v", rem, err)
+	if err != nil || rem["endpoint"] != "ep-ready" || !boolVal(rem["reused"]) {
+		t.Fatalf("expected direct reuse of ep-ready with reused=true, got rem=%#v err=%v", rem, err)
 	}
+}
+
+func TestAllocateHighRAMFallbackCumulativeAttemptsAndPostSleepRetryCount(t *testing.T) {
+	t.Run("high_ram_fallback_preserves_cumulative_attempt_offset", func(t *testing.T) {
+		var attemptsSeen []int
+		callNum := 0
+		client := &fakeColabClient{
+			postAssign: func(ctx context.Context, nbh, token, variant, accel, shape string) (*Assignment, error) {
+				callNum++
+				switch callNum {
+				case 1:
+					if shape != "HIGH_RAM" {
+						t.Errorf("call 1 expected HIGH_RAM, got %q", shape)
+					}
+					return nil, &ColabRequestError{StatusCode: 503, Reason: "busy"}
+				case 2:
+					if shape != "HIGH_RAM" {
+						t.Errorf("call 2 expected HIGH_RAM, got %q", shape)
+					}
+					return nil, &ColabRequestError{StatusCode: 400, Reason: "unsupported shape"}
+				case 3:
+					if shape != "" {
+						t.Errorf("call 3 expected default shape, got %q", shape)
+					}
+					return nil, &ColabRequestError{StatusCode: 503, Reason: "busy"}
+				default:
+					return &Assignment{
+						Endpoint: "ep-fallback-ok",
+						RuntimeProxyInfo: &RuntimeProxyInfo{
+							URL:                   "https://ep-fallback-ok.invalid",
+							Token:                 "tok",
+							TokenExpiresInSeconds: 3600,
+						},
+					}, nil
+				}
+			},
+		}
+		p := NewColabOneProvider(ColabOneProviderConfig{
+			Vault:             newMemoryVault(),
+			ClientFactory:     func(string) (ColabClient, error) { return client, nil },
+			AssignRetryDelays: []time.Duration{0, 0, 0},
+		})
+		sess, err := p.Allocate(context.Background(), "T4", AllocateOptions{
+			OnRetryState: func(info map[string]any) {
+				if att, ok := info["attempt"].(int); ok {
+					attemptsSeen = append(attemptsSeen, att)
+				}
+			},
+		})
+		if err != nil || sess == nil || sess.Endpoint != "ep-fallback-ok" {
+			t.Fatalf("expected fallback allocation success, got sess=%+v err=%v", sess, err)
+		}
+		want := []int{1, 2, 3, 4}
+		if !reflect.DeepEqual(attemptsSeen, want) {
+			t.Fatalf("expected cumulative attempts %v across HIGH_RAM fallback, got %v", want, attemptsSeen)
+		}
+	})
+
+	t.Run("retry_count_only_increments_after_waitForRetry_completes", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		client := &fakeColabClient{
+			postAssign: func(ctx context.Context, nbh, token, variant, accel, shape string) (*Assignment, error) {
+				return nil, &ColabRequestError{StatusCode: 503, Reason: "busy"}
+			},
+		}
+		p := NewColabOneProvider(ColabOneProviderConfig{
+			Vault:             newMemoryVault(),
+			ClientFactory:     func(string) (ColabClient, error) { return client, nil },
+			AssignRetryDelays: []time.Duration{5 * time.Second, 5 * time.Second},
+			SleepFn: func(sleepCtx context.Context, d time.Duration) error {
+				cancel()
+				return context.Canceled
+			},
+		})
+		retriesUsed := 0
+		_, err := p.assignRuntime(ctx, client, "G4", "", AllocateOptions{}, &retriesUsed, 0, false)
+		if !errors.Is(err, ErrAllocationCancelled) && !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected cancellation error, got %v", err)
+		}
+		if retriesUsed != 0 {
+			t.Fatalf("expected retriesUsed=0 when cancelled during waitForRetry sleep, got %d", retriesUsed)
+		}
+	})
 }
 
 func TestStartCancelMidBootAbortsKernelAndRollsBack(t *testing.T) {

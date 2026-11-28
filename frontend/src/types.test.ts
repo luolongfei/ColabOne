@@ -1,11 +1,17 @@
 import { describe, it, expect } from "vitest";
 import {
+  COLABONE_ASSIGN_MAX_ATTEMPTS_UNLIMITED,
   COLABONE_AUTO_API_MODEL_ID,
+  COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS,
+  COLABONE_DEFAULT_FINITE_ASSIGN_MAX_ATTEMPTS,
   canColabOneLoadModel,
   colabOneModelApiId,
   colabOneModelQuantTag,
   createColabOneSnapshot,
   evaluateColabOneRuntimeUpgrade,
+  isColabOneAssignAttemptsUnlimited,
+  normalizeColabOneAssignAttempts,
+  normalizeColabOneFiniteAssignAttempts,
   type ComfyStatus,
   type ModelSpec,
   type WorkflowOutput,
@@ -30,9 +36,32 @@ describe("createColabOneSnapshot shape", () => {
     const snap = createColabOneSnapshot();
     expect(snap.workflows).toEqual([]);
     expect(snap.comfy_outputs).toEqual([]);
+    expect(snap.settings.assign_max_attempts).toBe(
+      COLABONE_ASSIGN_MAX_ATTEMPTS_UNLIMITED,
+    );
+    expect(COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS).toBe(0);
+    expect(COLABONE_DEFAULT_FINITE_ASSIGN_MAX_ATTEMPTS).toBe(30);
+    expect(snap.notification_settings?.notify_gpu).toBe(true);
+    expect(snap.notification_settings?.system.enabled).toBe(true);
     expect("conversations" in snap).toBe(false);
     expect("creations" in snap).toBe(false);
     expect("stream" in snap).toBe(false);
+  });
+
+  it("normalizes unlimited (0) and finite (1-100) GPU allocation attempt counts", () => {
+    expect(isColabOneAssignAttemptsUnlimited(0)).toBe(true);
+    expect(isColabOneAssignAttemptsUnlimited(undefined)).toBe(true);
+    expect(isColabOneAssignAttemptsUnlimited(30)).toBe(false);
+
+    expect(normalizeColabOneAssignAttempts(0)).toBe(0);
+    expect(normalizeColabOneAssignAttempts(25)).toBe(25);
+    expect(normalizeColabOneAssignAttempts(200)).toBe(100);
+    expect(normalizeColabOneAssignAttempts(-5)).toBe(1);
+    expect(normalizeColabOneAssignAttempts("")).toBeNull();
+
+    expect(normalizeColabOneFiniteAssignAttempts(0)).toBe(1);
+    expect(normalizeColabOneFiniteAssignAttempts(30.4)).toBe(30);
+    expect(normalizeColabOneFiniteAssignAttempts(150)).toBe(100);
   });
 
   it("supports ComfyUI runtime status, workflows, and outputs", () => {

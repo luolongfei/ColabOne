@@ -539,6 +539,18 @@ export const jaJPMessages: ColabOneMessages = {
     "割り当てリクエストに失敗 · {seconds} 秒後に {gpu} を自動再試行（{next}/{total} 回目）",
   "device.waitingRetryNetworkSoon":
     "割り当てリクエストに失敗 · まもなく {gpu} を再試行（{next}/{total} 回目）",
+  "device.waitingRetryCapacityUnlimited":
+    "Google の計算リソースが逼迫中 · {seconds} 秒後に {gpu} の割り当てを自動再試行（{next} 回目）",
+  "device.waitingRetryCapacityUnlimitedSoon":
+    "Google の計算リソースが逼迫中 · まもなく {gpu} の割り当てを再試行（{next} 回目）",
+  "device.waitingRetryServerBusyUnlimited":
+    "Google の割り当てサービスが混雑中 · {seconds} 秒後に {gpu} の割り当てを自動再試行（{next} 回目）",
+  "device.waitingRetryServerBusyUnlimitedSoon":
+    "Google の割り当てサービスが混雑中 · まもなく {gpu} の割り当てを再試行（{next} 回目）",
+  "device.waitingRetryNetworkUnlimited":
+    "割り当てリクエストに失敗 · {seconds} 秒後に {gpu} を自動再試行（{next} 回目）",
+  "device.waitingRetryNetworkUnlimitedSoon":
+    "割り当てリクエストに失敗 · まもなく {gpu} を再試行（{next} 回目）",
   "device.toastAllocationCancelled": "GPU の割り当てをキャンセルしました",
   "device.idlePaused": "タスク実行中 · 自動解放一時停止中",
   "device.idleCountdownRemaining": "残り",
@@ -644,6 +656,8 @@ export const jaJPMessages: ColabOneMessages = {
   "device.errInvalidCuLimit": "CU 消費上限は 0.1〜100000 の範囲で指定してください",
   "device.toastThreadsSet": "ダウンロード並列数を {threads} スレッドに設定しました",
   "device.toastAssignMaxAttemptsSet": "GPU 割り当ての最大試行回数を {count} 回に設定しました",
+  "device.toastAssignMaxAttemptsUnlimited":
+    "GPU 割り当てリトライポリシーを「無制限（成功するまで）」に設定しました",
   "device.toastDefaultGpuSet": "デフォルト GPU を {gpu} に設定しました",
   "device.toastSettingsSaved": "設定を保存しました",
 
@@ -1861,11 +1875,16 @@ export const jaJPMessages: ColabOneMessages = {
   "settings.threadsOption": "{count} スレッド",
   "settings.autoDriveLabel": "ドライブ自動マウント",
   "settings.autoDriveDesc": "GPU 起動時に Google ドライブ (ColabOne_Drive / ColabOne_Drive_Mount) を自動マウント・同期",
-  "settings.assignMaxAttemptsLabel": "GPU 割り当て最大試行回数",
+  "settings.assignMaxAttemptsLabel": "GPU 割り当てリトライポリシー",
   "settings.assignMaxAttemptsAria": "GPU 割り当ての最大試行回数",
+  "settings.assignRetryModeAria": "GPU 割り当てリトライモード",
+  "settings.assignRetryModeUnlimited": "無制限（成功するまで）",
+  "settings.assignRetryModeLimited": "最大回数を制限",
   "settings.assignMaxAttemptsUnit": "回",
+  "settings.assignMaxAttemptsUnlimitedDesc":
+    "GPU が混雑している場合、確保できるまで自動で待機・リトライを継続します。リトライ間隔は指数バックオフ（2 / 4 / 8 / 16 / 32 / 60 秒、最大 60 秒）で増加し、再試行不可のエラーまたは手動キャンセル時に停止します。",
   "settings.assignMaxAttemptsDesc":
-    "GPU が混雑している際の自動リトライを含む合計試行回数の上限（1〜100 回、既定 30 回）。リトライ間隔は指数バックオフ（2s、4s、8s、16s、32s）で増加し、以降は 32 秒固定になります。1 に設定すると自動リトライを行いません。",
+    "GPU が混雑している際の自動リトライを含む合計試行回数の上限（1〜100 回）。指数バックオフ（2 / 4 / 8 / 16 / 32 / 60 秒、最大 60 秒）で増加し、再試行不可のエラーや手動キャンセル時は即停止します。1 に設定すると自動リトライを行いません。",
   "settings.idleProtectionTitle": "アイドル自動解放保護",
   "settings.idleProtectionDesc":
     "{policy} 以上操作・タスクがないとリモートリソースを自動解放します。操作するとタイマーはリセットされ、モデル取得・読込・API 推論・ComfyUI 実行中は自動一時停止します。",
@@ -2128,7 +2147,7 @@ export const jaJPMessages: ColabOneMessages = {
     "自動更新対応 OAuth 認証情報、プロフィール、ヘッドレス Google ドライブ割り当てプロジェクトを含みます。",
   "migration.moduleCredentialsTitle": "外部キーと公開トンネル設定",
   "migration.moduleCredentialsDesc":
-    "Hugging Face Token、GPU 割り当てプロキシ、外部 API・ComfyUI キャンバスの固定ドメインと Tunnel Token を含みます。",
+    "Hugging Face Token、GPU 割り当てプロキシ、通知チャネル認証情報、外部 API・ComfyUI キャンバスの固定ドメインと Tunnel Token を含みます。",
   "migration.moduleSettingsTitle": "アプリ・外観のすべての設定",
   "migration.moduleSettingsDesc":
     "既定 GPU、アイドル解放、ダウンロード並列数、自動ドライブ、テーマ、言語、プライバシー保護、終了動作、更新設定を含みます。",
@@ -2146,6 +2165,7 @@ export const jaJPMessages: ColabOneMessages = {
   "migration.summaryNotSignedIn": "未ログイン",
   "migration.summaryDriveReady": "ドライブ自動連携可",
   "migration.summaryConfiguredCount": "{count} 件設定済み",
+  "migration.summaryNotifications": "通知チャネル",
   "migration.summaryEmpty": "データなし",
   "migration.summaryIdleMinutes": "アイドル {minutes} 分",
   "migration.summaryThreads": "{count} スレッド",
@@ -2774,6 +2794,157 @@ export const jaJPMessages: ColabOneMessages = {
   "outputShare.guestEmptyDesc":
     "元の作品が共有者によって削除されたか、リモート計算環境がオフラインでクラウド未同期の可能性があります。",
   "outputShare.guestFooter": "ColabOne 安全な閲覧専用共有機能により提供",
+
+  // Notifications
+  "notifications.sectionTitle": "通知配信",
+  "notifications.prefsTitle": "通知イベントと配信タイミング",
+  "notifications.prefsDesc":
+    "通知するイベントを選択し、システム通知およびリモートチャネルの配信タイミングを設定します。",
+  "notifications.activeChannelsTag": "{count} 件有効",
+  "notifications.noActiveChannelsTag": "すべてオフ",
+  "notifications.eventGpuTitle": "GPU インスタンス状況",
+  "notifications.eventGpuDesc": "割り当て成功・自動解放",
+  "notifications.eventTaskTitle": "作品・タスク完了",
+  "notifications.eventTaskDesc": "生成物の完成・モデル取得および読込完了",
+  "notifications.eventAlertTitle": "異常・エラーと手動対応",
+  "notifications.eventAlertDesc": "割り当てやタスクの失敗・切断・認証失効",
+  "notifications.systemUnfocusedTitle": "ウィンドウ非フォーカス時のみシステム通知を表示",
+  "notifications.systemUnfocusedDesc":
+    "ColabOne を操作中は静かに保ち、最小化中やバックグラウンド時のみネイティブ通知を表示します。",
+  "notifications.remoteUnfocusedTitle": "バックグラウンド時のみリモート通知を送信",
+  "notifications.remoteUnfocusedDesc":
+    "オフの場合、ウィンドウの状態に関わらず Telegram・Bark・メールへ即時配信します。",
+  "notifications.statusEnabled": "有効",
+  "notifications.statusDisabled": "オフ",
+  "notifications.statusConfigured": "設定済み",
+  "notifications.statusUnsupported": "非対応",
+  "notifications.configureBtn": "設定",
+  "notifications.editBtn": "編集",
+  "notifications.saveBtn": "設定を保存",
+  "notifications.testBtn": "テスト送信",
+  "notifications.clearBtn": "設定を削除",
+  "notifications.testSaveFirstHint": "先に設定を保存してからテストを実行してください",
+  "notifications.testNeedConfigHint": "先に設定を入力・保存してからテストを実行してください",
+  "notifications.toastSaved": "通知設定を保存しました",
+  "notifications.toastChannelSaved": "{channel} の設定を保存しました",
+  "notifications.toastChannelCleared": "{channel} の設定を削除しました",
+  "notifications.toastChannelEnabled": "{channel} を有効にしました",
+  "notifications.toastChannelDisabled": "{channel} を無効にしました",
+  "notifications.toastTestSent": "{channel} にテスト通知を送信しました",
+  "notifications.toastConfigureFirst": "先に {channel} の設定を入力して保存してください",
+  "notifications.systemTitle": "システム通知",
+  "notifications.systemDesc":
+    "Windows / macOS の通知センターにネイティブ通知を表示します。通知をクリックすると該当ページへ移動します。",
+  "notifications.systemSwitchAria": "システム通知を有効化",
+  "notifications.telegramTitle": "Telegram Bot",
+  "notifications.telegramDesc":
+    "Telegram Bot で状態通知や生成作品のプレビュー画像を即時送信します。リバースプロキシ API とプロキシに対応。",
+  "notifications.telegramSwitchAria": "Telegram Bot 通知を有効化",
+  "notifications.telegramBotTokenLabel": "Bot Token",
+  "notifications.telegramBotTokenPlaceholder": "123456789:AAH...",
+  "notifications.telegramBotTokenSavedPlaceholder":
+    "保存済み（新しい値を入力すると上書き更新）",
+  "notifications.telegramBotTokenSavedWithMask": "保存済み：{mask}（新しい値で更新）",
+  "notifications.telegramChatIdLabel": "Chat ID",
+  "notifications.telegramChatIdPlaceholder": "例: 123456789 または -1001234567890",
+  "notifications.telegramChatIdHint": "ユーザー ID・グループ ID・チャンネル @username に対応",
+  "notifications.telegramApiBaseLabel": "カスタム API URL（任意・リバースプロキシ）",
+  "notifications.telegramApiBasePlaceholder": "https://api.telegram.org",
+  "notifications.telegramProxyLabel": "プロキシ URL（任意・HTTP / SOCKS5）",
+  "notifications.telegramProxyPlaceholder":
+    "http://127.0.0.1:7890 または socks5://127.0.0.1:1080",
+  "notifications.telegramProxySavedPlaceholder":
+    "プロキシ保存済み（新しいアドレスで更新）",
+  "notifications.telegramProxySavedWithMask": "保存済み：{mask}（新しいアドレスで更新）",
+  "notifications.telegramClearProxyBtn": "プロキシを削除",
+  "notifications.telegramUndoClearProxyBtn": "削除を取り消す",
+  "notifications.telegramProxyWillClearHint":
+    "「設定を保存」をクリックすると保存済みのプロキシを削除します",
+  "notifications.telegramPreviewTitle": "作品生成時にプレビュー画像を添付",
+  "notifications.telegramPreviewDesc":
+    "ComfyUI で画像が生成された際、サムネイルを自動的に添付して送信します。",
+  "notifications.barkTitle": "Bark プッシュ",
+  "notifications.barkDesc":
+    "iPhone / iPad / Mac の Bark アプリへ高速プッシュ通知します。セルフホストサーバー対応。",
+  "notifications.barkSwitchAria": "Bark プッシュ通知を有効化",
+  "notifications.barkServerLabel": "プッシュ URL / サーバー",
+  "notifications.barkServerPlaceholder":
+    "https://api.day.app または完全なプッシュ URL を貼り付け",
+  "notifications.barkServerHint":
+    "Key を含む完全な URL を貼り付けると、サーバー URL と Device Key を自動分割します",
+  "notifications.barkSplitToast": "Bark サーバー URL と Device Key を自動分割しました",
+  "notifications.barkKeyLabel": "Device Key",
+  "notifications.barkKeyPlaceholder": "Bark アプリのプッシュキーを入力",
+  "notifications.barkKeySavedPlaceholder": "保存済み（新しい値を入力すると更新）",
+  "notifications.barkKeySavedWithMask": "保存済み：{mask}（新しい値で更新）",
+  "notifications.barkGroupLabel": "グループ",
+  "notifications.barkGroupPlaceholder": "ColabOne",
+  "notifications.barkSoundLabel": "通知音",
+  "notifications.barkSoundDefault": "システム既定",
+  "notifications.barkLevelLabel": "割り込みレベル",
+  "notifications.barkLevelAuto": "自動（イベント種別に応じる）",
+  "notifications.barkLevelActive": "標準 (active)",
+  "notifications.barkLevelTimeSensitive": "即時通知 (timeSensitive)",
+  "notifications.barkLevelPassive": "サイレント (passive)",
+  "notifications.emailTitle": "メール通知 (SMTP)",
+  "notifications.emailDesc":
+    "SMTP 経由で整った HTML 通知メールを送信します。主要メールサービスのプリセットとプレビュー画像埋め込みに対応。",
+  "notifications.emailSwitchAria": "メール通知を有効化",
+  "notifications.emailPresetsLabel": "主要メールプリセット",
+  "notifications.emailPresetQQ": "QQ メール",
+  "notifications.emailPreset163": "NetEase 163",
+  "notifications.emailPresetGmail": "Gmail",
+  "notifications.emailPresetOutlook": "Outlook",
+  "notifications.emailPresetICloud": "iCloud",
+  "notifications.emailHostLabel": "SMTP サーバー",
+  "notifications.emailHostPlaceholder": "smtp.qq.com",
+  "notifications.emailPortLabel": "ポート",
+  "notifications.emailSecurityLabel": "暗号化方式",
+  "notifications.emailSecurityTls": "SSL / TLS",
+  "notifications.emailSecurityStarttls": "STARTTLS",
+  "notifications.emailSecurityNone": "暗号化なし",
+  "notifications.emailUsernameLabel": "送信アカウント / メールアドレス",
+  "notifications.emailUsernamePlaceholder": "you@example.com",
+  "notifications.emailPasswordLabel": "パスワード / アプリパスワード",
+  "notifications.emailPasswordPlaceholder": "SMTP 認証コードまたはアプリパスワードを入力",
+  "notifications.emailPasswordSavedPlaceholder":
+    "保存済み（新しい値を入力すると上書き更新）",
+  "notifications.emailFromAddressLabel": "送信元アドレス（任意）",
+  "notifications.emailFromAddressPlaceholder": "空欄時は送信アカウントを使用",
+  "notifications.emailFromNameLabel": "送信者名",
+  "notifications.emailFromNamePlaceholder": "ColabOne",
+  "notifications.emailToLabel": "宛先メールアドレス",
+  "notifications.emailToPlaceholder": "a@example.com, b@example.com",
+  "notifications.emailToHint": "複数の宛先はカンマまたはセミコロンで区切って指定できます",
+  "notifications.emailEmbedPreviewTitle": "メールに作品プレビュー画像を埋め込む",
+  "notifications.emailEmbedPreviewDesc":
+    "洗練された HTML メールで送信し、作品生成通知にはプレビュー画像をインライン表示します。",
+  "notifications.unsavedDraftTag": "未保存",
+  "notifications.clearConfirmTitle": "{channel} の設定を削除しますか？",
+  "notifications.clearConfirmDesc":
+    "保存済みのトークン・キー・パスワードは完全に削除され、このチャネルは自動的にオフになります。",
+  "notifications.emailClearPasswordBtn": "パスワードを削除",
+  "notifications.emailUndoClearPasswordBtn": "削除を取り消す",
+  "notifications.emailPasswordWillClearHint":
+    "「設定を保存」をクリックすると保存済みのパスワードを削除します",
+  "notifications.systemWebHostNote":
+    "Web コンソールモード: システム通知はホスト側のデスクトップに表示され、リモートブラウザには表示されません。",
+  "notifications.webDesktopOnlyEditNotice":
+    "ローカルネットワーク保護のため、URL・プロキシ・認証情報の編集はホストのデスクトップアプリでのみ可能です。Web からは有効化切替・テスト送信・設定削除を利用できます。",
+  "notifications.valTelegramNeedToken": "Bot Token を入力してください",
+  "notifications.valTelegramNeedChatId": "Chat ID を入力してください",
+  "notifications.valBarkNeedServer": "有効な Bark サーバー URL を入力してください",
+  "notifications.valBarkNeedKey":
+    "Device Key を入力するか、Key を含む完全なプッシュ URL を貼り付けてください",
+  "notifications.valEmailNeedHost": "SMTP サーバーを入力してください",
+  "notifications.valEmailInvalidPort": "SMTP ポートは 1〜65535 の範囲で入力してください",
+  "notifications.valEmailNeedFromForNonEmailUser":
+    "送信アカウントがメールアドレス形式ではないため、有効な「送信元アドレス」を入力してください",
+  "notifications.valEmailInvalidFrom": "有効な送信元メールアドレスを入力してください",
+  "notifications.valEmailNeedRecipients":
+    "宛先メールアドレスを少なくとも 1 件入力してください",
+  "notifications.valEmailInvalidRecipients":
+    "宛先メールアドレスの形式が正しくありません。カンマまたはセミコロンで区切って確認してください",
 
   // Location
   "location.tooltipWithZone": "インスタンス所在地: {full} ({zone})",

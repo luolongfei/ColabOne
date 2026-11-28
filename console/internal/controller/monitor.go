@@ -779,6 +779,7 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 	if c.provider == nil || c.isShuttingDown(ctx) {
 		return
 	}
+	c.refreshDefaultNotificationLocale()
 	now := nowUnixFloat()
 
 	c.mu.Lock()
@@ -806,6 +807,9 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 					c.Update(map[string]any{
 						"error": errMsg,
 					})
+					if isAuthLikeErrorMessage(errMsg) || isAuthLikeErrorMessage(err.Error()) {
+						c.notifyAuthInterventionRequired("google_account", errMsg)
+					}
 				}
 			}
 		} else {
@@ -846,12 +850,32 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 		sessions = c.vaultSessions()
 		sessionsFresh = true
 		if !c.opBusy.Load() && c.opGen.Load() == sessionsOpGen {
+			type droppedInstanceInfo struct {
+				ep            string
+				gpu           string
+				wasReady      bool
+				wasWorkflowAR bool
+			}
+			var droppedInstances []droppedInstanceInfo
 			var pendingLogs []pendingActivityLog
 			c.mu.Lock()
 			if !c.opBusy.Load() && c.opGen.Load() == sessionsOpGen {
-				for ep := range c.instanceStates {
+				for ep, st := range c.instanceStates {
 					if _, exists := sessions[ep]; !exists {
+						if st != nil && st.Runtime != nil {
+							wasReady := asString(st.Runtime["state"]) == "ready"
+							wasWorkflowAR := isRuntimeWorkflowAutoReleasing(st.Runtime)
+							if wasReady || wasWorkflowAR {
+								droppedInstances = append(droppedInstances, droppedInstanceInfo{
+									ep:            ep,
+									gpu:           firstNonEmpty(asString(asMap(st.Runtime["gpu"])["name"]), asString(c.settings["gpu"])),
+									wasReady:      wasReady,
+									wasWorkflowAR: wasWorkflowAR,
+								})
+							}
+						}
 						delete(c.instanceStates, ep)
+						c.pruneNotifiedTasksForEndpointLocked(ep, nil)
 					}
 				}
 				for ep := range c.upgradeAttempted {
@@ -863,6 +887,9 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 					rtState := asString(asMap(c.data["runtime"])["state"])
 					if rtState == "ready" || rtState == "disconnected" || rtState == "releasing" {
 						c.remoteWorkflowVersions = make(map[string]float64)
+						c.taskActivity = make(map[string]taskActivitySig)
+						c.taskLogCursor = make(map[string]int64)
+						clear(c.notifiedTasks)
 						pendingLogs = c.updateLocked(map[string]any{
 							"runtime":              map[string]any{"state": "stopped"},
 							"models":               c.Presets(),
@@ -878,6 +905,15 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 			}
 			c.mu.Unlock()
 			c.flushActivityLogs(pendingLogs)
+			sort.Slice(droppedInstances, func(i, j int) bool { return droppedInstances[i].ep < droppedInstances[j].ep })
+			for _, d := range droppedInstances {
+				if d.wasWorkflowAR {
+					c.log("远端实例已完成作品同步至 Google 云盘并自动释放", "云盘", "info")
+					c.notifyGPUAutoReleasedForEndpoint(d.ep, d.gpu, "workflow_sync", "", nil)
+				} else if d.wasReady {
+					c.notifyGPUAutoReleasedForEndpoint(d.ep, d.gpu, "idle", "", nil)
+				}
+			}
 		}
 	}
 
@@ -928,19 +964,21 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 					if !c.opBusy.Load() && c.opGen.Load() == activeOpGen {
 						var pendingLogs []pendingActivityLog
 						wasWorkflowAutoReleasing := false
+						wasReadyBeforeDrop := false
+						droppedGPU := ""
 						c.mu.Lock()
 						if !c.opBusy.Load() && c.opGen.Load() == activeOpGen {
 							if prevRT := asMap(c.data["runtime"]); prevRT != nil {
-								if prevComfy := asMap(prevRT["comfyui"]); prevComfy != nil {
-									if prevAR := asMap(prevComfy["auto_release"]); prevAR != nil {
-										st := asString(prevAR["state"])
-										wasWorkflowAutoReleasing = st == "releasing" || st == "released"
-									}
-								}
+								wasReadyBeforeDrop = asString(prevRT["state"]) == "ready"
+								wasWorkflowAutoReleasing = isRuntimeWorkflowAutoReleasing(prevRT)
+								droppedGPU = firstNonEmpty(asString(asMap(prevRT["gpu"])["name"]), asString(c.settings["gpu"]))
 							}
 							c.lastHeartbeat = 0
 							clear(c.instanceStates)
 							clear(c.upgradeAttempted)
+							clear(c.notifiedTasks)
+							c.taskActivity = make(map[string]taskActivitySig)
+							c.taskLogCursor = make(map[string]int64)
 							c.remoteWorkflowVersions = make(map[string]float64)
 							pendingLogs = c.updateLocked(map[string]any{
 								"runtime":       map[string]any{"state": "stopped"},
@@ -954,6 +992,9 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 						c.flushActivityLogs(pendingLogs)
 						if wasWorkflowAutoReleasing {
 							c.log("远端实例已完成作品同步至 Google 云盘并自动释放", "云盘", "info")
+							c.notifyGPUAutoReleasedForEndpoint(activeEP, droppedGPU, "workflow_sync", "", nil)
+						} else if wasReadyBeforeDrop {
+							c.notifyGPUAutoReleasedForEndpoint(activeEP, droppedGPU, "idle", "", nil)
 						}
 						c.triggerBackgroundDriveOutputsSync()
 					}
@@ -962,13 +1003,30 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 					nextActive := c.activeEndpointFrom(remainingSessions)
 					if nextActive != activeEP {
 						if !c.opBusy.Load() && c.opGen.Load() == activeOpGen {
+							wasWorkflowAutoReleasing := false
+							wasReadyBeforeDrop := false
+							droppedGPU := ""
+							dropped := false
 							c.mu.Lock()
 							if !c.opBusy.Load() && c.opGen.Load() == activeOpGen {
 								c.lastHeartbeat = 0
 								if activeEP != "" {
 									if _, stillOwned := remainingSessions[activeEP]; !stillOwned {
+										dropped = true
+										prevRT := asMap(c.data["runtime"])
+										if prevRT == nil || (asString(prevRT["id"]) != "" && asString(prevRT["id"]) != activeEP) {
+											if st, ok := c.instanceStates[activeEP]; ok && st != nil {
+												prevRT = st.Runtime
+											}
+										}
+										if prevRT != nil {
+											wasReadyBeforeDrop = asString(prevRT["state"]) == "ready"
+											wasWorkflowAutoReleasing = isRuntimeWorkflowAutoReleasing(prevRT)
+											droppedGPU = firstNonEmpty(asString(asMap(prevRT["gpu"])["name"]), asString(c.settings["gpu"]))
+										}
 										delete(c.instanceStates, activeEP)
 										delete(c.upgradeAttempted, activeEP)
+										c.pruneNotifiedTasksForEndpointLocked(activeEP, nil)
 										if nextActive != "" {
 											c.activateCachedWithSessionsLocked(nextActive, remainingSessions)
 										}
@@ -976,6 +1034,16 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 								}
 							}
 							c.mu.Unlock()
+							if dropped {
+								if wasWorkflowAutoReleasing {
+									c.log("远端实例已完成作品同步至 Google 云盘并自动释放", "云盘", "info")
+									c.notifyGPUAutoReleasedForEndpoint(activeEP, droppedGPU, "workflow_sync", "", nil)
+									c.triggerBackgroundDriveOutputsSync()
+								} else if wasReadyBeforeDrop {
+									c.notifyGPUAutoReleasedForEndpoint(activeEP, droppedGPU, "idle", "", nil)
+									c.triggerBackgroundDriveOutputsSync()
+								}
+							}
 						}
 						aborted = true
 					} else {
@@ -1131,6 +1199,7 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 				continue
 			}
 			if _, owned := c.vaultSessions()[ep]; !owned {
+				c.handleSecondarySessionDropped(ep, activeOpGen, false)
 				continue
 			}
 			c.mu.Lock()
@@ -1151,18 +1220,9 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 						return
 					}
 					if _, owned := c.vaultSessions()[ep]; owned {
-						c.mu.Lock()
-						if c.opBusy.Load() || c.opGen.Load() != activeOpGen {
-							c.mu.Unlock()
-							return
-						}
-						if st, ok := c.instanceStates[ep]; ok {
-							st.Runtime = map[string]any{
-								"state": "disconnected",
-								"id":    ep,
-							}
-						}
-						c.mu.Unlock()
+						c.markSecondaryDisconnected(ep, activeOpGen)
+					} else {
+						c.handleSecondarySessionDropped(ep, activeOpGen, true)
 					}
 					continue
 				}
@@ -1170,14 +1230,7 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 					return
 				}
 				if _, owned := c.vaultSessions()[ep]; !owned {
-					c.mu.Lock()
-					if c.opBusy.Load() || c.opGen.Load() != activeOpGen {
-						c.mu.Unlock()
-						return
-					}
-					delete(c.instanceStates, ep)
-					delete(c.upgradeAttempted, ep)
-					c.mu.Unlock()
+					c.handleSecondarySessionDropped(ep, activeOpGen, true)
 					continue
 				}
 				c.mu.Lock()
@@ -1198,18 +1251,9 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 					return
 				}
 				if _, owned := c.vaultSessions()[ep]; owned {
-					c.mu.Lock()
-					if c.opBusy.Load() || c.opGen.Load() != activeOpGen {
-						c.mu.Unlock()
-						return
-					}
-					if st, ok := c.instanceStates[ep]; ok {
-						st.Runtime = map[string]any{
-							"state": "disconnected",
-							"id":    ep,
-						}
-					}
-					c.mu.Unlock()
+					c.markSecondaryDisconnected(ep, activeOpGen)
+				} else {
+					c.handleSecondarySessionDropped(ep, activeOpGen, true)
 				}
 				continue
 			}
@@ -1226,18 +1270,9 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 						return
 					}
 					if _, owned := c.vaultSessions()[ep]; owned {
-						c.mu.Lock()
-						if c.opBusy.Load() || c.opGen.Load() != activeOpGen {
-							c.mu.Unlock()
-							return
-						}
-						if st, ok := c.instanceStates[ep]; ok {
-							st.Runtime = map[string]any{
-								"state": "disconnected",
-								"id":    ep,
-							}
-						}
-						c.mu.Unlock()
+						c.markSecondaryDisconnected(ep, activeOpGen)
+					} else {
+						c.handleSecondarySessionDropped(ep, activeOpGen, true)
 					}
 					continue
 				}
@@ -1259,6 +1294,69 @@ func (c *ColabOneController) MonitorOnce(ctx context.Context) {
 					}
 				}
 			}
+		}
+	}
+}
+
+func (c *ColabOneController) markSecondaryDisconnected(ep string, expectedOpGen uint64) {
+	loc := c.effectiveNotificationLocale()
+	var pending *pendingControllerNotification
+	c.mu.Lock()
+	if c.opBusy.Load() || c.opGen.Load() != expectedOpGen {
+		c.mu.Unlock()
+		return
+	}
+	if st, ok := c.instanceStates[ep]; ok && st != nil {
+		prevRT := st.Runtime
+		prevState := asString(prevRT["state"])
+		gpuName := firstNonEmpty(
+			asString(asMap(prevRT["gpu"])["name"]),
+			asString(c.settings["gpu"]),
+		)
+		st.Runtime = map[string]any{
+			"state": "disconnected",
+			"id":    ep,
+		}
+		if prevState == "ready" {
+			pn := c.buildGPUDisconnectedNotification(ep, gpuName, loc)
+			pending = &pn
+		}
+	}
+	c.mu.Unlock()
+	if pending != nil {
+		c.emitPendingNotifications([]pendingControllerNotification{*pending})
+	}
+}
+
+func (c *ColabOneController) handleSecondarySessionDropped(ep string, expectedOpGen uint64, triggerDriveSync bool) {
+	wasReady := false
+	wasWorkflowAR := false
+	droppedGPU := ""
+	c.mu.Lock()
+	if c.opBusy.Load() || c.opGen.Load() != expectedOpGen {
+		c.mu.Unlock()
+		return
+	}
+	if st, ok := c.instanceStates[ep]; ok && st != nil && st.Runtime != nil {
+		wasReady = asString(st.Runtime["state"]) == "ready"
+		wasWorkflowAR = isRuntimeWorkflowAutoReleasing(st.Runtime)
+		droppedGPU = firstNonEmpty(asString(asMap(st.Runtime["gpu"])["name"]), asString(c.settings["gpu"]))
+	}
+	delete(c.instanceStates, ep)
+	delete(c.upgradeAttempted, ep)
+	c.pruneNotifiedTasksForEndpointLocked(ep, nil)
+	c.mu.Unlock()
+
+	if wasWorkflowAR {
+		c.log("远端实例已完成作品同步至 Google 云盘并自动释放", "云盘", "info")
+		c.notifyGPUAutoReleasedForEndpoint(ep, droppedGPU, "workflow_sync", "", nil)
+		if triggerDriveSync {
+			c.triggerBackgroundDriveOutputsSync()
+		}
+	} else if wasReady {
+		c.notifyGPUAutoReleasedForEndpoint(ep, droppedGPU, "idle", "", nil)
+		if triggerDriveSync {
+			c.triggerBackgroundDriveOutputsSync()
 		}
 	}
 }
@@ -1379,6 +1477,7 @@ func (c *ColabOneController) triggerCUAutoRelease(consumed, cuLimit float64) boo
 					"GPU",
 					"info",
 				)
+				c.notifyGPUAutoReleasedCULimit(consumed, limitStr)
 			}
 			return firstErr
 		},

@@ -327,10 +327,20 @@ var (
 		"desktop.shortcuts":     "该桌面专属操作仅支持在宿主机客户端执行",
 		"settings.hf_token":     "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
 		"settings.assign_proxy": "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
+		"notifications.secret":  "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
 		"auth.colab.auto":       "网页控制台不支持本机回环自动登录，请使用手动授权登录",
 	}
 
-	errWebAssignProxyTestSavedOnly = "为防止探测本机内网，网页控制台仅允许测试已保存的分配代理，请先保存后再测"
+	errWebAssignProxyTestSavedOnly   = "为防止探测本机内网，网页控制台仅允许测试已保存的分配代理，请先保存后再测"
+	errWebNotificationTestSavedOnly  = "为保护本机网络安全，网页控制台仅允许测试已保存的通知渠道"
+	errWebNotificationSaveRestricted = "为保护本机网络安全，请在本机桌面端修改通知服务地址、代理或凭据配置"
+
+	allowedWebNotificationTestChannels = map[string]bool{
+		"system":   true,
+		"telegram": true,
+		"bark":     true,
+		"email":    true,
+	}
 
 	mediaUploadWebCommands = map[string]bool{
 		"comfyui.input.upload":             true,
@@ -2881,6 +2891,32 @@ func (w *ColabOneWebConsole) handleCommand(rw http.ResponseWriter, r *http.Reque
 		req.Payload = map[string]any{}
 	}
 
+	if action == "notifications.save" {
+		cleanPayload, ok := sanitizeWebNotificationSavePayload(req.Payload)
+		if !ok {
+			writeJSONError(rw, http.StatusForbidden, errWebNotificationSaveRestricted)
+			return
+		}
+		req.Payload = cleanPayload
+	}
+
+	if action == "notifications.test" {
+		if len(req.Payload) != 1 {
+			writeJSONError(rw, http.StatusForbidden, errWebNotificationTestSavedOnly)
+			return
+		}
+		rawCh, hasChannel := req.Payload["channel"]
+		chStr, isStr := rawCh.(string)
+		ch := strings.ToLower(strings.TrimSpace(chStr))
+		if !hasChannel || !isStr || !allowedWebNotificationTestChannels[ch] {
+			writeJSONError(rw, http.StatusForbidden, errWebNotificationTestSavedOnly)
+			return
+		}
+		// Always reconstruct a clean channel-only payload in Web Console mode so
+		// the controller tests strictly the saved notification channel settings.
+		req.Payload = map[string]any{"channel": ch}
+	}
+
 	if action == "comfyui.run" {
 		w.NotifyHostWorkflowRunStarting()
 	}
@@ -2910,6 +2946,82 @@ func (w *ColabOneWebConsole) handleCommand(rw http.ResponseWriter, r *http.Reque
 		return
 	}
 	_, _ = io.WriteString(rw, res)
+}
+
+func sanitizeWebNotificationSavePayload(payload map[string]any) (map[string]any, bool) {
+	if payload == nil {
+		return map[string]any{}, true
+	}
+	clean := make(map[string]any, len(payload))
+	for k, v := range payload {
+		switch k {
+		case "notify_gpu", "notify_task", "notify_alert", "system_only_when_unfocused", "remote_only_when_unfocused":
+			b, ok := v.(bool)
+			if !ok {
+				return nil, false
+			}
+			clean[k] = b
+		case "system":
+			sub, ok := sanitizeWebNotificationChannelBoolMap(v, map[string]bool{
+				"enabled": true,
+			})
+			if !ok {
+				return nil, false
+			}
+			clean[k] = sub
+		case "telegram":
+			sub, ok := sanitizeWebNotificationChannelBoolMap(v, map[string]bool{
+				"enabled":            true,
+				"send_preview_image": true,
+				"clear":              true,
+			})
+			if !ok {
+				return nil, false
+			}
+			clean[k] = sub
+		case "bark":
+			sub, ok := sanitizeWebNotificationChannelBoolMap(v, map[string]bool{
+				"enabled": true,
+				"clear":   true,
+			})
+			if !ok {
+				return nil, false
+			}
+			clean[k] = sub
+		case "email":
+			sub, ok := sanitizeWebNotificationChannelBoolMap(v, map[string]bool{
+				"enabled":             true,
+				"embed_preview_image": true,
+				"clear":               true,
+			})
+			if !ok {
+				return nil, false
+			}
+			clean[k] = sub
+		default:
+			return nil, false
+		}
+	}
+	return clean, true
+}
+
+func sanitizeWebNotificationChannelBoolMap(raw any, allowed map[string]bool) (map[string]any, bool) {
+	m, ok := raw.(map[string]any)
+	if !ok || m == nil {
+		return nil, false
+	}
+	clean := make(map[string]any, len(m))
+	for k, v := range m {
+		if !allowed[k] {
+			return nil, false
+		}
+		b, isBool := v.(bool)
+		if !isBool {
+			return nil, false
+		}
+		clean[k] = b
+	}
+	return clean, true
 }
 
 func (w *ColabOneWebConsole) handleOutputDownload(rw http.ResponseWriter, r *http.Request, id string) {

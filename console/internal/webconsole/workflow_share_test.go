@@ -787,7 +787,11 @@ func TestWorkflowShareCommandWhitelistOwnershipAndSanitization(t *testing.T) {
 	}
 
 	// Non-whitelisted host commands MUST be blocked with 403.
-	for _, blocked := range []string{"runtime.start", "runtime.release", "settings.save", "settings.hf_token", "comfyui.workflow.delete", "comfyui.auto_release", "api.key", "drive.connect"} {
+	for _, blocked := range []string{
+		"runtime.start", "runtime.release", "settings.save", "settings.hf_token",
+		"notifications.save", "notifications.test", "notifications.secret",
+		"comfyui.workflow.delete", "comfyui.auto_release", "api.key", "drive.connect",
+	} {
 		if rec := doShareCommand(t, wc.Handler(), host, dhCookie, blocked, map[string]any{}, nil); rec.Code != http.StatusForbidden {
 			t.Fatalf("command %q expected 403 in share mode, got %d", blocked, rec.Code)
 		}

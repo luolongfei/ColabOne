@@ -526,6 +526,18 @@ export const zhCNMessages = {
     "分配请求未成功，{seconds} 秒后自动重试分配 {gpu}（第 {next}/{total} 次）",
   "device.waitingRetryNetworkSoon":
     "分配请求未成功，即将重试分配 {gpu}（第 {next}/{total} 次）",
+  "device.waitingRetryCapacityUnlimited":
+    "Google 算力紧张，{seconds} 秒后自动重试分配 {gpu}（第 {next} 次）",
+  "device.waitingRetryCapacityUnlimitedSoon":
+    "Google 算力紧张，即将重试分配 {gpu}（第 {next} 次）",
+  "device.waitingRetryServerBusyUnlimited":
+    "Google 分配服务繁忙，{seconds} 秒后自动重试分配 {gpu}（第 {next} 次）",
+  "device.waitingRetryServerBusyUnlimitedSoon":
+    "Google 分配服务繁忙，即将重试分配 {gpu}（第 {next} 次）",
+  "device.waitingRetryNetworkUnlimited":
+    "分配请求未成功，{seconds} 秒后自动重试分配 {gpu}（第 {next} 次）",
+  "device.waitingRetryNetworkUnlimitedSoon":
+    "分配请求未成功，即将重试分配 {gpu}（第 {next} 次）",
   "device.toastAllocationCancelled": "已取消 GPU 分配",
   "device.idlePaused": "任务运行中 · 自动释放已暂停",
   "device.idleCountdownRemaining": "剩余",
@@ -629,6 +641,8 @@ export const zhCNMessages = {
   "device.errInvalidCuLimit": "CU 消耗上限必须在 0.1 至 100000 之间",
   "device.toastThreadsSet": "已将远端下载并发设为 {threads} 线程",
   "device.toastAssignMaxAttemptsSet": "已将 GPU 分配最大尝试次数设为 {count} 次",
+  "device.toastAssignMaxAttemptsUnlimited":
+    "已将 GPU 分配重试策略设为不限次数（直到成功）",
   "device.toastDefaultGpuSet": "已将默认 GPU 设为 {gpu}",
   "device.toastSettingsSaved": "设置已保存",
 
@@ -1819,11 +1833,16 @@ export const zhCNMessages = {
   "settings.threadsOption": "{count} 线程",
   "settings.autoDriveLabel": "云盘自动挂载",
   "settings.autoDriveDesc": "启动 GPU 时自动挂载并同步 Google 云盘（ColabOne_Drive / ColabOne_Drive_Mount）",
-  "settings.assignMaxAttemptsLabel": "GPU 分配最大尝试次数",
+  "settings.assignMaxAttemptsLabel": "GPU 分配重试策略",
   "settings.assignMaxAttemptsAria": "GPU 分配最大尝试次数",
+  "settings.assignRetryModeAria": "GPU 分配重试模式",
+  "settings.assignRetryModeUnlimited": "不限次数（直到成功）",
+  "settings.assignRetryModeLimited": "限制最大次数",
   "settings.assignMaxAttemptsUnit": "次",
+  "settings.assignMaxAttemptsUnlimitedDesc":
+    "算力紧张或请求繁忙时持续自动排队重试，直到成功分配出 GPU；采用指数退避（2 / 4 / 8 / 16 / 32 / 60 秒，封顶 60 秒），遇不可重试错误或手动取消时自动停止。",
   "settings.assignMaxAttemptsDesc":
-    "算力紧张或请求繁忙时自动排队重试的总尝试次数上限（1–100 次，默认 30 次）。每次重试按指数退避（2s、4s、8s、16s、32s），达到 32 秒后后续间隔固定为 32 秒；设为 1 次则不自动重试。",
+    "算力紧张或请求繁忙时自动排队重试的总尝试次数上限（1–100 次）。采用指数退避（2 / 4 / 8 / 16 / 32 / 60 秒，封顶 60 秒），遇不可重试错误或手动取消时立即停止；设为 1 次则不自动重试。",
   "settings.idleProtectionTitle": "空闲自动释放保护",
   "settings.idleProtectionDesc":
     "超过 {policy} 无操作或任务时自动释放远端资源；继续操作会重置倒计时，模型下载与装载、对外 API 推理及 ComfyUI 运行期间自动暂停倒计时。",
@@ -2075,7 +2094,7 @@ export const zhCNMessages = {
     "包含 OAuth 自动续期凭据、账号信息与免弹窗 Google 云盘配额项目，导入后无需重新登录。",
   "migration.moduleCredentialsTitle": "第三方密钥与公网隧道",
   "migration.moduleCredentialsDesc":
-    "包含 Hugging Face Token、GPU 分配代理、对外 API 与 ComfyUI 画布的固定域名和 Tunnel Token。",
+    "包含 Hugging Face Token、GPU 分配代理、通知推送配置、对外 API 与 ComfyUI 画布的固定域名和 Tunnel Token。",
   "migration.moduleSettingsTitle": "全部软件与外观设置",
   "migration.moduleSettingsDesc":
     "包含默认 GPU、空闲释放、下载线程、自动云盘、浅/深色主题、语言、隐私脱敏、关闭行为与更新偏好。",
@@ -2093,6 +2112,7 @@ export const zhCNMessages = {
   "migration.summaryNotSignedIn": "未登录",
   "migration.summaryDriveReady": "云盘免弹窗就绪",
   "migration.summaryConfiguredCount": "已配置 {count} 项",
+  "migration.summaryNotifications": "通知渠道",
   "migration.summaryEmpty": "暂无数据",
   "migration.summaryIdleMinutes": "空闲 {minutes} 分钟",
   "migration.summaryThreads": "{count} 线程",
@@ -2685,6 +2705,156 @@ export const zhCNMessages = {
   "outputShare.guestEmptyDesc":
     "原作品可能已被分享者删除，或远端算力离线且未同步至云盘。",
   "outputShare.guestFooter": "由 ColabOne 安全只读分享提供支持",
+
+  // Notifications
+  "notifications.sectionTitle": "通知推送",
+  "notifications.prefsTitle": "通知场景与时机",
+  "notifications.prefsDesc":
+    "选择需要推送的关键事件，并控制桌面系统通知与远端渠道在前后台的触发时机。",
+  "notifications.activeChannelsTag": "已启用 {count} 个渠道",
+  "notifications.noActiveChannelsTag": "未启用渠道",
+  "notifications.eventGpuTitle": "GPU 实例动态",
+  "notifications.eventGpuDesc": "分配成功、自动释放",
+  "notifications.eventTaskTitle": "作品与任务完成",
+  "notifications.eventTaskDesc": "成果物生成、模型下载与加载完成",
+  "notifications.eventAlertTitle": "异常失败与人工介入",
+  "notifications.eventAlertDesc": "分配或任务失败、断连、授权失效",
+  "notifications.systemUnfocusedTitle": "系统通知仅在窗口未聚焦时弹出",
+  "notifications.systemUnfocusedDesc":
+    "正在查看 ColabOne 窗口时保持安静，切到后台或最小化时再弹出系统提醒。",
+  "notifications.remoteUnfocusedTitle": "远端渠道仅在后台时推送",
+  "notifications.remoteUnfocusedDesc":
+    "关闭时，Telegram、Bark 与邮件无论窗口是否在前台都会即时送达。",
+  "notifications.statusEnabled": "已启用",
+  "notifications.statusDisabled": "未启用",
+  "notifications.statusConfigured": "已配置",
+  "notifications.statusUnsupported": "当前环境不支持",
+  "notifications.configureBtn": "配置",
+  "notifications.editBtn": "编辑",
+  "notifications.saveBtn": "保存配置",
+  "notifications.testBtn": "发送测试",
+  "notifications.clearBtn": "清除配置",
+  "notifications.testSaveFirstHint": "请先保存配置后再测试",
+  "notifications.testNeedConfigHint": "请先完成配置并保存后再测试",
+  "notifications.toastSaved": "通知设置已保存",
+  "notifications.toastChannelSaved": "{channel} 配置已保存",
+  "notifications.toastChannelCleared": "已清除 {channel} 配置",
+  "notifications.toastChannelEnabled": "已开启 {channel}",
+  "notifications.toastChannelDisabled": "已关闭 {channel}",
+  "notifications.toastTestSent": "已发送 {channel} 测试通知",
+  "notifications.toastConfigureFirst": "请先填写并保存 {channel} 配置",
+  "notifications.systemTitle": "系统通知",
+  "notifications.systemDesc":
+    "通过 Windows / macOS 系统通知中心弹出原生提醒，点击通知可直接跳转至对应页面。",
+  "notifications.systemSwitchAria": "启用系统通知",
+  "notifications.telegramTitle": "Telegram 机器人",
+  "notifications.telegramDesc":
+    "通过 Telegram Bot 实时推送状态与作品预览图，支持自定义反代 API 与代理。",
+  "notifications.telegramSwitchAria": "启用 Telegram 机器人通知",
+  "notifications.telegramBotTokenLabel": "Bot Token",
+  "notifications.telegramBotTokenPlaceholder": "123456789:AAH...",
+  "notifications.telegramBotTokenSavedPlaceholder":
+    "已保存 Bot Token，输入新值可覆盖更新",
+  "notifications.telegramBotTokenSavedWithMask": "已保存：{mask}（输入新值可更新）",
+  "notifications.telegramChatIdLabel": "Chat ID",
+  "notifications.telegramChatIdPlaceholder": "例如 123456789 或 -1001234567890",
+  "notifications.telegramChatIdHint": "支持用户 ID、群组 ID 或频道 @username",
+  "notifications.telegramApiBaseLabel": "自定义 API 地址（可选反代）",
+  "notifications.telegramApiBasePlaceholder": "https://api.telegram.org",
+  "notifications.telegramProxyLabel": "代理地址（可选，HTTP / SOCKS5）",
+  "notifications.telegramProxyPlaceholder":
+    "http://127.0.0.1:7890 或 socks5://127.0.0.1:1080",
+  "notifications.telegramProxySavedPlaceholder":
+    "已保存代理地址，输入新地址可更新",
+  "notifications.telegramProxySavedWithMask": "已保存：{mask}（输入新地址可更新）",
+  "notifications.telegramClearProxyBtn": "清除代理",
+  "notifications.telegramUndoClearProxyBtn": "撤销清除",
+  "notifications.telegramProxyWillClearHint":
+    "将在点击「保存配置」后清除已保存的代理地址",
+  "notifications.telegramPreviewTitle": "作品生成成功时附带预览图",
+  "notifications.telegramPreviewDesc":
+    "ComfyUI 生成图片作品时随消息自动发送预览缩略图。",
+  "notifications.barkTitle": "Bark 推送",
+  "notifications.barkDesc":
+    "极速推送至 iPhone / iPad / Mac 上的 Bark 客户端，支持自建服务端。",
+  "notifications.barkSwitchAria": "启用 Bark 推送",
+  "notifications.barkServerLabel": "推送地址 / 服务器",
+  "notifications.barkServerPlaceholder":
+    "https://api.day.app 或直接粘贴完整推送链接",
+  "notifications.barkServerHint":
+    "支持粘贴包含 Key 的完整推送链接，将自动识别并拆分服务器与 Device Key",
+  "notifications.barkSplitToast": "已自动拆分 Bark 服务器地址与 Device Key",
+  "notifications.barkKeyLabel": "Device Key",
+  "notifications.barkKeyPlaceholder": "输入 Bark App 中的推送密钥",
+  "notifications.barkKeySavedPlaceholder": "已保存 Device Key，输入新值可更新",
+  "notifications.barkKeySavedWithMask": "已保存：{mask}（输入新值可更新）",
+  "notifications.barkGroupLabel": "分组",
+  "notifications.barkGroupPlaceholder": "ColabOne",
+  "notifications.barkSoundLabel": "铃声",
+  "notifications.barkSoundDefault": "系统默认",
+  "notifications.barkLevelLabel": "中断级别",
+  "notifications.barkLevelAuto": "自动（按事件级别）",
+  "notifications.barkLevelActive": "默认提醒 (active)",
+  "notifications.barkLevelTimeSensitive": "时效性提醒 (timeSensitive)",
+  "notifications.barkLevelPassive": "静默送达 (passive)",
+  "notifications.emailTitle": "邮件通知 (SMTP)",
+  "notifications.emailDesc":
+    "通过 SMTP 发送精简排版 HTML 通知邮件，支持主流邮箱一键预设与作品预览内嵌。",
+  "notifications.emailSwitchAria": "启用邮件通知",
+  "notifications.emailPresetsLabel": "常用邮箱预设",
+  "notifications.emailPresetQQ": "QQ 邮箱",
+  "notifications.emailPreset163": "网易 163",
+  "notifications.emailPresetGmail": "Gmail",
+  "notifications.emailPresetOutlook": "Outlook",
+  "notifications.emailPresetICloud": "iCloud",
+  "notifications.emailHostLabel": "SMTP 服务器",
+  "notifications.emailHostPlaceholder": "smtp.qq.com",
+  "notifications.emailPortLabel": "端口",
+  "notifications.emailSecurityLabel": "加密方式",
+  "notifications.emailSecurityTls": "SSL / TLS",
+  "notifications.emailSecurityStarttls": "STARTTLS",
+  "notifications.emailSecurityNone": "无加密",
+  "notifications.emailUsernameLabel": "发件人账号 / 邮箱",
+  "notifications.emailUsernamePlaceholder": "you@example.com",
+  "notifications.emailPasswordLabel": "密码 / 授权码",
+  "notifications.emailPasswordPlaceholder": "输入 SMTP 授权码或应用专用密码",
+  "notifications.emailPasswordSavedPlaceholder":
+    "已保存授权码，输入新值可覆盖更新",
+  "notifications.emailFromAddressLabel": "发件地址（可选）",
+  "notifications.emailFromAddressPlaceholder": "留空则默认使用发件人账号",
+  "notifications.emailFromNameLabel": "发件人名称",
+  "notifications.emailFromNamePlaceholder": "ColabOne",
+  "notifications.emailToLabel": "收件人邮箱",
+  "notifications.emailToPlaceholder": "a@example.com, b@example.com",
+  "notifications.emailToHint": "支持多个收件人，使用逗号或分号分隔",
+  "notifications.emailEmbedPreviewTitle": "邮件内嵌作品预览图",
+  "notifications.emailEmbedPreviewDesc":
+    "发送精简优雅的 HTML 通知邮件，并在作品生成成功时自动内嵌预览图。",
+  "notifications.unsavedDraftTag": "未保存",
+  "notifications.clearConfirmTitle": "确定清除 {channel} 配置吗？",
+  "notifications.clearConfirmDesc":
+    "已保存的令牌、密钥或密码将被永久移除，并自动关闭该渠道。",
+  "notifications.emailClearPasswordBtn": "清除密码",
+  "notifications.emailUndoClearPasswordBtn": "撤销清除",
+  "notifications.emailPasswordWillClearHint":
+    "将在点击「保存配置」后清除已保存的密码或授权码",
+  "notifications.systemWebHostNote":
+    "当前为网页控制台模式：系统通知仅在宿主机桌面端弹出，不会推送到远端浏览器。",
+  "notifications.webDesktopOnlyEditNotice":
+    "为保护本机网络安全，服务地址、代理与凭据仅支持在宿主机桌面端修改；网页端仍可切换开关、发送测试或清除已保存配置。",
+  "notifications.valTelegramNeedToken": "请填写 Bot Token",
+  "notifications.valTelegramNeedChatId": "请填写 Chat ID",
+  "notifications.valBarkNeedServer": "请填写有效的 Bark 推送地址",
+  "notifications.valBarkNeedKey":
+    "请填写 Device Key 或粘贴包含 Key 的完整推送链接",
+  "notifications.valEmailNeedHost": "请填写 SMTP 服务器地址",
+  "notifications.valEmailInvalidPort": "SMTP 端口需在 1 至 65535 之间",
+  "notifications.valEmailNeedFromForNonEmailUser":
+    "发件人账号不是邮箱地址，请填写有效的「发件地址」",
+  "notifications.valEmailInvalidFrom": "请填写有效的发件人邮箱地址",
+  "notifications.valEmailNeedRecipients": "请至少填写一个收件人邮箱",
+  "notifications.valEmailInvalidRecipients":
+    "收件人邮箱格式有误，请检查并用逗号或分号分隔",
 
   // Location
   "location.tooltipWithZone": "实例位置：{full} ({zone})",

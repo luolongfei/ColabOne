@@ -216,6 +216,21 @@ func TestMethodTimeoutsAllowLongGPUAllocation(t *testing.T) {
 	}
 }
 
+func TestColabOneMethodTimeoutNotifications(t *testing.T) {
+	for _, tc := range []struct {
+		method string
+		want   time.Duration
+	}{
+		{"notifications.save", 30 * time.Second},
+		{"notifications.secret", 30 * time.Second},
+		{"notifications.test", 45 * time.Second},
+	} {
+		if got := colabOneMethodTimeout(tc.method); got != tc.want {
+			t.Fatalf("colabOneMethodTimeout(%q) = %v, want %v", tc.method, got, tc.want)
+		}
+	}
+}
+
 func TestWorkflowDraftBridgeRoundTrip(t *testing.T) {
 	cfgDir := t.TempDir()
 	b := &colabOneBridge{

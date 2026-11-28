@@ -1147,8 +1147,8 @@ func TestSettingsDefaultsMigrationsAndSecretIsolation(t *testing.T) {
 	if freshSettings["gpu"] != "G4" {
 		t.Fatalf("expected fresh default gpu G4, got %v", freshSettings["gpu"])
 	}
-	if v, _ := asInt(freshSettings["assign_max_attempts"]); v != 30 {
-		t.Fatalf("expected fresh default assign_max_attempts=30, got %v", freshSettings["assign_max_attempts"])
+	if v, _ := asInt(freshSettings["assign_max_attempts"]); v != COLABONE_ASSIGN_MAX_ATTEMPTS_UNLIMITED {
+		t.Fatalf("expected fresh default assign_max_attempts=0 (unlimited), got %v", freshSettings["assign_max_attempts"])
 	}
 	if _, hasPolicy := freshSettings["default_gpu_policy"]; hasPolicy {
 		t.Fatalf("internal default_gpu_policy must not be exposed in snapshot settings")
@@ -1157,7 +1157,7 @@ func TestSettingsDefaultsMigrationsAndSecretIsolation(t *testing.T) {
 		t.Fatalf("internal default_assign_max_attempts_policy must not be exposed in snapshot settings")
 	}
 
-	// Legacy settings.json with explicit non-T4 GPU and explicit non-20 assign_max_attempts is preserved across upgrade.
+	// Legacy settings.json with explicit non-T4 GPU preserves GPU while resetting pre-v2 assign_max_attempts once to unlimited (0).
 	explicitDir := t.TempDir()
 	explicitBytes, _ := json.Marshal(map[string]any{"gpu": "A100", "assign_max_attempts": 15})
 	if err := os.WriteFile(filepath.Join(explicitDir, "settings.json"), explicitBytes, 0o600); err != nil {
@@ -1174,14 +1174,14 @@ func TestSettingsDefaultsMigrationsAndSecretIsolation(t *testing.T) {
 	if explicitSettings["gpu"] != "A100" {
 		t.Fatalf("expected explicit legacy gpu A100 preserved, got %v", explicitSettings["gpu"])
 	}
-	if v, _ := asInt(explicitSettings["assign_max_attempts"]); v != 15 {
-		t.Fatalf("expected explicit legacy assign_max_attempts=15 preserved, got %v", explicitSettings["assign_max_attempts"])
+	if v, _ := asInt(explicitSettings["assign_max_attempts"]); v != COLABONE_ASSIGN_MAX_ATTEMPTS_UNLIMITED {
+		t.Fatalf("expected legacy pre-v2 assign_max_attempts=15 reset to unlimited (0), got %v", explicitSettings["assign_max_attempts"])
 	}
 
-	// Legacy settings.json carrying the previous default 20 attempts migrates once to 30,
-	// while an explicit post-migration save of 20 is preserved across reload.
+	// Legacy settings.json carrying v1 policy 30 attempts resets once to unlimited (0),
+	// while an explicit post-migration save of 20 (or 0) is preserved across reload.
 	legacyAttemptsDir := t.TempDir()
-	legacyAttemptsBytes, _ := json.Marshal(map[string]any{"assign_max_attempts": 20})
+	legacyAttemptsBytes, _ := json.Marshal(map[string]any{"assign_max_attempts": 30, "default_assign_max_attempts_policy": 1})
 	if err := os.WriteFile(filepath.Join(legacyAttemptsDir, "settings.json"), legacyAttemptsBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1195,7 +1195,7 @@ func TestSettingsDefaultsMigrationsAndSecretIsolation(t *testing.T) {
 	migratedAttemptSettings := asMap(legacyAttemptsCtrl.Snapshot()["settings"])
 	if v, _ := asInt(migratedAttemptSettings["assign_max_attempts"]); v != COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS {
 		legacyAttemptsCtrl.Close()
-		t.Fatalf("expected legacy default assign_max_attempts=20 migrated to %d, got %v", COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS, migratedAttemptSettings["assign_max_attempts"])
+		t.Fatalf("expected legacy v1 assign_max_attempts=30 migrated to %d, got %v", COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS, migratedAttemptSettings["assign_max_attempts"])
 	}
 	if _, err := legacyAttemptsCtrl.Command(context.Background(), "settings.save", map[string]any{"assign_max_attempts": 20}); err != nil {
 		legacyAttemptsCtrl.Close()
@@ -1281,10 +1281,14 @@ func TestSettingsDefaultsMigrationsAndSecretIsolation(t *testing.T) {
 	if _, err := ctrl.Command(context.Background(), "settings.save", map[string]any{"gpu": "RTX9999"}); err == nil {
 		t.Fatal("expected invalid gpu to fail")
 	}
-	for _, badAttempts := range []any{0, -5, 101, 12.5, true, "20"} {
+	for _, badAttempts := range []any{-1, -5, 101, 12.5, true, "20"} {
 		if _, err := ctrl.Command(context.Background(), "settings.save", map[string]any{"assign_max_attempts": badAttempts}); err == nil || !strings.Contains(err.Error(), "1 至 100 次") {
 			t.Fatalf("expected assign_max_attempts=%#v to fail with range error, got %v", badAttempts, err)
 		}
+	}
+	// Saving 0 (unlimited) succeeds explicitly.
+	if _, err := ctrl.Command(context.Background(), "settings.save", map[string]any{"assign_max_attempts": 0}); err != nil {
+		t.Fatalf("expected assign_max_attempts=0 (unlimited) to succeed, got %v", err)
 	}
 
 	// Save valid settings (including explicit T4 after migration) + HF token isolated from settings.json & snapshot.

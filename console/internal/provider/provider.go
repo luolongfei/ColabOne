@@ -40,19 +40,44 @@ var (
 )
 
 const (
-	// COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS is the default total number of GPU allocation attempts
-	// (1 initial attempt + 29 retries = 30 total attempts).
-	COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS = 30
+	// COLABONE_ASSIGN_MAX_ATTEMPTS_UNLIMITED disables the maximum GPU allocation attempt cap.
+	COLABONE_ASSIGN_MAX_ATTEMPTS_UNLIMITED = 0
+
+	// COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS is the default GPU allocation attempt policy (unlimited until succeeded).
+	COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS = COLABONE_ASSIGN_MAX_ATTEMPTS_UNLIMITED
+
+	// COLABONE_DEFAULT_FINITE_ASSIGN_MAX_ATTEMPTS is the default finite GPU allocation attempt count
+	// (1 initial attempt + 29 retries = 30 total attempts) when finite mode is selected.
+	COLABONE_DEFAULT_FINITE_ASSIGN_MAX_ATTEMPTS = 30
 
 	// COLABONE_ASSIGN_BACKOFF_INITIAL is the initial exponential backoff delay after the first failed attempt.
 	COLABONE_ASSIGN_BACKOFF_INITIAL = 2 * time.Second
 
-	// COLABONE_ASSIGN_BACKOFF_MAX is the maximum capped exponential backoff delay (32s).
-	COLABONE_ASSIGN_BACKOFF_MAX = 32 * time.Second
+	// COLABONE_ASSIGN_BACKOFF_MAX is the maximum capped exponential backoff delay (60s).
+	COLABONE_ASSIGN_BACKOFF_MAX = 60 * time.Second
 )
 
+// AssignRetryDelayForAttempt computes the capped exponential-backoff delay for zero-based retryIndex:
+// 2s, 4s, 8s, 16s, 32s, 60s, staying at 60s for all subsequent retries.
+func AssignRetryDelayForAttempt(retryIndex int) time.Duration {
+	if retryIndex < 0 {
+		return COLABONE_ASSIGN_BACKOFF_INITIAL
+	}
+	delay := COLABONE_ASSIGN_BACKOFF_INITIAL
+	for i := 0; i < retryIndex; i++ {
+		if delay >= COLABONE_ASSIGN_BACKOFF_MAX {
+			return COLABONE_ASSIGN_BACKOFF_MAX
+		}
+		delay *= 2
+		if delay > COLABONE_ASSIGN_BACKOFF_MAX {
+			return COLABONE_ASSIGN_BACKOFF_MAX
+		}
+	}
+	return delay
+}
+
 // AssignRetryDelays builds the capped exponential-backoff retry schedule for maxAttempts total attempts:
-// 2s -> 4s -> 8s -> 16s -> 32s, staying at 32s for all subsequent retries.
+// 2s, 4s, 8s, 16s, 32s, 60s, staying at 60s for all subsequent retries.
 // Returns an empty slice when maxAttempts <= 1 (single attempt, no retries).
 func AssignRetryDelays(maxAttempts int) []time.Duration {
 	if maxAttempts <= 1 {
@@ -60,26 +85,16 @@ func AssignRetryDelays(maxAttempts int) []time.Duration {
 	}
 	retryCount := maxAttempts - 1
 	delays := make([]time.Duration, retryCount)
-	delay := COLABONE_ASSIGN_BACKOFF_INITIAL
 	for i := 0; i < retryCount; i++ {
-		if delay > COLABONE_ASSIGN_BACKOFF_MAX {
-			delay = COLABONE_ASSIGN_BACKOFF_MAX
-		}
-		delays[i] = delay
-		if delay < COLABONE_ASSIGN_BACKOFF_MAX {
-			delay *= 2
-			if delay > COLABONE_ASSIGN_BACKOFF_MAX {
-				delay = COLABONE_ASSIGN_BACKOFF_MAX
-			}
-		}
+		delays[i] = AssignRetryDelayForAttempt(i)
 	}
 	return delays
 }
 
-// DefaultAssignRetryDelays returns the default 29-retry backoff schedule (30 total attempts:
-// 1 initial + 29 retries with 2s -> 4s -> 8s -> 16s -> 32s capped delays).
+// DefaultAssignRetryDelays returns the default 29-retry finite backoff schedule (30 total attempts:
+// 1 initial + 29 retries with 2s, 4s, 8s, 16s, 32s, 60s capped delays).
 func DefaultAssignRetryDelays() []time.Duration {
-	return AssignRetryDelays(COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS)
+	return AssignRetryDelays(COLABONE_DEFAULT_FINITE_ASSIGN_MAX_ATTEMPTS)
 }
 
 var colabOneAltGPUHints = map[string]string{
@@ -167,6 +182,7 @@ type ColabOneProvider struct {
 	formatProxyErrorFn  func(error) string
 
 	assignRetryDelays   []time.Duration
+	customRetryDelays   bool
 	releasePollInterval time.Duration
 	readyTimeout        time.Duration
 	readyPollInterval   time.Duration
@@ -202,9 +218,11 @@ func colabOneProviderNoRedirect(*http.Request, []*http.Request) error {
 // NewColabOneProvider constructs a ColabOneProvider with safe defaults for optional fields.
 func NewColabOneProvider(cfg ColabOneProviderConfig) *ColabOneProvider {
 	delays := cfg.AssignRetryDelays
+	customRetryDelays := false
 	if delays == nil {
 		delays = DefaultAssignRetryDelays()
 	} else {
+		customRetryDelays = true
 		cp := make([]time.Duration, len(delays))
 		copy(cp, delays)
 		delays = cp
@@ -288,6 +306,7 @@ func NewColabOneProvider(cfg ColabOneProviderConfig) *ColabOneProvider {
 		parseAssignProxyFn:  parseProxy,
 		formatProxyErrorFn:  formatProxy,
 		assignRetryDelays:   delays,
+		customRetryDelays:   customRetryDelays,
 		releasePollInterval: releasePoll,
 		readyTimeout:        readyTimeout,
 		readyPollInterval:   readyPoll,
@@ -1283,14 +1302,27 @@ func (p *ColabOneProvider) assignRuntime(
 	shape string,
 	opts AllocateOptions,
 	retriesUsed *int,
+	attemptOffset int,
 	usingAssignProxy bool,
 ) (*Assignment, error) {
 	nbh := newUUIDv4()
+	unlimited := opts.UnlimitedAttempts || opts.MaxAttempts < 0
 	delays := p.assignRetryDelays
-	if opts.MaxAttempts > 0 {
+	if !unlimited && opts.MaxAttempts > 0 {
 		delays = AssignRetryDelays(opts.MaxAttempts)
 	}
-	totalAttempts := 1 + len(delays)
+	phaseAttempts := 0
+	totalAttempts := 0
+	if !unlimited {
+		phaseAttempts = 1 + len(delays)
+		totalAttempts = attemptOffset + phaseAttempts
+	}
+	formatAttemptProgress := func(current int) string {
+		if unlimited {
+			return fmt.Sprintf("第 %d 次", current)
+		}
+		return fmt.Sprintf("第 %d/%d 次", current, totalAttempts)
+	}
 	xsrfToken := ""
 	consecutivePoolBusy := 0
 	poolBusyHintEmitted := false
@@ -1313,7 +1345,7 @@ func (p *ColabOneProvider) assignRuntime(
 		}()
 	}
 
-	for attempt := 0; attempt < totalAttempts; attempt++ {
+	for attempt := 0; unlimited || attempt < phaseAttempts; attempt++ {
 		if p.closed.Load() {
 			return nil, ErrProviderClosed
 		}
@@ -1323,25 +1355,28 @@ func (p *ColabOneProvider) assignRuntime(
 		if ctx != nil && ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
+		curAttempt := attemptOffset + attempt + 1
 		if opts.OnRetryState != nil {
 			opts.OnRetryState(map[string]any{
-				"waiting_retry":  false,
-				"retry_at":       0.0,
-				"attempt":        attempt + 1,
-				"next_attempt":   attempt + 1,
-				"total_attempts": totalAttempts,
-				"retry_kind":     lastRetryKind,
-				"gpu":            accel,
+				"waiting_retry":      false,
+				"retry_at":           0.0,
+				"attempt":            curAttempt,
+				"next_attempt":       curAttempt,
+				"total_attempts":     totalAttempts,
+				"unlimited_attempts": unlimited,
+				"retry_kind":         lastRetryKind,
+				"gpu":                accel,
 			})
 		}
 		if attempt > 0 && opts.OnStage != nil {
+			progressLabel := formatAttemptProgress(curAttempt)
 			switch lastRetryKind {
 			case "capacity":
-				emitStage(opts.OnStage, fmt.Sprintf("Google 算力紧张，正在排队分配 %s（第 %d/%d 次）", accel, attempt+1, totalAttempts))
+				emitStage(opts.OnStage, fmt.Sprintf("Google 算力紧张，正在排队分配 %s（%s）", accel, progressLabel))
 			case "server_busy":
-				emitStage(opts.OnStage, fmt.Sprintf("Google 分配服务繁忙，正在重试分配 %s（第 %d/%d 次）", accel, attempt+1, totalAttempts))
+				emitStage(opts.OnStage, fmt.Sprintf("Google 分配服务繁忙，正在重试分配 %s（%s）", accel, progressLabel))
 			default:
-				emitStage(opts.OnStage, fmt.Sprintf("正在分配 %s（第 %d/%d 次）", accel, attempt+1, totalAttempts))
+				emitStage(opts.OnStage, fmt.Sprintf("正在分配 %s（%s）", accel, progressLabel))
 			}
 		}
 
@@ -1391,7 +1426,7 @@ func (p *ColabOneProvider) assignRuntime(
 			return nil, err
 		}
 
-		if attempt >= len(delays) {
+		if !unlimited && attempt >= len(delays) {
 			// Final reconciliation: if the last POST hit Google's 30s frontend
 			// proxy timeout or a connection drop after the VM was already assigned,
 			// adopt it instead of orphaning it.
@@ -1439,23 +1474,34 @@ func (p *ColabOneProvider) assignRuntime(
 			lastRetryKind = "network"
 		}
 
-		delay := delays[attempt]
-		delaySec := int(math.Round(delay.Seconds()))
-		nextAttempt := attempt + 2
-		if retriesUsed != nil {
-			*retriesUsed = attempt + 1
+		var delay time.Duration
+		if unlimited {
+			if p.customRetryDelays && len(delays) > 0 {
+				idx := attempt
+				if idx >= len(delays) {
+					idx = len(delays) - 1
+				}
+				delay = delays[idx]
+			} else {
+				delay = AssignRetryDelayForAttempt(attempt)
+			}
+		} else {
+			delay = delays[attempt]
 		}
+		delaySec := int(math.Round(delay.Seconds()))
+		nextAttempt := curAttempt + 1
+		nextProgressLabel := formatAttemptProgress(nextAttempt)
 
 		var retryMsg string
 		if status == 503 {
 			retryMsg = fmt.Sprintf(
-				"Google Colab 当前 %s 算力紧张，暂未分配出 GPU（耗时 %.1f 秒 · HTTP 503），%d 秒后自动重试（第 %d/%d 次）",
-				accel, elapsed, delaySec, nextAttempt, totalAttempts,
+				"Google Colab 当前 %s 算力紧张，暂未分配出 GPU（耗时 %.1f 秒 · HTTP 503），%d 秒后自动重试（%s）",
+				accel, elapsed, delaySec, nextProgressLabel,
 			)
 		} else if status == 502 || status == 504 {
 			retryMsg = fmt.Sprintf(
-				"Google Colab 当前 %s 分配服务繁忙，暂未分配出 GPU（耗时 %.1f 秒 · HTTP %d），%d 秒后自动重试（第 %d/%d 次）",
-				accel, elapsed, status, delaySec, nextAttempt, totalAttempts,
+				"Google Colab 当前 %s 分配服务繁忙，暂未分配出 GPU（耗时 %.1f 秒 · HTTP %d），%d 秒后自动重试（%s）",
+				accel, elapsed, status, delaySec, nextProgressLabel,
 			)
 		} else {
 			reasonTag := "网络异常"
@@ -1463,8 +1509,8 @@ func (p *ColabOneProvider) assignRuntime(
 				reasonTag = "请求超时"
 			}
 			retryMsg = fmt.Sprintf(
-				"Google Colab 分配 %s GPU 暂时繁忙或超时（耗时 %.1f 秒 · %s），%d 秒后自动重试（第 %d/%d 次）",
-				accel, elapsed, reasonTag, delaySec, nextAttempt, totalAttempts,
+				"Google Colab 分配 %s GPU 暂时繁忙或超时（耗时 %.1f 秒 · %s），%d 秒后自动重试（%s）",
+				accel, elapsed, reasonTag, delaySec, nextProgressLabel,
 			)
 		}
 		emitLog(opts.OnLog, retryMsg, "GPU", "warning")
@@ -1487,13 +1533,14 @@ func (p *ColabOneProvider) assignRuntime(
 		if delay > 0 {
 			if opts.OnRetryState != nil && !isCancelled(ctx, opts.CancelCh) {
 				opts.OnRetryState(map[string]any{
-					"waiting_retry":  true,
-					"retry_at":       unixFloat(p.now().Add(delay)),
-					"attempt":        attempt + 1,
-					"next_attempt":   nextAttempt,
-					"total_attempts": totalAttempts,
-					"retry_kind":     lastRetryKind,
-					"gpu":            accel,
+					"waiting_retry":      true,
+					"retry_at":           unixFloat(p.now().Add(delay)),
+					"attempt":            curAttempt,
+					"next_attempt":       nextAttempt,
+					"total_attempts":     totalAttempts,
+					"unlimited_attempts": unlimited,
+					"retry_kind":         lastRetryKind,
+					"gpu":                accel,
 				})
 			}
 			outcome := p.waitForRetry(assignCtx, delay, opts.CancelCh)
@@ -1506,6 +1553,19 @@ func (p *ColabOneProvider) assignRuntime(
 			if ctx != nil && ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
+		} else {
+			if p.closed.Load() {
+				return nil, ErrProviderClosed
+			}
+			if isCancelled(ctx, opts.CancelCh) {
+				return nil, ErrAllocationCancelled
+			}
+			if ctx != nil && ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+		}
+		if retriesUsed != nil {
+			*retriesUsed++
 		}
 	}
 
@@ -1567,15 +1627,15 @@ func (p *ColabOneProvider) Allocate(ctx context.Context, gpu string, opts Alloca
 	}
 
 	retriesUsed := 0
-	result, assignErr := p.assignRuntime(ctx, client, accel, shape, opts, &retriesUsed, usingAssignProxy)
+	result, assignErr := p.assignRuntime(ctx, client, accel, shape, opts, &retriesUsed, 0, usingAssignProxy)
 	if assignErr != nil && shape != "" && httpStatusCode(assignErr) == 400 && isColabRequestError(assignErr) {
 		if isCancelled(ctx, opts.CancelCh) {
 			return nil, ErrAllocationCancelled
 		}
 		emitLog(opts.OnLog, "高内存规格暂不可用，自动切换为默认规格重试分配", "GPU", "warning")
-		retriesUsed = 0
+		attemptOffset := retriesUsed + 1
 		shape = ""
-		result, assignErr = p.assignRuntime(ctx, client, accel, "", opts, &retriesUsed, usingAssignProxy)
+		result, assignErr = p.assignRuntime(ctx, client, accel, "", opts, &retriesUsed, attemptOffset, usingAssignProxy)
 	}
 	if assignErr != nil {
 		if errors.Is(assignErr, ErrAllocationCancelled) {
@@ -2830,7 +2890,9 @@ func (p *ColabOneProvider) Start(
 			remote := p.RemoteInfo(session.Endpoint)
 			if remote != nil && strVal(remote["endpoint"]) == session.Endpoint {
 				emitLog(opts.OnLog, fmt.Sprintf("检测到已连接实例，直接复用：%s", session.Endpoint), "GPU", "info")
-				return remote, nil
+				reused := cloneMap(remote)
+				reused["reused"] = true
+				return reused, nil
 			}
 			return nil, errors.New("实例存在但部署未完成，请先释放后重新启动")
 		}
@@ -2897,12 +2959,13 @@ func (p *ColabOneProvider) Start(
 	emitStage(notify, "正在分配 "+gpu)
 	started := unixFloat(p.now())
 	session, err := p.Allocate(ctx, gpu, AllocateOptions{
-		OnLog:        opts.OnLog,
-		OnStage:      notify,
-		CancelCh:     opts.CancelCh,
-		OnRetryState: opts.OnRetryState,
-		AssignProxy:  strings.TrimSpace(opts.AssignProxy),
-		MaxAttempts:  opts.MaxAttempts,
+		OnLog:             opts.OnLog,
+		OnStage:           notify,
+		CancelCh:          opts.CancelCh,
+		OnRetryState:      opts.OnRetryState,
+		AssignProxy:       strings.TrimSpace(opts.AssignProxy),
+		MaxAttempts:       opts.MaxAttempts,
+		UnlimitedAttempts: opts.UnlimitedAttempts,
 	})
 	if err != nil {
 		return rollback(err)

@@ -240,6 +240,7 @@ const props = defineProps<{
   outputShareDeletingId?: string;
   outputShareLastCreated?: ColabOneOutputShareSummary | null;
   copyText?: (text: string, successToast?: string) => Promise<boolean>;
+  openOutputsRequest?: boolean;
 }>();
 const emit = defineEmits<{
   device: [];
@@ -253,6 +254,7 @@ const emit = defineEmits<{
   deleteOutputShare: [id: string];
   clearOutputShareCreated: [];
   enableWebConsole: [];
+  consumeOpenOutputs: [];
   notify: [string, ColabOneToastKind?];
   clearError: [];
   error: [string];
@@ -8368,6 +8370,17 @@ watch(outputsDrawerOpen, (open) => {
     }
   }
 });
+
+watch(
+  () => props.openOutputsRequest,
+  (requested) => {
+    if (requested && !disposed) {
+      openOutputsDrawer();
+      emit("consumeOpenOutputs");
+    }
+  },
+  { immediate: true, flush: "post" },
+);
 
 watch(groupedOutputs, (groups) => {
   const validGroupIds = new Set(groups.map((g) => g.id));

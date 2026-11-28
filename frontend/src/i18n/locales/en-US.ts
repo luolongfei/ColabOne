@@ -543,6 +543,18 @@ export const enUSMessages: ColabOneMessages = {
     "Allocation attempt did not succeed; retrying {gpu} in {seconds}s (attempt {next}/{total})",
   "device.waitingRetryNetworkSoon":
     "Allocation attempt did not succeed; retrying {gpu} now (attempt {next}/{total})",
+  "device.waitingRetryCapacityUnlimited":
+    "Google GPU capacity is tight; retrying {gpu} in {seconds}s (attempt #{next})",
+  "device.waitingRetryCapacityUnlimitedSoon":
+    "Google GPU capacity is tight; retrying {gpu} now (attempt #{next})",
+  "device.waitingRetryServerBusyUnlimited":
+    "Google allocation service is busy; retrying {gpu} in {seconds}s (attempt #{next})",
+  "device.waitingRetryServerBusyUnlimitedSoon":
+    "Google allocation service is busy; retrying {gpu} now (attempt #{next})",
+  "device.waitingRetryNetworkUnlimited":
+    "Allocation attempt did not succeed; retrying {gpu} in {seconds}s (attempt #{next})",
+  "device.waitingRetryNetworkUnlimitedSoon":
+    "Allocation attempt did not succeed; retrying {gpu} now (attempt #{next})",
   "device.toastAllocationCancelled": "GPU allocation cancelled",
   "device.idlePaused": "Busy · Auto-Release Paused",
   "device.idleCountdownRemaining": "Auto-release in",
@@ -647,6 +659,8 @@ export const enUSMessages: ColabOneMessages = {
   "device.errInvalidCuLimit": "CU consumption limit must be between 0.1 and 100000",
   "device.toastThreadsSet": "Remote download concurrency set to {threads} threads",
   "device.toastAssignMaxAttemptsSet": "Max GPU allocation attempts set to {count}",
+  "device.toastAssignMaxAttemptsUnlimited":
+    "GPU allocation retry policy set to Unlimited (until succeeded)",
   "device.toastDefaultGpuSet": "Default GPU set to {gpu}",
   "device.toastSettingsSaved": "Settings saved",
 
@@ -1874,11 +1888,16 @@ export const enUSMessages: ColabOneMessages = {
   "settings.threadsOption": "{count} Threads",
   "settings.autoDriveLabel": "Auto-Mount Drive",
   "settings.autoDriveDesc": "Automatically mount and sync Google Drive (ColabOne_Drive / ColabOne_Drive_Mount) on GPU start",
-  "settings.assignMaxAttemptsLabel": "Max GPU Allocation Attempts",
+  "settings.assignMaxAttemptsLabel": "GPU Allocation Retry Policy",
   "settings.assignMaxAttemptsAria": "Maximum GPU allocation attempts",
+  "settings.assignRetryModeAria": "GPU allocation retry mode",
+  "settings.assignRetryModeUnlimited": "Unlimited (until succeeded)",
+  "settings.assignRetryModeLimited": "Limit max attempts",
   "settings.assignMaxAttemptsUnit": "attempts",
+  "settings.assignMaxAttemptsUnlimitedDesc":
+    "Continuously queues and retries when Colab GPUs are busy until an instance is allocated. Uses exponential backoff (2 / 4 / 8 / 16 / 32 / 60s, capped at 60s) and stops on non-retryable errors or manual cancel.",
   "settings.assignMaxAttemptsDesc":
-    "Maximum total allocation attempts when Colab GPUs are busy (1–100, default 30). Retries use exponential backoff (2s, 4s, 8s, 16s, 32s), staying at 32s thereafter; set to 1 to disable automatic retries.",
+    "Maximum total allocation attempts when Colab GPUs are busy (1-100). Uses exponential backoff (2 / 4 / 8 / 16 / 32 / 60s, capped at 60s) and stops immediately on non-retryable errors or manual cancel; set to 1 to disable automatic retries.",
   "settings.idleProtectionTitle": "Idle Auto-Release Protection",
   "settings.idleProtectionDesc":
     "Automatically releases remote resources after {policy} of inactivity. Any interaction resets the timer; downloads, loading, API inference, and ComfyUI tasks pause it automatically.",
@@ -2146,7 +2165,7 @@ export const enUSMessages: ColabOneMessages = {
     "Includes auto-renewing OAuth credentials, profile info, and headless Google Drive quota project so the new PC stays signed in.",
   "migration.moduleCredentialsTitle": "Third-Party Keys & Public Tunnels",
   "migration.moduleCredentialsDesc":
-    "Includes Hugging Face Token, GPU allocation proxy, and fixed domains / Tunnel Tokens for Public API and ComfyUI Canvas.",
+    "Includes Hugging Face Token, GPU allocation proxy, notification channel credentials, and fixed domains / Tunnel Tokens for Public API and ComfyUI Canvas.",
   "migration.moduleSettingsTitle": "All App & Appearance Settings",
   "migration.moduleSettingsDesc":
     "Includes default GPU, idle release, download threads, auto Drive, theme, language, privacy mask default, close behavior, and update preferences.",
@@ -2164,6 +2183,7 @@ export const enUSMessages: ColabOneMessages = {
   "migration.summaryNotSignedIn": "Not signed in",
   "migration.summaryDriveReady": "Headless Drive ready",
   "migration.summaryConfiguredCount": "{count} configured",
+  "migration.summaryNotifications": "Notifications",
   "migration.summaryEmpty": "Empty",
   "migration.summaryIdleMinutes": "Idle {minutes}m",
   "migration.summaryThreads": "{count} threads",
@@ -2788,6 +2808,156 @@ export const enUSMessages: ColabOneMessages = {
   "outputShare.guestEmptyDesc":
     "The original outputs may have been deleted by the host, or the remote compute is offline without cloud sync.",
   "outputShare.guestFooter": "Powered by ColabOne Secure Read-Only Sharing",
+
+  // Notifications
+  "notifications.sectionTitle": "Notifications",
+  "notifications.prefsTitle": "Events & Delivery Timing",
+  "notifications.prefsDesc":
+    "Choose which lifecycle events trigger notifications and control quiet rules for desktop and remote channels.",
+  "notifications.activeChannelsTag": "{count} active",
+  "notifications.noActiveChannelsTag": "All off",
+  "notifications.eventGpuTitle": "GPU Instance Lifecycle",
+  "notifications.eventGpuDesc": "Allocation ready, auto-release",
+  "notifications.eventTaskTitle": "Outputs & Tasks Completed",
+  "notifications.eventTaskDesc": "Generated outputs, model downloads and loads",
+  "notifications.eventAlertTitle": "Errors & Attention Needed",
+  "notifications.eventAlertDesc": "Failed allocations or tasks, disconnects, auth expiry",
+  "notifications.systemUnfocusedTitle": "Only show system notifications when unfocused",
+  "notifications.systemUnfocusedDesc":
+    "Stay quiet while you are actively viewing ColabOne; pop native alerts when minimized or in the background.",
+  "notifications.remoteUnfocusedTitle": "Only push remote channels in background",
+  "notifications.remoteUnfocusedDesc":
+    "When off, Telegram, Bark, and Email deliver immediately regardless of window focus.",
+  "notifications.statusEnabled": "Enabled",
+  "notifications.statusDisabled": "Off",
+  "notifications.statusConfigured": "Configured",
+  "notifications.statusUnsupported": "Unsupported",
+  "notifications.configureBtn": "Configure",
+  "notifications.editBtn": "Edit",
+  "notifications.saveBtn": "Save Config",
+  "notifications.testBtn": "Send Test",
+  "notifications.clearBtn": "Clear Config",
+  "notifications.testSaveFirstHint": "Save changes before sending a test notification",
+  "notifications.testNeedConfigHint": "Complete and save configuration before testing",
+  "notifications.toastSaved": "Notification preferences saved",
+  "notifications.toastChannelSaved": "{channel} configuration saved",
+  "notifications.toastChannelCleared": "{channel} configuration cleared",
+  "notifications.toastChannelEnabled": "{channel} enabled",
+  "notifications.toastChannelDisabled": "{channel} disabled",
+  "notifications.toastTestSent": "Test notification sent via {channel}",
+  "notifications.toastConfigureFirst": "Configure and save {channel} first",
+  "notifications.systemTitle": "System Notifications",
+  "notifications.systemDesc":
+    "Native OS alerts via Windows / macOS Notification Center. Click any notification to jump directly to the relevant page.",
+  "notifications.systemSwitchAria": "Enable system notifications",
+  "notifications.telegramTitle": "Telegram Bot",
+  "notifications.telegramDesc":
+    "Push real-time updates and artwork previews via your Telegram Bot, with optional custom API base URL and proxy.",
+  "notifications.telegramSwitchAria": "Enable Telegram Bot notifications",
+  "notifications.telegramBotTokenLabel": "Bot Token",
+  "notifications.telegramBotTokenPlaceholder": "123456789:AAH...",
+  "notifications.telegramBotTokenSavedPlaceholder":
+    "Bot Token saved - enter a new value to overwrite",
+  "notifications.telegramBotTokenSavedWithMask": "Saved: {mask} (enter new value to update)",
+  "notifications.telegramChatIdLabel": "Chat ID",
+  "notifications.telegramChatIdPlaceholder": "e.g. 123456789 or -1001234567890",
+  "notifications.telegramChatIdHint": "Supports user ID, group ID, or channel @username",
+  "notifications.telegramApiBaseLabel": "Custom API Base URL (Optional Reverse Proxy)",
+  "notifications.telegramApiBasePlaceholder": "https://api.telegram.org",
+  "notifications.telegramProxyLabel": "Proxy URL (Optional, HTTP / SOCKS5)",
+  "notifications.telegramProxyPlaceholder":
+    "http://127.0.0.1:7890 or socks5://127.0.0.1:1080",
+  "notifications.telegramProxySavedPlaceholder":
+    "Proxy URL saved - enter a new address to update",
+  "notifications.telegramProxySavedWithMask": "Saved: {mask} (enter new address to update)",
+  "notifications.telegramClearProxyBtn": "Clear Proxy",
+  "notifications.telegramUndoClearProxyBtn": "Undo Clear",
+  "notifications.telegramProxyWillClearHint":
+    "Saved proxy address will be removed when you click Save Config",
+  "notifications.telegramPreviewTitle": "Attach preview image on output generation",
+  "notifications.telegramPreviewDesc":
+    "Automatically include a preview thumbnail when ComfyUI generates image outputs.",
+  "notifications.barkTitle": "Bark Push",
+  "notifications.barkDesc":
+    "Instant push alerts to the Bark app on iPhone, iPad, or Mac, with support for self-hosted Bark servers.",
+  "notifications.barkSwitchAria": "Enable Bark push notifications",
+  "notifications.barkServerLabel": "Push Endpoint / Server URL",
+  "notifications.barkServerPlaceholder":
+    "https://api.day.app or paste full push URL",
+  "notifications.barkServerHint":
+    "Pasting a full Bark URL with a key automatically splits Server URL and Device Key",
+  "notifications.barkSplitToast": "Automatically split Bark server URL and Device Key",
+  "notifications.barkKeyLabel": "Device Key",
+  "notifications.barkKeyPlaceholder": "Enter the push key from your Bark app",
+  "notifications.barkKeySavedPlaceholder": "Device Key saved - enter a new value to update",
+  "notifications.barkKeySavedWithMask": "Saved: {mask} (enter new value to update)",
+  "notifications.barkGroupLabel": "Group",
+  "notifications.barkGroupPlaceholder": "ColabOne",
+  "notifications.barkSoundLabel": "Sound",
+  "notifications.barkSoundDefault": "System Default",
+  "notifications.barkLevelLabel": "Interruption Level",
+  "notifications.barkLevelAuto": "Auto (by event severity)",
+  "notifications.barkLevelActive": "Active (active)",
+  "notifications.barkLevelTimeSensitive": "Time Sensitive (timeSensitive)",
+  "notifications.barkLevelPassive": "Passive (passive)",
+  "notifications.emailTitle": "Email Notifications (SMTP)",
+  "notifications.emailDesc":
+    "Deliver clean HTML notifications via SMTP with one-click provider presets and optional inline artwork previews.",
+  "notifications.emailSwitchAria": "Enable email notifications",
+  "notifications.emailPresetsLabel": "Quick Presets",
+  "notifications.emailPresetQQ": "QQ Mail",
+  "notifications.emailPreset163": "NetEase 163",
+  "notifications.emailPresetGmail": "Gmail",
+  "notifications.emailPresetOutlook": "Outlook",
+  "notifications.emailPresetICloud": "iCloud",
+  "notifications.emailHostLabel": "SMTP Host",
+  "notifications.emailHostPlaceholder": "smtp.qq.com",
+  "notifications.emailPortLabel": "Port",
+  "notifications.emailSecurityLabel": "Security",
+  "notifications.emailSecurityTls": "SSL / TLS",
+  "notifications.emailSecurityStarttls": "STARTTLS",
+  "notifications.emailSecurityNone": "None",
+  "notifications.emailUsernameLabel": "Sender Account / Email",
+  "notifications.emailUsernamePlaceholder": "you@example.com",
+  "notifications.emailPasswordLabel": "Password / App Password",
+  "notifications.emailPasswordPlaceholder": "Enter SMTP authorization code or app password",
+  "notifications.emailPasswordSavedPlaceholder":
+    "Password saved - enter a new value to overwrite",
+  "notifications.emailFromAddressLabel": "From Address (Optional)",
+  "notifications.emailFromAddressPlaceholder": "Defaults to sender account if blank",
+  "notifications.emailFromNameLabel": "Sender Name",
+  "notifications.emailFromNamePlaceholder": "ColabOne",
+  "notifications.emailToLabel": "Recipients",
+  "notifications.emailToPlaceholder": "a@example.com, b@example.com",
+  "notifications.emailToHint": "Separate multiple email addresses with commas or semicolons",
+  "notifications.emailEmbedPreviewTitle": "Embed output preview image in email",
+  "notifications.emailEmbedPreviewDesc":
+    "Sends refined HTML emails with an inline artwork preview when ComfyUI finishes generating images.",
+  "notifications.unsavedDraftTag": "Unsaved",
+  "notifications.clearConfirmTitle": "Clear {channel} configuration?",
+  "notifications.clearConfirmDesc":
+    "Saved tokens, keys, or passwords will be permanently removed and this channel will be turned off.",
+  "notifications.emailClearPasswordBtn": "Clear Password",
+  "notifications.emailUndoClearPasswordBtn": "Undo Clear",
+  "notifications.emailPasswordWillClearHint":
+    "Saved password will be removed when you click Save Config",
+  "notifications.systemWebHostNote":
+    "Web Console mode: native system notifications appear on the host desktop computer, not in this remote browser.",
+  "notifications.webDesktopOnlyEditNotice":
+    "To protect local network security, endpoints, proxies, and credentials can only be edited in the host desktop app. You can still toggle channels, send tests, or clear saved configs here.",
+  "notifications.valTelegramNeedToken": "Enter a Bot Token",
+  "notifications.valTelegramNeedChatId": "Enter a Chat ID",
+  "notifications.valBarkNeedServer": "Enter a valid Bark server URL",
+  "notifications.valBarkNeedKey":
+    "Enter a Device Key or paste a full Bark push URL containing a key",
+  "notifications.valEmailNeedHost": "Enter an SMTP host",
+  "notifications.valEmailInvalidPort": "SMTP port must be between 1 and 65535",
+  "notifications.valEmailNeedFromForNonEmailUser":
+    "Username is not an email address; enter a valid From Address",
+  "notifications.valEmailInvalidFrom": "Enter a valid sender email address",
+  "notifications.valEmailNeedRecipients": "Enter at least one recipient email address",
+  "notifications.valEmailInvalidRecipients":
+    "One or more recipient email addresses are invalid; separate addresses with commas or semicolons",
 
   // Location
   "location.tooltipWithZone": "Instance location: {full} ({zone})",

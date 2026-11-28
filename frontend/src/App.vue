@@ -44,6 +44,7 @@ import {
 } from "ant-design-vue";
 import ColabOneCloseModal from "./ColabOneCloseModal.vue";
 import ColabOneMigrationModal from "./ColabOneMigrationModal.vue";
+import ColabOneNotificationsCard from "./ColabOneNotificationsCard.vue";
 import ColabOnePrivacyText from "./ColabOnePrivacyText.vue";
 import ColabOneSecretInput from "./ColabOneSecretInput.vue";
 import ColabOneSelectTooltipHost from "./ColabOneSelectTooltipHost.vue";
@@ -177,6 +178,7 @@ import {
   colabOneListRollbackVersions,
   colabOneOnCloseBehavior,
   colabOneOnCloseRequest,
+  colabOneOnNavigate,
   colabOneOnOutputSharesState,
   colabOneOnUpdateOpen,
   colabOneApplyMigrationPreview,
@@ -251,7 +253,13 @@ import {
   shouldColabOneAutoCheckOnPopoverOpen,
 } from "./colabOneUpdater";
 import {
+  colabOneNormalizeNavigatePayload,
+  normalizeColabOneNotificationSettings,
+} from "./colabOneNotifications";
+import {
+  COLABONE_ASSIGN_MAX_ATTEMPTS_UNLIMITED,
   COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS,
+  COLABONE_DEFAULT_FINITE_ASSIGN_MAX_ATTEMPTS,
   COLABONE_DEFAULT_GPU,
   COLABONE_DEFAULT_RELEASE_CU_LIMIT,
   COLABONE_DEFAULT_RELEASE_MODE,
@@ -262,7 +270,12 @@ import {
   createColabOneSnapshot,
   COLABONE_STATUS_LABELS,
   evaluateColabOneRuntimeUpgrade,
+  isColabOneAssignAttemptsUnlimited,
+  normalizeColabOneAssignAttempts,
+  normalizeColabOneFiniteAssignAttempts,
   type AccountInstance,
+  type ColabOneAssignRetryMode,
+  type ColabOneNotificationSettings,
   type ColabOneReleaseMode,
   type ColabOneSnapshot,
 } from "./types";
@@ -493,6 +506,8 @@ const startingRollback = ref(false);
 let rollbackLoadSeq = 0;
 let unsubUpdateState: (() => void) | null = null;
 let unsubUpdateOpen: (() => void) | null = null;
+let unsubNavigate: (() => void) | null = null;
+const pendingOpenComfyOutputs = ref(false);
 let updateProgressPollTimer: ReturnType<typeof setInterval> | null = null;
 let updatePollInFlight = false;
 let lastUpdatePushAt = 0;
@@ -999,7 +1014,10 @@ let suppressNextPageScrollTop = false;
 
 watch(page, (next) => {
   if (next !== "api") modelsDrawerOpen.value = false;
-  if (next !== "comfyui") resetComfyDrawerState();
+  if (next !== "comfyui") {
+    resetComfyDrawerState();
+    pendingOpenComfyOutputs.value = false;
+  }
   if (next !== "settings") settingsSaveFloating.value = false;
 });
 watch(
@@ -1453,18 +1471,44 @@ watch(
     }
   },
 );
+const lastFiniteAssignMaxAttempts = ref<number>(
+  COLABONE_DEFAULT_FINITE_ASSIGN_MAX_ATTEMPTS,
+);
 const assignMaxAttemptsDraft = ref<number | undefined>(
-  COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS,
+  COLABONE_DEFAULT_FINITE_ASSIGN_MAX_ATTEMPTS,
 );
 const editingAssignMaxAttempts = ref(false);
+const assignRetryMode = computed<ColabOneAssignRetryMode>(() =>
+  isColabOneAssignAttemptsUnlimited(form.value.assign_max_attempts)
+    ? "unlimited"
+    : "limited",
+);
 watch(
   () => form.value.assign_max_attempts,
   (val) => {
-    if (!editingAssignMaxAttempts.value) {
-      assignMaxAttemptsDraft.value = val;
+    if (!isColabOneAssignAttemptsUnlimited(val)) {
+      const normalized = normalizeColabOneFiniteAssignAttempts(val);
+      if (normalized !== null) {
+        lastFiniteAssignMaxAttempts.value = normalized;
+        if (!editingAssignMaxAttempts.value) {
+          assignMaxAttemptsDraft.value = normalized;
+        }
+      }
     }
   },
 );
+const notificationSettings = computed<ColabOneNotificationSettings>(() =>
+  normalizeColabOneNotificationSettings(state.value.notification_settings),
+);
+function onNotificationSettingsUpdated(next: ColabOneNotificationSettings) {
+  appliedSnapshotSeq = ++snapshotSeq;
+  state.value = {
+    ...state.value,
+    notification_settings: next,
+  };
+  lastSnapshotRaw = null;
+  void syncSnapshotQuietly();
+}
 const isPresetIdleMinutes = (m: number) =>
   COLABONE_IDLE_RELEASE_OPTIONS.some((opt) => opt.value === m);
 
@@ -2271,13 +2315,51 @@ const operationBannerTitle = computed(() => {
   ) {
     const gpu = op.gpu || form.value.gpu;
     const next = Number(op.next_attempt || (op.attempt ? op.attempt + 1 : 2));
-    const total = Number(
-      op.total_attempts ||
-        form.value.assign_max_attempts ||
-        COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS,
-    );
+    const unlimited =
+      Boolean(op.unlimited_attempts) ||
+      op.total_attempts === COLABONE_ASSIGN_MAX_ATTEMPTS_UNLIMITED ||
+      (op.unlimited_attempts !== false &&
+        op.total_attempts === undefined &&
+        isColabOneAssignAttemptsUnlimited(form.value.assign_max_attempts));
+    const total = unlimited
+      ? 0
+      : Number(
+          op.total_attempts ||
+            form.value.assign_max_attempts ||
+            COLABONE_DEFAULT_FINITE_ASSIGN_MAX_ATTEMPTS,
+        );
     const remaining = startRetryRemainingSeconds.value;
     const kind = op.retry_kind;
+    if (unlimited) {
+      if (remaining !== null && remaining > 0) {
+        if (kind === "capacity") {
+          return t("device.waitingRetryCapacityUnlimited", {
+            seconds: remaining,
+            gpu,
+            next,
+          });
+        }
+        if (kind === "server_busy") {
+          return t("device.waitingRetryServerBusyUnlimited", {
+            seconds: remaining,
+            gpu,
+            next,
+          });
+        }
+        return t("device.waitingRetryNetworkUnlimited", {
+          seconds: remaining,
+          gpu,
+          next,
+        });
+      }
+      if (kind === "capacity") {
+        return t("device.waitingRetryCapacityUnlimitedSoon", { gpu, next });
+      }
+      if (kind === "server_busy") {
+        return t("device.waitingRetryServerBusyUnlimitedSoon", { gpu, next });
+      }
+      return t("device.waitingRetryNetworkUnlimitedSoon", { gpu, next });
+    }
     if (remaining !== null && remaining > 0) {
       if (kind === "capacity") {
         return t("device.waitingRetryCapacity", {
@@ -2619,14 +2701,25 @@ async function changeDownloadThreads(rawThreads: unknown) {
 }
 
 function normalizeAssignMaxAttempts(raw: unknown): number | null {
-  if (raw === null || raw === undefined || raw === "") return null;
-  const num = Number(raw);
-  if (!Number.isFinite(num)) return null;
-  const rounded = Math.round(num);
-  return Math.min(
-    COLABONE_MAX_ASSIGN_MAX_ATTEMPTS,
-    Math.max(COLABONE_MIN_ASSIGN_MAX_ATTEMPTS, rounded),
-  );
+  return normalizeColabOneFiniteAssignAttempts(raw);
+}
+
+function onAssignRetryModeChange(rawMode: unknown) {
+  const mode: ColabOneAssignRetryMode =
+    String(rawMode) === "limited" ? "limited" : "unlimited";
+  if (mode === "unlimited") {
+    if (form.value.assign_max_attempts !== COLABONE_ASSIGN_MAX_ATTEMPTS_UNLIMITED) {
+      void changeAssignMaxAttempts(COLABONE_ASSIGN_MAX_ATTEMPTS_UNLIMITED);
+    }
+    return;
+  }
+  const nextFinite =
+    normalizeColabOneFiniteAssignAttempts(lastFiniteAssignMaxAttempts.value) ??
+    COLABONE_DEFAULT_FINITE_ASSIGN_MAX_ATTEMPTS;
+  assignMaxAttemptsDraft.value = nextFinite;
+  if (form.value.assign_max_attempts !== nextFinite) {
+    void changeAssignMaxAttempts(nextFinite);
+  }
 }
 
 function onAssignMaxAttemptsInput(raw: unknown) {
@@ -2643,6 +2736,7 @@ function onAssignMaxAttemptsInput(raw: unknown) {
 function onAssignMaxAttemptsStep(raw: unknown) {
   const next = normalizeAssignMaxAttempts(raw);
   if (next === null) return;
+  lastFiniteAssignMaxAttempts.value = next;
   assignMaxAttemptsDraft.value = next;
   if (next !== form.value.assign_max_attempts) {
     void changeAssignMaxAttempts(next);
@@ -2650,11 +2744,15 @@ function onAssignMaxAttemptsStep(raw: unknown) {
 }
 
 function commitAssignMaxAttempts() {
+  if (assignRetryMode.value === "unlimited") return;
   const next = normalizeAssignMaxAttempts(assignMaxAttemptsDraft.value);
   if (next === null) {
-    assignMaxAttemptsDraft.value = form.value.assign_max_attempts;
+    assignMaxAttemptsDraft.value =
+      normalizeColabOneFiniteAssignAttempts(form.value.assign_max_attempts) ??
+      lastFiniteAssignMaxAttempts.value;
     return;
   }
+  lastFiniteAssignMaxAttempts.value = next;
   assignMaxAttemptsDraft.value = next;
   if (next !== form.value.assign_max_attempts) {
     void changeAssignMaxAttempts(next);
@@ -2667,23 +2765,28 @@ function onAssignMaxAttemptsBlur() {
 }
 
 let savingAssignMaxAttempts = false;
+const savingAssignMaxAttemptsRef = ref(false);
 let queuedAssignMaxAttempts: number | null = null;
 
 async function changeAssignMaxAttempts(rawAttempts: unknown) {
-  const attempts = normalizeAssignMaxAttempts(rawAttempts);
+  const attempts = normalizeColabOneAssignAttempts(rawAttempts);
   if (attempts === null) return;
+  if (attempts > 0) {
+    lastFiniteAssignMaxAttempts.value = attempts;
+  }
   if (savingAssignMaxAttempts) {
     queuedAssignMaxAttempts = attempts;
     form.value.assign_max_attempts = attempts;
-    assignMaxAttemptsDraft.value = attempts;
+    if (attempts > 0) assignMaxAttemptsDraft.value = attempts;
     lastSyncedSettings.assign_max_attempts = attempts;
     return;
   }
   let settled = form.value.assign_max_attempts;
   form.value.assign_max_attempts = attempts;
-  assignMaxAttemptsDraft.value = attempts;
+  if (attempts > 0) assignMaxAttemptsDraft.value = attempts;
   lastSyncedSettings.assign_max_attempts = attempts;
   savingAssignMaxAttempts = true;
+  savingAssignMaxAttemptsRef.value = true;
   queuedAssignMaxAttempts = attempts;
   beginPendingSetting(["assign_max_attempts"]);
   let synced = false;
@@ -2709,8 +2812,9 @@ async function changeAssignMaxAttempts(rawAttempts: unknown) {
               form.value.assign_max_attempts = settled;
             }
             if (
-              !editingAssignMaxAttempts.value ||
-              assignMaxAttemptsDraft.value === next
+              settled > 0 &&
+              (!editingAssignMaxAttempts.value ||
+                assignMaxAttemptsDraft.value === next)
             ) {
               assignMaxAttemptsDraft.value = settled;
             }
@@ -2723,7 +2827,9 @@ async function changeAssignMaxAttempts(rawAttempts: unknown) {
       }
       if (!stopped && batchSucceeded !== null) {
         notify(
-          t("device.toastAssignMaxAttemptsSet", { count: batchSucceeded }),
+          batchSucceeded === COLABONE_ASSIGN_MAX_ATTEMPTS_UNLIMITED
+            ? t("device.toastAssignMaxAttemptsUnlimited")
+            : t("device.toastAssignMaxAttemptsSet", { count: batchSucceeded }),
           "success",
           "setting-assign-max-attempts",
         );
@@ -2733,6 +2839,7 @@ async function changeAssignMaxAttempts(rawAttempts: unknown) {
   } finally {
     queuedAssignMaxAttempts = null;
     savingAssignMaxAttempts = false;
+    savingAssignMaxAttemptsRef.value = false;
     endPendingSetting(["assign_max_attempts"], synced);
   }
 }
@@ -3151,15 +3258,26 @@ function onHfTokenExtracted() {
 }
 
 async function save() {
+  if (savingAssignMaxAttemptsRef.value) return;
   const prevAttempts = form.value.assign_max_attempts;
-  const normalizedAttempts = normalizeAssignMaxAttempts(
-    assignMaxAttemptsDraft.value,
-  );
-  if (normalizedAttempts !== null) {
-    form.value.assign_max_attempts = normalizedAttempts;
-    assignMaxAttemptsDraft.value = normalizedAttempts;
+  const prevLastFiniteAttempts = lastFiniteAssignMaxAttempts.value;
+  if (assignRetryMode.value === "unlimited") {
+    form.value.assign_max_attempts = COLABONE_ASSIGN_MAX_ATTEMPTS_UNLIMITED;
   } else {
-    assignMaxAttemptsDraft.value = form.value.assign_max_attempts;
+    const normalizedAttempts = normalizeAssignMaxAttempts(
+      assignMaxAttemptsDraft.value,
+    );
+    if (normalizedAttempts !== null) {
+      form.value.assign_max_attempts = normalizedAttempts;
+      lastFiniteAssignMaxAttempts.value = normalizedAttempts;
+      assignMaxAttemptsDraft.value = normalizedAttempts;
+    } else {
+      const fallback =
+        normalizeColabOneFiniteAssignAttempts(form.value.assign_max_attempts) ??
+        lastFiniteAssignMaxAttempts.value;
+      form.value.assign_max_attempts = fallback;
+      assignMaxAttemptsDraft.value = fallback;
+    }
   }
   const prevReleaseMode = form.value.release_mode;
   const prevReleaseCuLimit = form.value.release_cu_limit;
@@ -3170,6 +3288,11 @@ async function save() {
   if (showCuLimitEditor.value) {
     const parsedCu = normalizedCuLimitDraft.value;
     if (parsedCu === null) {
+      form.value.assign_max_attempts = prevAttempts;
+      lastFiniteAssignMaxAttempts.value = prevLastFiniteAttempts;
+      if (prevAttempts > 0) {
+        assignMaxAttemptsDraft.value = prevAttempts;
+      }
       showError(t("device.errInvalidCuLimit"));
       return;
     }
@@ -3221,7 +3344,10 @@ async function save() {
       notify(t("device.toastSettingsSaved"));
     } else {
       form.value.assign_max_attempts = prevAttempts;
-      assignMaxAttemptsDraft.value = prevAttempts;
+      lastFiniteAssignMaxAttempts.value = prevLastFiniteAttempts;
+      if (prevAttempts > 0) {
+        assignMaxAttemptsDraft.value = prevAttempts;
+      }
       form.value.release_mode = prevReleaseMode;
       form.value.release_cu_limit = prevReleaseCuLimit;
       cuLimitDraft.value = prevCuLimitDraft;
@@ -4179,6 +4305,7 @@ const migrationImportError = ref("");
 const migrationUiSyncKey = ref(0);
 const migrationApiSyncKey = ref(0);
 const migrationComfySyncKey = ref(0);
+const migrationNotificationsSyncKey = ref(0);
 let migrationExportReqSeq = 0;
 
 function formatMigrationError(err: unknown): string {
@@ -4412,6 +4539,9 @@ async function handleMigrationApply(payload: {
       appliedSet.has("credentials")
     ) {
       migrationComfySyncKey.value += 1;
+    }
+    if (appliedSet.has("credentials") || appliedSet.has("settings")) {
+      migrationNotificationsSyncKey.value += 1;
     }
 
     migrationModalOpen.value = false;
@@ -5308,6 +5438,40 @@ onMounted(() => {
     window.addEventListener(name, interaction, { passive: true });
   window.addEventListener("keydown", handleGlobalKeydown);
   window.addEventListener("colabone:log-window-state", handleLogWindowEvent);
+  unsubNavigate = colabOneOnNavigate((payload) => {
+    if (stopped) return;
+    const target = colabOneNormalizeNavigatePayload(payload);
+    if (!target.tab) return;
+    if (updateModalOpen.value && updateState.value.status !== "installing") {
+      handleUpdatePopoverOpenChange(false);
+    }
+    if (showRelease.value && !busy.value) {
+      showRelease.value = false;
+    }
+    if (showUpgradeConfirm.value && !busy.value) {
+      showUpgradeConfirm.value = false;
+    }
+    if (
+      migrationModalOpen.value &&
+      !migrationExportSubmitting.value &&
+      !migrationImportDecrypting.value &&
+      !migrationImportApplying.value
+    ) {
+      handleMigrationModalOpenChange(false);
+    }
+    if (workflowShareModalOpen.value && !workflowShareMutating.value) {
+      workflowShareModalOpen.value = false;
+    }
+    if (target.openModels) {
+      openModels();
+      return;
+    }
+    modelsDrawerOpen.value = false;
+    selectPage(target.tab);
+    if (target.tab === "comfyui" && target.openOutputs) {
+      pendingOpenComfyOutputs.value = true;
+    }
+  });
   window.addEventListener("focus", probeDriveAuthOnReturn);
   document.addEventListener("visibilitychange", probeDriveAuthOnReturn);
 });
@@ -5329,6 +5493,8 @@ onUnmounted(() => {
   unsubWorkflowShares = null;
   unsubOutputShares?.();
   unsubOutputShares = null;
+  unsubNavigate?.();
+  unsubNavigate = null;
   window.removeEventListener(
     COLABONE_WEB_AUTH_REQUIRED_EVENT,
     handleWebAuthRequired,
@@ -7026,6 +7192,7 @@ onUnmounted(() => {
               :output-share-deleting-id="outputShareDeletingId"
               :output-share-last-created="outputShareLastCreated"
               :copy-text="handleOutputShareCopyText"
+              :open-outputs-request="pendingOpenComfyOutputs"
               @device="openDevice"
               @settings="selectPage('settings')"
               @upgrade="requestRuntimeUpgrade"
@@ -7041,6 +7208,7 @@ onUnmounted(() => {
               @delete-output-share="handleOutputShareDelete"
               @clear-output-share-created="outputShareLastCreated = null"
               @enable-web-console="handleWorkflowShareEnableWebConsole"
+              @consume-open-outputs="pendingOpenComfyOutputs = false"
             />
           </main>
 
@@ -7070,7 +7238,7 @@ onUnmounted(() => {
                   <AButton
                     v-if="!showFloatingSettingsSave"
                     type="primary"
-                    :disabled="busy"
+                    :disabled="busy || savingAssignMaxAttemptsRef"
                     @click="save"
                   >
                     {{ t("settings.saveSettings") }}
@@ -7494,7 +7662,11 @@ onUnmounted(() => {
                             />
                             <AButton
                               type="primary"
-                              :disabled="!form.hf_token.trim() || busy"
+                              :disabled="
+                                !form.hf_token.trim() ||
+                                busy ||
+                                savingAssignMaxAttemptsRef
+                              "
                               @click="save"
                             >
                               {{ t("settings.hfSaveBtn") }}
@@ -7746,45 +7918,71 @@ onUnmounted(() => {
                       </div>
                     </div>
 
-                    <!-- Row 2.5: GPU Allocation Max Attempts -->
-                    <div class="co-settings-row">
+                    <!-- Row 2.5: GPU Allocation Retry Policy -->
+                    <div class="co-settings-row" data-testid="settings-assign-retry-row">
                       <div class="co-sr-main">
                         <div class="co-sr-info">
                           <div class="co-sr-title-line">
                             <h3 class="co-sr-title">{{ t("settings.assignMaxAttemptsLabel") }}</h3>
                           </div>
                           <p class="co-sr-desc">
-                            {{ t("settings.assignMaxAttemptsDesc") }}
+                            {{
+                              assignRetryMode === "unlimited"
+                                ? t("settings.assignMaxAttemptsUnlimitedDesc")
+                                : t("settings.assignMaxAttemptsDesc")
+                            }}
                           </p>
                         </div>
                         <div class="co-sr-control">
                           <ColabOneSkeleton
                             v-if="!snapshotLoaded"
-                            :width="116"
+                            :width="184"
                             :height="32"
                             :radius="8"
                             variant="rect"
                             tone="subtle"
                             :delay="115"
                           />
-                          <div v-else class="co-sr-attempts-wrap co-sk-reveal">
-                            <AInputNumber
-                              id="settings-assign-max-attempts"
-                              :value="assignMaxAttemptsDraft"
-                              :min="COLABONE_MIN_ASSIGN_MAX_ATTEMPTS"
-                              :max="COLABONE_MAX_ASSIGN_MAX_ATTEMPTS"
-                              :step="1"
-                              :precision="0"
-                              :aria-label="t('settings.assignMaxAttemptsAria')"
-                              class="co-sr-attempts-input"
+                          <div v-else class="co-retry-control-row co-sk-reveal">
+                            <ASelect
+                              :value="assignRetryMode"
+                              :aria-label="t('settings.assignRetryModeAria')"
+                              class="co-sr-select co-sr-select-retry"
+                              :dropdown-match-select-width="false"
                               :disabled="busy"
-                              @update:value="onAssignMaxAttemptsInput"
-                              @step="onAssignMaxAttemptsStep"
-                              @focus="editingAssignMaxAttempts = true"
-                              @blur="onAssignMaxAttemptsBlur"
-                              @press-enter="commitAssignMaxAttempts"
-                            />
-                            <span class="co-sr-unit">{{ t("settings.assignMaxAttemptsUnit") }}</span>
+                              data-testid="settings-assign-retry-mode-select"
+                              @change="onAssignRetryModeChange"
+                            >
+                              <ASelectOption value="unlimited">
+                                {{ t("settings.assignRetryModeUnlimited") }}
+                              </ASelectOption>
+                              <ASelectOption value="limited">
+                                {{ t("settings.assignRetryModeLimited") }}
+                              </ASelectOption>
+                            </ASelect>
+
+                            <div
+                              v-if="assignRetryMode === 'limited'"
+                              class="co-sr-attempts-wrap"
+                            >
+                              <AInputNumber
+                                id="settings-assign-max-attempts"
+                                :value="assignMaxAttemptsDraft"
+                                :min="COLABONE_MIN_ASSIGN_MAX_ATTEMPTS"
+                                :max="COLABONE_MAX_ASSIGN_MAX_ATTEMPTS"
+                                :step="1"
+                                :precision="0"
+                                :aria-label="t('settings.assignMaxAttemptsAria')"
+                                class="co-sr-attempts-input"
+                                :disabled="busy"
+                                @update:value="onAssignMaxAttemptsInput"
+                                @step="onAssignMaxAttemptsStep"
+                                @focus="editingAssignMaxAttempts = true"
+                                @blur="onAssignMaxAttemptsBlur"
+                                @press-enter="commitAssignMaxAttempts"
+                              />
+                              <span class="co-sr-unit">{{ t("settings.assignMaxAttemptsUnit") }}</span>
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -7955,6 +8153,29 @@ onUnmounted(() => {
                       </div>
                     </div>
                   </div>
+                </section>
+
+                <!-- Section 2.5: Notifications -->
+                <section
+                  class="co-settings-group-block"
+                  aria-labelledby="settings-sec-notifications"
+                >
+                  <h2
+                    id="settings-sec-notifications"
+                    class="co-settings-section-label"
+                  >
+                    {{ t("notifications.sectionTitle") }}
+                  </h2>
+                  <ColabOneNotificationsCard
+                    :key="migrationNotificationsSyncKey"
+                    :settings="notificationSettings"
+                    :loading="!snapshotLoaded"
+                    :can-reveal-secrets="capabilities.can_reveal_host_secrets"
+                    :disabled="busy"
+                    @updated="onNotificationSettingsUpdated"
+                    @notify="notify"
+                    @error="showError"
+                  />
                 </section>
 
                 <!-- Section 3: Appearance & Language -->
@@ -8564,7 +8785,7 @@ onUnmounted(() => {
               <AButton
                 type="primary"
                 class="co-settings-floating-btn"
-                :disabled="busy"
+                :disabled="busy || savingAssignMaxAttemptsRef"
                 @click="save"
               >
                 {{ t("settings.saveSettings") }}
@@ -10790,6 +11011,17 @@ onUnmounted(() => {
   width: 184px;
 }
 
+.co-retry-control-row {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.co-sr-select-retry {
+  width: 192px;
+}
+
 .co-sr-attempts-wrap {
   display: inline-flex;
   align-items: center;
@@ -10943,14 +11175,16 @@ onUnmounted(() => {
     flex-wrap: wrap;
   }
 
-  .co-sr-control .co-release-control-row {
+  .co-sr-control .co-release-control-row,
+  .co-sr-control .co-retry-control-row {
     display: flex;
     width: 100%;
   }
 
   .co-sr-control-input,
   .co-sr-select-gpu,
-  .co-sr-select-idle {
+  .co-sr-select-idle,
+  .co-sr-select-retry {
     width: 100%;
   }
 }
@@ -10972,14 +11206,16 @@ onUnmounted(() => {
     flex-wrap: wrap;
   }
 
-  .co-sr-control .co-release-control-row {
+  .co-sr-control .co-release-control-row,
+  .co-sr-control .co-retry-control-row {
     display: flex;
     width: 100%;
   }
 
   .co-sr-control-input,
   .co-sr-select-gpu,
-  .co-sr-select-idle {
+  .co-sr-select-idle,
+  .co-sr-select-retry {
     width: 100%;
   }
 }

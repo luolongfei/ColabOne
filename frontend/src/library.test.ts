@@ -94,7 +94,7 @@ describe("ColabOneSnapshot & ModelSpec defaults and library gating", () => {
       idle_countdown_seconds: 60,
       auto_drive: true,
       download_threads: 16,
-      assign_max_attempts: 30,
+      assign_max_attempts: 0,
       assign_proxy_enabled: false,
     });
 

@@ -487,24 +487,26 @@ func parseFlexibleTime(raw json.RawMessage) *time.Time {
 
 // AllocateOptions configures a single GPU allocation attempt sequence.
 type AllocateOptions struct {
-	OnLog        LogFn
-	OnStage      StageFn
-	CancelCh     <-chan struct{}
-	OnRetryState RetryStateFn
-	AssignProxy  string
-	MaxAttempts  int
+	OnLog             LogFn
+	OnStage           StageFn
+	CancelCh          <-chan struct{}
+	OnRetryState      RetryStateFn
+	AssignProxy       string
+	MaxAttempts       int
+	UnlimitedAttempts bool
 }
 
 // StartOptions configures end-to-end GPU allocation, readiness check, and remote service deployment.
 type StartOptions struct {
-	CreateNew    bool
-	RcloneConf   string
-	OnTelemetry  TelemetryFn
-	OnLog        LogFn
-	CancelCh     <-chan struct{}
-	OnRetryState RetryStateFn
-	AssignProxy  string
-	MaxAttempts  int
+	CreateNew         bool
+	RcloneConf        string
+	OnTelemetry       TelemetryFn
+	OnLog             LogFn
+	CancelCh          <-chan struct{}
+	OnRetryState      RetryStateFn
+	AssignProxy       string
+	MaxAttempts       int
+	UnlimitedAttempts bool
 }
 
 // ColabOneAssignProxySpec holds a validated and normalized allocation-only proxy specification.

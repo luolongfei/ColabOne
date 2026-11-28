@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/luolongfei/ColabOne/console/internal/comfyui"
+	"github.com/luolongfei/ColabOne/console/internal/notifier"
 	"github.com/luolongfei/ColabOne/console/internal/outboundlog"
 )
 
@@ -36,6 +37,9 @@ type instanceCache struct {
 	LiveDrivingMotions     []map[string]any
 	LiveCatalog            map[string]any
 	RemoteWorkflowVersions map[string]float64
+	TaskActivity           map[string]taskActivitySig
+	TaskLogCursor          map[string]int64
+	TaskActivitySeeded     bool
 	LastHeartbeat          float64
 	LastConfig             float64
 	LastLegacyKeepalive    float64
@@ -167,6 +171,15 @@ type ColabOneController struct {
 	driveStreamHTTPClient          *http.Client
 	outboundLogger                 *outboundlog.ColabOneOutboundLogger
 	outboundLoggerOwned            bool
+
+	notifier             *notifier.ColabOneNotifier
+	notifierOwned        bool
+	notifyHooksMu        sync.RWMutex
+	notifyHooks          ColabOneSystemNotificationHooks
+	cachedDefaultLocale  atomic.Value
+	notifiedTasks        map[string]bool
+	pendingNotifications []pendingControllerNotification
+	lastAuthNotifyAt     map[string]time.Time
 
 	// Optional overrides for unit tests; zero values use production defaults.
 	workflowDraftsMaxCount         int
@@ -313,8 +326,25 @@ func NewColabOneController(cfg ColabOneControllerConfig) *ColabOneController {
 		driveHTTPClientOwned:           cfg.DriveHTTPClient == nil,
 		outboundLogger:                 cfg.OutboundLogger,
 		outboundLoggerOwned:            cfg.OutboundLoggerOwned,
+		notifyHooks:                    cfg.SystemNotifyHooks,
+		notifiedTasks:                  make(map[string]bool),
+		lastAuthNotifyAt:               make(map[string]time.Time),
 		rootCtx:                        rootCtx,
 		cancelRoot:                     cancelRoot,
+	}
+	c.refreshDefaultNotificationLocale()
+	if cfg.Notifier != nil {
+		c.notifier = cfg.Notifier
+	} else {
+		c.notifier = notifier.NewColabOneNotifier(notifier.ColabOneNotifierConfig{
+			ConfigProvider:  c.currentNotificationConfig,
+			IsWindowFocused: c.isDesktopWindowFocused,
+			SystemSender:    c.sendDesktopSystemNotification,
+			SystemSupported: c.notifierSystemSupported,
+			HTTPClient:      cfg.NotifierHTTPClient,
+			OnLog:           c.logFunc(),
+		})
+		c.notifierOwned = true
 	}
 	if c.driveHTTPClient == nil {
 		c.driveHTTPClient = &http.Client{
@@ -418,6 +448,9 @@ func (c *ColabOneController) Close() {
 			closer.Close()
 		} else {
 			c.closeExternalObserver("", true)
+		}
+		if c.notifierOwned && c.notifier != nil {
+			c.notifier.Close()
 		}
 		if c.outboundLoggerOwned && c.outboundLogger != nil {
 			c.outboundLogger.Close()
@@ -623,8 +656,16 @@ func (c *ColabOneController) ensureInstanceStateLocked(endpoint string) *instanc
 			LiveDrivingMotions:     []map[string]any{},
 			LiveCatalog:            map[string]any{},
 			RemoteWorkflowVersions: make(map[string]float64),
+			TaskActivity:           make(map[string]taskActivitySig),
+			TaskLogCursor:          make(map[string]int64),
 		}
 		c.instanceStates[endpoint] = state
+	}
+	if state.TaskActivity == nil {
+		state.TaskActivity = make(map[string]taskActivitySig)
+	}
+	if state.TaskLogCursor == nil {
+		state.TaskLogCursor = make(map[string]int64)
 	}
 	return state
 }
@@ -674,6 +715,19 @@ func (c *ColabOneController) saveActiveToCacheWithSessionsLocked(sessions map[st
 		verCopy[k] = v
 	}
 	entry.RemoteWorkflowVersions = verCopy
+	taCopy := make(map[string]taskActivitySig, len(c.taskActivity))
+	for k, v := range c.taskActivity {
+		taCopy[k] = v
+	}
+	entry.TaskActivity = taCopy
+	tcCopy := make(map[string]int64, len(c.taskLogCursor))
+	for k, v := range c.taskLogCursor {
+		tcCopy[k] = v
+	}
+	entry.TaskLogCursor = tcCopy
+	if rtState == "ready" || len(c.taskActivity) > 0 {
+		entry.TaskActivitySeeded = true
+	}
 }
 
 func (c *ColabOneController) saveActiveToCache() {
@@ -716,6 +770,50 @@ func (c *ColabOneController) activateCachedWithSessionsLocked(endpoint string, s
 				verCopy[k] = v
 			}
 			c.remoteWorkflowVersions = verCopy
+
+			taCopy := make(map[string]taskActivitySig, len(entry.TaskActivity))
+			for k, v := range entry.TaskActivity {
+				taCopy[k] = v
+			}
+			tcCopy := make(map[string]int64, len(entry.TaskLogCursor))
+			for k, v := range entry.TaskLogCursor {
+				tcCopy[k] = v
+			}
+			// If this cached runtime already has tasks but TaskActivity was never seeded,
+			// seed them silently so switching to this instance never replays old tasks.
+			if !entry.TaskActivitySeeded && len(taCopy) == 0 && entry.Runtime != nil {
+				for _, task := range asMapSlice(entry.Runtime["tasks"]) {
+					if task == nil {
+						continue
+					}
+					tid := asString(task["id"])
+					if tid == "" {
+						continue
+					}
+					progress, _ := asFloat(task["progress"])
+					taCopy[tid] = taskActivitySig{
+						Kind:    asString(task["kind"]),
+						State:   asString(task["state"]),
+						Bucket:  int(progress * 10),
+						Message: asString(task["message"]),
+					}
+					var cursor int64
+					for _, logEntry := range asMapSlice(task["logs"]) {
+						if logEntry == nil {
+							continue
+						}
+						if seq, _ := asInt64(logEntry["seq"]); seq > cursor {
+							cursor = seq
+						}
+					}
+					tcCopy[tid] = cursor
+				}
+				if len(taCopy) > 0 || asString(entry.Runtime["state"]) == "ready" {
+					entry.TaskActivitySeeded = true
+				}
+			}
+			c.taskActivity = taCopy
+			c.taskLogCursor = tcCopy
 			return
 		}
 	}
@@ -728,6 +826,8 @@ func (c *ColabOneController) activateCachedWithSessionsLocked(endpoint string, s
 	c.data["live_driving_motions"] = []map[string]any{}
 	c.data["live_catalog"] = map[string]any{}
 	c.remoteWorkflowVersions = make(map[string]float64)
+	c.taskActivity = make(map[string]taskActivitySig)
+	c.taskLogCursor = make(map[string]int64)
 }
 
 func (c *ColabOneController) enrichInstances(account map[string]any) []map[string]any {
@@ -1057,7 +1157,7 @@ func (c *ColabOneController) Snapshot() map[string]any {
 	assignProxyEnabled := asBool(c.settings["assign_proxy_enabled"]) && assignProxySpec != nil
 	publicSettings := make(map[string]any, len(c.settings))
 	for k, v := range c.settings {
-		if k == "idle_policy" || k == "rclone_drive_policy" || k == "default_gpu_policy" || k == "default_assign_max_attempts_policy" {
+		if k == "idle_policy" || k == "rclone_drive_policy" || k == "default_gpu_policy" || k == "default_assign_max_attempts_policy" || k == "notifications" {
 			continue
 		}
 		publicSettings[k] = v
@@ -1078,6 +1178,7 @@ func (c *ColabOneController) Snapshot() map[string]any {
 		"masked_url": maskedURL,
 		"has_auth":   hasAuth,
 	}
+	value["notification_settings"] = c.notificationPublicView()
 
 	c.vaultConfigMu.Lock()
 	apiMap := map[string]any{}
@@ -1183,6 +1284,7 @@ func (c *ColabOneController) Update(values map[string]any) {
 		sessions = c.vaultSessions()
 		activeEP = c.activeEndpointFrom(sessions)
 	}
+	c.refreshDefaultNotificationLocale()
 	c.mu.Lock()
 	pendingLogs := c.updateWithSessionsLocked(values, sessions, activeEP)
 	c.mu.Unlock()
@@ -1271,6 +1373,9 @@ func (c *ColabOneController) applyAccountRefreshIfCurrent(
 		c.mu.Unlock()
 		return false
 	}
+	if asBool(acct["logged_in"]) {
+		delete(c.lastAuthNotifyAt, "google_account")
+	}
 	patch := map[string]any{"account": acct}
 	if isMonitorAccountError(asString(c.data["error"])) {
 		patch["error"] = ""
@@ -1336,6 +1441,9 @@ func (c *ColabOneController) resetAccountStateForSwitch(accountPatch map[string]
 	clear(c.upgradeAttempted)
 	clear(c.taskActivity)
 	clear(c.taskLogCursor)
+	clear(c.notifiedTasks)
+	clear(c.lastAuthNotifyAt)
+	c.pendingNotifications = nil
 	c.remoteWorkflowVersions = make(map[string]float64)
 	c.resetDriveOutputsSyncStateLocked()
 
@@ -1377,6 +1485,16 @@ type pendingActivityLog struct {
 func (c *ColabOneController) flushActivityLogs(entries []pendingActivityLog) {
 	for _, entry := range entries {
 		c.log(entry.message, entry.source, entry.level)
+	}
+	var pendingNotifs []pendingControllerNotification
+	c.mu.Lock()
+	if len(c.pendingNotifications) > 0 {
+		pendingNotifs = c.pendingNotifications
+		c.pendingNotifications = nil
+	}
+	c.mu.Unlock()
+	if len(pendingNotifs) > 0 {
+		c.emitPendingNotifications(pendingNotifs)
 	}
 }
 
@@ -1460,9 +1578,19 @@ func (c *ColabOneController) updateWithSessionsLocked(values map[string]any, ses
 		}
 		newState := asString(rt["state"])
 		prevState := asString(previous["state"])
+		notifLocale := c.effectiveNotificationLocaleLocked()
 		if newState != prevState {
 			if lbl, ok := stateLabels[newState]; ok {
 				queueLog(lbl, "GPU", "info")
+			}
+			if newState == "disconnected" && prevState == "ready" {
+				ep := firstNonEmpty(asString(rt["id"]), asString(previous["id"]), activeEP)
+				gpuName := firstNonEmpty(
+					asString(asMap(rt["gpu"])["name"]),
+					asString(asMap(previous["gpu"])["name"]),
+					asString(c.settings["gpu"]),
+				)
+				c.pendingNotifications = append(c.pendingNotifications, c.buildGPUDisconnectedNotification(ep, gpuName, notifLocale))
 			}
 		}
 
@@ -1492,6 +1620,15 @@ func (c *ColabOneController) updateWithSessionsLocked(values map[string]any, ses
 
 		idle := asMap(rt["idle"])
 		serverTime, _ := asFloat(idle["server_time"])
+
+		prevEP := asString(previous["id"])
+		newEP := firstNonEmpty(asString(rt["id"]), activeEP)
+		sameEndpoint := prevEP != "" && newEP != "" && prevEP == newEP
+		prevOutputsForNotify := asAnySlice(c.data["comfy_outputs"])
+		outputsForNotify := asAnySlice(values["comfy_outputs"])
+		if outputsForNotify == nil {
+			outputsForNotify = prevOutputsForNotify
+		}
 
 		tasks := asMapSlice(rt["tasks"])
 		activeTaskIDs := make(map[string]bool, len(tasks))
@@ -1529,10 +1666,23 @@ func (c *ColabOneController) updateWithSessionsLocked(values map[string]any, ses
 				Bucket:  bucket,
 				Message: tMsg,
 			}
-			if prevSig, exists := c.taskActivity[tid]; exists && prevSig == sig {
+			prevSig, exists := c.taskActivity[tid]
+			if exists && prevSig == sig {
 				continue
 			}
 			c.taskActivity[tid] = sig
+
+			wasPreviouslyActive := exists && prevSig.State != "completed" && prevSig.State != "failed" && prevSig.State != "cancelled"
+			fastFinishOnLiveRT := !exists && sameEndpoint && prevState == "ready"
+			if (tState == "completed" || tState == "failed") && (wasPreviouslyActive || fastFinishOnLiveRT) {
+				notifyKey := newEP + ":" + tid + ":" + tState
+				if !c.notifiedTasks[notifyKey] {
+					if pn, ok := c.buildTaskNotificationLocked(newEP, task, tKind, tState, tMsg, asString(task["error"]), serverTime, outputsForNotify, prevOutputsForNotify, notifLocale); ok {
+						c.notifiedTasks[notifyKey] = true
+						c.pendingNotifications = append(c.pendingNotifications, pn)
+					}
+				}
+			}
 
 			kindLabel := taskKindLabels[tKind]
 			if kindLabel == "" {
@@ -1588,6 +1738,9 @@ func (c *ColabOneController) updateWithSessionsLocked(values map[string]any, ses
 		}
 		c.taskLogCursor = nextCursors
 		c.taskActivity = nextActivity
+		if newEP != "" {
+			c.pruneNotifiedTasksForEndpointLocked(newEP, activeTaskIDs)
+		}
 	}
 
 	if rt, ok := values["runtime"].(map[string]any); ok && asString(rt["state"]) == "stopped" {
@@ -2576,6 +2729,11 @@ func (c *ColabOneController) refreshRemote(ctx context.Context, endpoint string,
 	activeEP := c.activeEndpointFrom(curSessions)
 	_, curOwned := curSessions[target]
 	curStillOwned := (!hadSessions && len(curSessions) == 0) || (target != "" && curOwned)
+	isActiveUpdate := curStillOwned &&
+		(endpoint == "" || endpoint == activeEP) &&
+		(effective == "" || activeEP == "" || effective == activeEP)
+
+	c.refreshDefaultNotificationLocale()
 
 	var pendingLogs []pendingActivityLog
 	c.mu.Lock()
@@ -2585,6 +2743,8 @@ func (c *ColabOneController) refreshRemote(ctx context.Context, endpoint string,
 	}
 	if target != "" && curStillOwned {
 		entry := c.ensureInstanceStateLocked(target)
+		prevRT := deepCopyMap(entry.Runtime)
+		prevOutputs := deepCopySlice(entry.ComfyOutputs)
 		entry.Runtime = deepCopyMap(rt)
 		entry.Models = deepCopyMapSlice(models)
 		entry.Workflows = deepCopyMapSlice(mergedWorkflows)
@@ -2598,10 +2758,11 @@ func (c *ColabOneController) refreshRemote(ctx context.Context, endpoint string,
 			verCopy[k] = v
 		}
 		entry.RemoteWorkflowVersions = verCopy
+		if !isActiveUpdate {
+			c.processSecondaryRuntimeNotificationsLocked(target, prevRT, rt, prevOutputs, comfyOutputs)
+		}
 	}
-	if curStillOwned &&
-		(endpoint == "" || endpoint == activeEP) &&
-		(effective == "" || activeEP == "" || effective == activeEP) {
+	if isActiveUpdate {
 		c.remoteWorkflowVersions = remoteVersions
 		pendingLogs = c.updateWithSessionsLocked(map[string]any{
 			"runtime":              rt,
@@ -2615,11 +2776,150 @@ func (c *ColabOneController) refreshRemote(ctx context.Context, endpoint string,
 		}, curSessions, activeEP)
 	}
 	c.mu.Unlock()
-	c.flushActivityLogs(pendingLogs)
 	if curStillOwned && asString(rt["state"]) == "ready" {
 		c.recordSyncedRemoteOutputs(rt, comfyOutputs)
 	}
+	c.flushActivityLogs(pendingLogs)
 	return state, nil
+}
+
+func (c *ColabOneController) pruneNotifiedTasksForEndpointLocked(ep string, activeTaskIDs map[string]bool) {
+	if ep == "" || len(c.notifiedTasks) == 0 {
+		return
+	}
+	prefix := ep + ":"
+	for key := range c.notifiedTasks {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		if activeTaskIDs == nil {
+			delete(c.notifiedTasks, key)
+			continue
+		}
+		rest := key[len(prefix):]
+		lastColon := strings.LastIndexByte(rest, ':')
+		if lastColon <= 0 {
+			delete(c.notifiedTasks, key)
+			continue
+		}
+		tid := rest[:lastColon]
+		if !activeTaskIDs[tid] {
+			delete(c.notifiedTasks, key)
+		}
+	}
+	if len(c.notifiedTasks) > 512 {
+		clear(c.notifiedTasks)
+	}
+}
+
+func (c *ColabOneController) processSecondaryRuntimeNotificationsLocked(
+	ep string,
+	prevRT, nextRT map[string]any,
+	prevOutputs, outputs []any,
+) {
+	if ep == "" || nextRT == nil {
+		return
+	}
+	entry := c.ensureInstanceStateLocked(ep)
+	notifLocale := c.effectiveNotificationLocaleLocked()
+
+	prevState := asString(prevRT["state"])
+	newState := asString(nextRT["state"])
+	if newState == "disconnected" && prevState == "ready" {
+		gpuName := firstNonEmpty(
+			asString(asMap(nextRT["gpu"])["name"]),
+			asString(asMap(prevRT["gpu"])["name"]),
+			asString(c.settings["gpu"]),
+		)
+		c.pendingNotifications = append(c.pendingNotifications, c.buildGPUDisconnectedNotification(ep, gpuName, notifLocale))
+	}
+
+	idle := asMap(nextRT["idle"])
+	serverTime, _ := asFloat(idle["server_time"])
+	tasks := asMapSlice(nextRT["tasks"])
+	seeded := entry.TaskActivitySeeded
+	activeTaskIDs := make(map[string]bool, len(tasks))
+	for _, task := range tasks {
+		if task == nil {
+			continue
+		}
+		tid := asString(task["id"])
+		if tid == "" {
+			continue
+		}
+		activeTaskIDs[tid] = true
+		cursor := entry.TaskLogCursor[tid]
+		for _, logEntry := range asMapSlice(task["logs"]) {
+			if logEntry == nil {
+				continue
+			}
+			if seq, _ := asInt64(logEntry["seq"]); seq > cursor {
+				cursor = seq
+			}
+		}
+		entry.TaskLogCursor[tid] = cursor
+
+		progress, _ := asFloat(task["progress"])
+		bucket := int(progress * 10)
+		tKind := asString(task["kind"])
+		tState := asString(task["state"])
+		tMsg := asString(task["message"])
+		sig := taskActivitySig{
+			Kind:    tKind,
+			State:   tState,
+			Bucket:  bucket,
+			Message: tMsg,
+		}
+		prevSig, exists := entry.TaskActivity[tid]
+		entry.TaskActivity[tid] = sig
+		if !seeded {
+			// Seed historical tasks on first observation without emitting stale notifications.
+			continue
+		}
+		if exists && prevSig == sig {
+			continue
+		}
+		wasPreviouslyActive := exists && prevSig.State != "completed" && prevSig.State != "failed" && prevSig.State != "cancelled"
+		fastFinishOnLiveRT := !exists && prevState == "ready"
+		if (tState == "completed" || tState == "failed") && (wasPreviouslyActive || fastFinishOnLiveRT) {
+			notifyKey := ep + ":" + tid + ":" + tState
+			if !c.notifiedTasks[notifyKey] {
+				if pn, ok := c.buildTaskNotificationLocked(ep, task, tKind, tState, tMsg, asString(task["error"]), serverTime, outputs, prevOutputs, notifLocale); ok {
+					c.notifiedTasks[notifyKey] = true
+					c.pendingNotifications = append(c.pendingNotifications, pn)
+				}
+			}
+		}
+	}
+	if newState == "ready" || len(tasks) > 0 {
+		entry.TaskActivitySeeded = true
+	}
+
+	nextCursors := make(map[string]int64, len(activeTaskIDs))
+	nextActivity := make(map[string]taskActivitySig, len(activeTaskIDs))
+	for tid := range activeTaskIDs {
+		nextCursors[tid] = entry.TaskLogCursor[tid]
+		if sig, ok := entry.TaskActivity[tid]; ok {
+			nextActivity[tid] = sig
+		}
+	}
+	entry.TaskLogCursor = nextCursors
+	entry.TaskActivity = nextActivity
+	c.pruneNotifiedTasksForEndpointLocked(ep, activeTaskIDs)
+}
+
+func isStartCancellationOrCloseError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var cancelledErr *ColabOneOperationCancelled
+	if errors.As(err, &cancelledErr) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	msg := strings.TrimSpace(err.Error())
+	return strings.Contains(msg, "已取消 GPU 分配") ||
+		strings.Contains(msg, "已取消 GPU 启动") ||
+		strings.Contains(msg, "远端实例管理通道已关闭")
 }
 
 func mapsEqual(a, b map[string]any) bool {
@@ -3035,14 +3335,18 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 	proxyEnabled := asBool(c.settings["assign_proxy_enabled"])
 	idleMin, _ := asInt(c.settings["idle_minutes"])
 	assignMaxAttempts, ok := asExactInt(c.settings["assign_max_attempts"])
-	if !ok || assignMaxAttempts < COLABONE_MIN_ASSIGN_MAX_ATTEMPTS || assignMaxAttempts > COLABONE_MAX_ASSIGN_MAX_ATTEMPTS {
+	if !ok || !isValidColabOneAssignMaxAttempts(assignMaxAttempts) {
 		assignMaxAttempts = COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS
 	}
+	unlimitedAssignAttempts := assignMaxAttempts == COLABONE_ASSIGN_MAX_ATTEMPTS_UNLIMITED
 	c.mu.Unlock()
 
 	if !validColabOneGPUs[targetGPU] {
 		return errors.New("GPU 型号不合法")
 	}
+
+	startBegan := time.Now()
+	var startAttemptCount atomic.Int32
 
 	initialSessions := c.vaultSessions()
 	previousActive := c.activeEndpointFrom(initialSessions)
@@ -3132,6 +3436,9 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 		if info == nil {
 			return
 		}
+		if att, ok := asInt(info["attempt"]); ok && att > int(startAttemptCount.Load()) {
+			startAttemptCount.Store(int32(att))
+		}
 		c.mu.Lock()
 		prev := asMap(c.data["operation"])
 		if prev == nil || asString(prev["kind"]) != "runtime_start" {
@@ -3158,6 +3465,7 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 			"attempt",
 			"next_attempt",
 			"total_attempts",
+			"unlimited_attempts",
 			"retry_kind",
 			"allocated",
 			"gpu",
@@ -3269,6 +3577,7 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 			for _, ep := range orphanEPs {
 				delete(c.instanceStates, ep)
 				delete(c.upgradeAttempted, ep)
+				c.pruneNotifiedTasksForEndpointLocked(ep, nil)
 			}
 			c.mu.Unlock()
 		}
@@ -3313,16 +3622,23 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 		}
 		c.observerWake.Set()
 		if c.startCancel.IsSet() {
-			hasLeftover := false
+			leftoverEPs := make([]string, 0)
 			for ep := range remainingSessions {
 				if !existingSessions[ep] {
-					hasLeftover = true
-					break
+					leftoverEPs = append(leftoverEPs, ep)
 				}
 			}
-			if !hasLeftover {
+			sort.Strings(leftoverEPs)
+			if len(leftoverEPs) == 0 {
 				return &ColabOneOperationCancelled{Message: "已取消 GPU 分配", Source: "GPU"}
 			}
+			if !c.stop.IsSet() {
+				c.notifyGPUCancelCleanupIncomplete(targetGPU, leftoverEPs)
+			}
+			return origErr
+		}
+		if !c.stop.IsSet() && origErr != nil && !isStartCancellationOrCloseError(origErr) {
+			c.notifyGPUAllocateFailed(targetGPU, origErr, int(startAttemptCount.Load()))
 		}
 		return origErr
 	}
@@ -3349,6 +3665,8 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 		c.data["live_driving_motions"] = []map[string]any{}
 		c.data["live_catalog"] = map[string]any{}
 		c.remoteWorkflowVersions = make(map[string]float64)
+		c.taskActivity = make(map[string]taskActivitySig)
+		c.taskLogCursor = make(map[string]int64)
 		c.mu.Unlock()
 	}
 
@@ -3391,14 +3709,15 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 		return rollback(errors.New("Provider 未配置"))
 	}
 	remoteInfo, err := c.provider.Start(ctx, targetGPU, notify, ColabOneStartOptions{
-		CreateNew:    createNew,
-		RcloneConf:   rcloneConf,
-		AssignProxy:  activeAssignProxy,
-		MaxAttempts:  assignMaxAttempts,
-		OnLog:        c.logFunc(),
-		OnTelemetry:  onBootTelemetry,
-		OnRetryState: onRetryState,
-		CancelEvent:  c.startCancel,
+		CreateNew:         createNew,
+		RcloneConf:        rcloneConf,
+		AssignProxy:       activeAssignProxy,
+		MaxAttempts:       assignMaxAttempts,
+		UnlimitedAttempts: unlimitedAssignAttempts,
+		OnLog:             c.logFunc(),
+		OnTelemetry:       onBootTelemetry,
+		OnRetryState:      onRetryState,
+		CancelEvent:       c.startCancel,
 	})
 	if err != nil {
 		return rollback(err)
@@ -3580,6 +3899,20 @@ func (c *ColabOneController) Start(ctx context.Context, createNew bool, gpu stri
 		}
 		c.mu.Unlock()
 	}
+	fallbackActiveEP := c.activeEndpoint()
+	c.mu.Lock()
+	readyRT := asMap(c.data["runtime"])
+	allocatedEP := firstNonEmpty(asString(readyRT["id"]), asString(remoteInfo["endpoint"]), fallbackActiveEP)
+	allocatedLoc := deepCopyMap(asMap(readyRT["location"]))
+	if len(allocatedLoc) == 0 {
+		allocatedLoc = deepCopyMap(asMap(remoteInfo["location"]))
+	}
+	driveMap := asMap(readyRT["drive"])
+	driveReady := asBool(driveMap["mounted"]) || asBool(driveMap["connected"])
+	c.mu.Unlock()
+	if !asBool(remoteInfo["reused"]) {
+		c.notifyGPUAllocated(targetGPU, allocatedEP, allocatedLoc, int(startAttemptCount.Load()), time.Since(startBegan), driveReady)
+	}
 	return nil
 }
 
@@ -3661,6 +3994,7 @@ func (c *ColabOneController) releaseEndpoint(ctx context.Context, force bool, sk
 		c.mu.Lock()
 		delete(c.instanceStates, target)
 		delete(c.upgradeAttempted, target)
+		c.pruneNotifiedTasksForEndpointLocked(target, nil)
 		c.mu.Unlock()
 	}
 
@@ -3671,6 +4005,9 @@ func (c *ColabOneController) releaseEndpoint(ctx context.Context, force bool, sk
 	} else {
 		c.mu.Lock()
 		c.remoteWorkflowVersions = make(map[string]float64)
+		c.taskActivity = make(map[string]taskActivitySig)
+		c.taskLogCursor = make(map[string]int64)
+		clear(c.notifiedTasks)
 		pendingLogs := c.updateLocked(map[string]any{
 			"runtime":       map[string]any{"state": "stopped"},
 			"models":        c.Presets(),
@@ -3824,6 +4161,7 @@ func (c *ColabOneController) ReleaseAll(ctx context.Context, planID string, forc
 				if _, still := remainingSessions[ep]; !still {
 					delete(c.instanceStates, ep)
 					delete(c.upgradeAttempted, ep)
+					c.pruneNotifiedTasksForEndpointLocked(ep, nil)
 				}
 			}
 			c.mu.Unlock()
@@ -4474,7 +4812,7 @@ func (c *ColabOneController) SaveSettings(ctx context.Context, payload map[strin
 	curReleaseMode, curIdle, curCULimit, _ := c.currentReleasePolicyLocked()
 	curThreads, _ := asInt(c.settings["download_threads"])
 	curAssignMaxAttempts, ok := asExactInt(c.settings["assign_max_attempts"])
-	if !ok || curAssignMaxAttempts < COLABONE_MIN_ASSIGN_MAX_ATTEMPTS || curAssignMaxAttempts > COLABONE_MAX_ASSIGN_MAX_ATTEMPTS {
+	if !ok || !isValidColabOneAssignMaxAttempts(curAssignMaxAttempts) {
 		curAssignMaxAttempts = COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS
 	}
 	c.mu.Unlock()
@@ -4552,8 +4890,8 @@ func (c *ColabOneController) SaveSettings(ctx context.Context, payload map[strin
 		rawAssignMaxAttempts = v
 	}
 	assignMaxAttemptsVal, ok := asExactInt(rawAssignMaxAttempts)
-	if !ok || assignMaxAttemptsVal < COLABONE_MIN_ASSIGN_MAX_ATTEMPTS || assignMaxAttemptsVal > COLABONE_MAX_ASSIGN_MAX_ATTEMPTS {
-		return nil, fmt.Errorf("GPU 分配最大尝试次数必须在 %d 至 %d 次之间", COLABONE_MIN_ASSIGN_MAX_ATTEMPTS, COLABONE_MAX_ASSIGN_MAX_ATTEMPTS)
+	if !ok || !isValidColabOneAssignMaxAttempts(assignMaxAttemptsVal) {
+		return nil, fmt.Errorf("GPU 分配最大尝试次数必须为 0（不限次数）或 %d 至 %d 次之间", COLABONE_MIN_ASSIGN_MAX_ATTEMPTS, COLABONE_MAX_ASSIGN_MAX_ATTEMPTS)
 	}
 	if _, exists := public["assign_max_attempts"]; exists {
 		public["assign_max_attempts"] = assignMaxAttemptsVal
@@ -4671,7 +5009,7 @@ func (c *ColabOneController) SaveSettings(ctx context.Context, payload map[strin
 	}
 	snapThreads, _ := asInt(snapshotSettings["download_threads"])
 	snapAssignMaxAttempts, ok := asExactInt(snapshotSettings["assign_max_attempts"])
-	if !ok || snapAssignMaxAttempts < COLABONE_MIN_ASSIGN_MAX_ATTEMPTS || snapAssignMaxAttempts > COLABONE_MAX_ASSIGN_MAX_ATTEMPTS {
+	if !ok || !isValidColabOneAssignMaxAttempts(snapAssignMaxAttempts) {
 		snapAssignMaxAttempts = COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS
 	}
 	releaseSummary := fmt.Sprintf("空闲释放: %d 分钟", snapIdle)
@@ -4680,11 +5018,15 @@ func (c *ColabOneController) SaveSettings(ctx context.Context, payload map[strin
 	} else if snapMode == COLABONE_RELEASE_MODE_CU_LIMIT {
 		releaseSummary = fmt.Sprintf("自动释放: 消耗达 %s CU 释放", formatColabOneCUCompact(snapCULimit))
 	}
+	assignAttemptsSummary := fmt.Sprintf("分配重试上限: %d 次", snapAssignMaxAttempts)
+	if snapAssignMaxAttempts == COLABONE_ASSIGN_MAX_ATTEMPTS_UNLIMITED {
+		assignAttemptsSummary = "分配重试上限: 不限次数（直到成功）"
+	}
 	summaryParts := []string{
 		fmt.Sprintf("默认 GPU: %s", asString(snapshotSettings["gpu"])),
 		releaseSummary,
 		fmt.Sprintf("下载并发: %d 线程", snapThreads),
-		fmt.Sprintf("分配重试上限: %d 次", snapAssignMaxAttempts),
+		assignAttemptsSummary,
 	}
 	if hfToken != "" {
 		summaryParts = append(summaryParts, "已更新 Hugging Face Token")

@@ -726,7 +726,7 @@ func TestWireDefaultAssignMaxAttemptsParity(t *testing.T) {
 			provider.COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS,
 		)
 	}
-	if controller.COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS != 30 {
-		t.Fatalf("expected COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS == 30, got %d", controller.COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS)
+	if controller.COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS != controller.COLABONE_ASSIGN_MAX_ATTEMPTS_UNLIMITED {
+		t.Fatalf("expected COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS == 0 (unlimited), got %d", controller.COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS)
 	}
 }

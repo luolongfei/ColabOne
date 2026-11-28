@@ -63,7 +63,8 @@ type colabOneBridge struct {
 	serveMediaWithOptsFn func(context.Context, http.ResponseWriter, *http.Request, string, controller.ColabOneOutputMediaOptions)
 	streamMediaFn        func(context.Context, string, io.Writer, controller.ColabOneOutputMediaOptions) (*controller.ColabOneOutputMediaMeta, error)
 	onFocusWindow        func()
-	starting      bool
+	systemNotifyHooks    controller.ColabOneSystemNotificationHooks
+	starting             bool
 	startDone     chan struct{}
 	closedCh      chan struct{}
 	closed        bool
@@ -75,6 +76,7 @@ func colabOneMethodTimeout(method string) time.Duration {
 		"runtime.start.cancel", "settings.save",
 		"api.key", "api.tunnel_token", "comfyui.canvas.tunnel_token", "settings.hf_token",
 		"settings.assign_proxy", "settings.assign_proxy.test",
+		"notifications.save", "notifications.secret",
 		"desktop.shortcuts",
 		"comfyui.draft.get", "comfyui.draft.save", "comfyui.draft.clear", "comfyui.draft.media.delete",
 		"comfyui.tts.preview.cache.lookup", "comfyui.tts.preview.cache.read",
@@ -84,8 +86,8 @@ func colabOneMethodTimeout(method string) time.Duration {
 		"comfyui.live.llm.get", "comfyui.live.llm.save", "comfyui.live.llm.clear",
 		"comfyui.live.avatars.list", "comfyui.live.driving.list":
 		return 30 * time.Second
-	case "comfyui.live.avatars.delete", "comfyui.live.driving.delete":
-		// 30s DELETE RPC + RefreshRemote headroom.
+	case "notifications.test", "comfyui.live.avatars.delete", "comfyui.live.driving.delete":
+		// 30s DELETE RPC + RefreshRemote headroom, or notification network round-trip + retries.
 		return 45 * time.Second
 	case "runtime.start":
 		// Capped exponential-backoff Colab allocation attempts + remote boot.
@@ -175,6 +177,7 @@ func (b *colabOneBridge) ensureController(ctx context.Context) (*controller.Cola
 		sharedVault := b.vault
 		outboundLog := b.outboundLog
 		onFocusWindow := b.onFocusWindow
+		systemNotifyHooks := b.systemNotifyHooks
 		b.mu.Unlock()
 
 		var ctrl *controller.ColabOneController
@@ -196,8 +199,13 @@ func (b *colabOneBridge) ensureController(ctx context.Context) (*controller.Cola
 			} else {
 				ctrl = newColabOneWiredControllerWithOutboundLog("", "", sharedVault, outboundLog, true)
 			}
-			if ctrl != nil && onFocusWindow != nil {
-				ctrl.SetFocusWindowHandler(onFocusWindow)
+			if ctrl != nil {
+				if onFocusWindow != nil {
+					ctrl.SetFocusWindowHandler(onFocusWindow)
+				}
+				if systemNotifyHooks.Send != nil || systemNotifyHooks.Supported != nil || systemNotifyHooks.IsWindowFocused != nil || systemNotifyHooks.DefaultLocale != nil {
+					ctrl.SetSystemNotificationHooks(systemNotifyHooks)
+				}
 			}
 			finished = true
 		}()

@@ -4703,4 +4703,114 @@ describe("Guest output share locale isolation and cold-load bootstrap", () => {
     expect(COLABONE_MESSAGES["zh-CN"]["settings.aboutNonCommercialDesc"]).toContain("非商业");
     expect(COLABONE_MESSAGES["en-US"]["settings.aboutNonCommercialDesc"]).toContain("non-commercial");
   });
+
+  it("translates unlimited GPU allocation retry logs, settings summary, and notifications UI across all 6 locales", () => {
+    const leakRe = /[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/;
+    const unlimitedBackendSamples = [
+      "Google 算力紧张，正在排队分配 G4（第 2 次）",
+      "Google 分配服务繁忙，正在重试分配 G4（第 3 次）",
+      "正在排队分配 G4（算力池较紧张 · 第 4 次）",
+      "正在分配 G4（第 5 次）",
+      "Google Colab 当前 G4 算力紧张，暂未分配出 GPU（耗时 30.9 秒 · HTTP 503），60 秒后自动重试（第 6 次）",
+      "Google Colab 当前 G4 分配服务繁忙，暂未分配出 GPU（HTTP 504），32 秒后自动重试（第 5 次）",
+      "Google Colab 分配 G4 GPU 暂时繁忙或超时（耗时 12.5 秒 · 请求超时），16 秒后自动重试（第 4 次）",
+      "Google Colab 分配 G4 GPU 暂时繁忙或超时（网络异常），8 秒后自动重试（第 3 次）",
+      "已保存设置（默认 GPU: G4 · 空闲释放: 30 分钟 · 下载并发: 16 线程 · 分配重试上限: 不限次数（直到成功））",
+      "GPU 分配最大尝试次数必须为 0（不限次数）或 1 至 100 次之间",
+    ];
+    for (const loc of ALL_LOCALES) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      expect(tsrc("通知")).toBeTruthy();
+      if (loc === "en-US" || loc === "ko-KR") {
+        expect(leakRe.test(tsrc("通知"))).toBe(false);
+      }
+      for (const sample of unlimitedBackendSamples) {
+        const out = tb(sample);
+        if (loc === "zh-CN") {
+          expect(out).toBe(sample);
+        } else {
+          expect(out.trim().length, `${loc} empty translation for "${sample}"`).toBeGreaterThan(0);
+          if (loc === "en-US" || loc === "ja-JP" || loc === "ko-KR") {
+            expect(out, `${loc} should translate "${sample}"`).not.toBe(sample);
+          }
+          if (loc === "en-US" || loc === "ko-KR") {
+            expect(
+              leakRe.test(out),
+              `${loc} CJK/fullwidth leak for "${sample}" => "${out}"`,
+            ).toBe(false);
+          }
+        }
+      }
+    }
+
+    setColabOneLocale("en-US", { persist: false, syncNative: false });
+    expect(tb("正在分配 G4（第 5 次）")).toBe("Allocating G4 (attempt #5)");
+    expect(
+      tb(
+        "已保存设置（默认 GPU: G4 · 空闲释放: 30 分钟 · 下载并发: 16 线程 · 分配重试上限: 不限次数（直到成功））",
+      ),
+    ).toContain("Unlimited (until succeeded)");
+
+    // Notification backend logs and errors across all 6 locales
+    const notifBackendSamples = [
+      "测试通知已发送",
+      "当前系统环境暂不支持原生桌面通知",
+      "系统桌面通知权限未开启",
+      "未知的通知渠道",
+      "该通知渠道尚未配置完成",
+      "不支持的通知凭据字段",
+      "通知服务未初始化",
+      "请先填写 Telegram Bot Token 和 Chat ID",
+      "请先填写 Bark 推送地址或 Device Key",
+      "请先完善邮件 SMTP 服务器、发件人账号与收件人邮箱",
+      "为保护本机网络安全，网页控制台仅允许测试已保存的通知渠道",
+      "为保护本机网络安全，请在本机桌面端修改通知服务地址、代理或凭据配置",
+      "已保存通知设置 · 已关闭所有通知渠道",
+      "已保存通知设置 · 当前未启用通知渠道",
+      "Telegram 代理仅支持 http/https/socks5/socks5h",
+      "Telegram API 返回非 JSON 响应（HTTP 200），请检查 API 地址或代理配置",
+      "Bark 服务返回非 JSON 响应（HTTP 200），请检查推送地址配置",
+      "已保存通知设置 · 已启用通知渠道：系统通知、Telegram、Bark、邮件",
+      "通知渠道测试发送成功：telegram",
+      "通知渠道 system 发送失败：系统桌面通知权限未开启",
+      "测试通知渠道 bark 失败：Bark 服务返回非 JSON 响应（HTTP 200），请检查推送地址配置",
+      "通知队列已满，已跳过事件：output.ready",
+      "保存通知凭据失败：disk full",
+      "清除通知凭据失败：permission denied",
+      "写入通知推送凭据失败：vault locked",
+    ];
+    for (const loc of ALL_LOCALES) {
+      setColabOneLocale(loc, { persist: false, syncNative: false });
+      for (const sample of notifBackendSamples) {
+        const out = tb(sample);
+        if (loc === "zh-CN") {
+          expect(out).toBe(sample);
+        } else {
+          expect(out.trim().length, `${loc} empty translation for "${sample}"`).toBeGreaterThan(0);
+          if (loc === "en-US" || loc === "ja-JP" || loc === "ko-KR") {
+            expect(out, `${loc} should translate "${sample}"`).not.toBe(sample);
+          }
+          if (loc === "en-US" || loc === "ko-KR") {
+            expect(
+              leakRe.test(out),
+              `${loc} CJK/fullwidth leak for "${sample}" => "${out}"`,
+            ).toBe(false);
+          }
+        }
+      }
+    }
+    setColabOneLocale("zh-TW", { persist: false, syncNative: false });
+    expect(tb("未知的通知渠道")).toBe("未知的通知管道");
+    setColabOneLocale("zh-HK", { persist: false, syncNative: false });
+    expect(tb("未知的通知渠道")).toBe("未知的通知渠道");
+    setColabOneLocale("en-US", { persist: false, syncNative: false });
+    expect(
+      tb("已保存通知设置 · 已启用通知渠道：系统通知、Telegram、Bark、邮件"),
+    ).toBe(
+      "Notification settings saved · Enabled channels: System Notifications, Telegram, Bark, Email",
+    );
+    expect(tb("通知渠道 system 发送失败：系统桌面通知权限未开启")).toBe(
+      "Failed to send via System Notifications: System desktop notification permission is disabled",
+    );
+  });
 });

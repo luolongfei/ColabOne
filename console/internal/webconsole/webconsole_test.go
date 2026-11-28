@@ -1176,6 +1176,9 @@ func TestCSRFProtectionAndAPIEndpoints(t *testing.T) {
 				return `{"token":"eyJtunnel"}`, nil
 			case "settings.assign_proxy.test":
 				return `{"proxy":"socks5://proxy.example:1080","latency_ms":42}`, nil
+			case "notifications.test":
+				ch, _ := payload["channel"].(string)
+				return fmt.Sprintf(`{"ok":true,"channel":%q}`, ch), nil
 			case "slow.op":
 				return "", context.DeadlineExceeded
 			case "bad.op":
@@ -1331,6 +1334,7 @@ func TestCSRFProtectionAndAPIEndpoints(t *testing.T) {
 		"desktop.shortcuts":     "该桌面专属操作仅支持在宿主机客户端执行",
 		"settings.hf_token":     "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
 		"settings.assign_proxy": "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
+		"notifications.secret":  "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
 		"auth.colab.auto":       "网页控制台不支持本机回环自动登录，请使用手动授权登录",
 	}
 	for action, wantMsg := range blockedCases {
@@ -1362,6 +1366,75 @@ func TestCSRFProtectionAndAPIEndpoints(t *testing.T) {
 		var errBody map[string]string
 		if err := json.Unmarshal(w.Body.Bytes(), &errBody); err != nil || errBody["error"] != errWebAssignProxyTestSavedOnly {
 			t.Fatalf("inline settings.assign_proxy.test expected %q, got %q", errWebAssignProxyTestSavedOnly, w.Body.String())
+		}
+	}
+
+	// notifications.test rejects inline URLs/hosts/credentials, extra keys, and unknown channels (SSRF guard)
+	for _, badNotifBody := range []string{
+		`{"action":"notifications.test"}`,
+		`{"action":"notifications.test","payload":{}}`,
+		`{"action":"notifications.test","payload":{"channel":""}}`,
+		`{"action":"notifications.test","payload":{"channel":"webhook"}}`,
+		`{"action":"notifications.test","payload":{"channel":123}}`,
+		`{"action":"notifications.test","payload":{"Channel":"telegram"}}`,
+		`{"action":"notifications.test","payload":{"channel":"telegram","bot_token":"123:abc"}}`,
+		`{"action":"notifications.test","payload":{"channel":"telegram","api_base_url":"http://127.0.0.1:8080"}}`,
+		`{"action":"notifications.test","payload":{"channel":"telegram","proxy_url":"http://127.0.0.1:8080"}}`,
+		`{"action":"notifications.test","payload":{"channel":"bark","server_url":"http://169.254.169.254"}}`,
+		`{"action":"notifications.test","payload":{"channel":"email","smtp_host":"127.0.0.1"}}`,
+		`{"action":"notifications.test","payload":{"channel":"system","extra":""}}`,
+	} {
+		w := cmdPost("127.0.0.1:3232", badNotifBody, map[string]string{
+			ClientHeaderName: ClientHeaderValue,
+		})
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("unsafe notifications.test %s expected 403, got %d", badNotifBody, w.Code)
+		}
+		var errBody map[string]string
+		if err := json.Unmarshal(w.Body.Bytes(), &errBody); err != nil || errBody["error"] != errWebNotificationTestSavedOnly {
+			t.Fatalf("unsafe notifications.test expected %q, got %q", errWebNotificationTestSavedOnly, w.Body.String())
+		}
+	}
+
+	// notifications.save rejects network destinations, URLs, proxies, hosts, ports, credentials, and unknown keys (SSRF guard)
+	for _, badSaveBody := range []string{
+		`{"action":"notifications.save","payload":{"bark":{"server_url":"http://127.0.0.1:8080"}}}`,
+		`{"action":"notifications.save","payload":{"bark":{"endpoint_url":"http://169.254.169.254/key"}}}`,
+		`{"action":"notifications.save","payload":{"bark":{"device_key":"secret"}}}`,
+		`{"action":"notifications.save","payload":{"bark":{"clear_device_key":true}}}`,
+		`{"action":"notifications.save","payload":{"bark":{"group":"g"}}}`,
+		`{"action":"notifications.save","payload":{"bark":{"sound":"alarm"}}}`,
+		`{"action":"notifications.save","payload":{"bark":{"level":"active"}}}`,
+		`{"action":"notifications.save","payload":{"telegram":{"api_base_url":"http://127.0.0.1:8080"}}}`,
+		`{"action":"notifications.save","payload":{"telegram":{"proxy_url":"http://127.0.0.1:8080"}}}`,
+		`{"action":"notifications.save","payload":{"telegram":{"clear_proxy":true}}}`,
+		`{"action":"notifications.save","payload":{"telegram":{"bot_token":"123:abc"}}}`,
+		`{"action":"notifications.save","payload":{"telegram":{"clear_bot_token":true}}}`,
+		`{"action":"notifications.save","payload":{"telegram":{"chat_id":"12345"}}}`,
+		`{"action":"notifications.save","payload":{"email":{"smtp_host":"127.0.0.1"}}}`,
+		`{"action":"notifications.save","payload":{"email":{"smtp_port":25}}}`,
+		`{"action":"notifications.save","payload":{"email":{"security":"none"}}}`,
+		`{"action":"notifications.save","payload":{"email":{"username":"user@example.com"}}}`,
+		`{"action":"notifications.save","payload":{"email":{"password":"secret"}}}`,
+		`{"action":"notifications.save","payload":{"email":{"clear_password":true}}}`,
+		`{"action":"notifications.save","payload":{"email":{"from_address":"a@example.com"}}}`,
+		`{"action":"notifications.save","payload":{"email":{"from_name":"Bot"}}}`,
+		`{"action":"notifications.save","payload":{"email":{"to_addresses":"b@example.com"}}}`,
+		`{"action":"notifications.save","payload":{"system":{"clear":true}}}`,
+		`{"action":"notifications.save","payload":{"bot_token":"123:abc"}}`,
+		`{"action":"notifications.save","payload":{"Telegram":{"enabled":true}}}`,
+		`{"action":"notifications.save","payload":{"notify_gpu":"true"}}`,
+		`{"action":"notifications.save","payload":{"unknown_key":true}}`,
+	} {
+		w := cmdPost("127.0.0.1:3232", badSaveBody, map[string]string{
+			ClientHeaderName: ClientHeaderValue,
+		})
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("unsafe notifications.save %s expected 403, got %d", badSaveBody, w.Code)
+		}
+		var errBody map[string]string
+		if err := json.Unmarshal(w.Body.Bytes(), &errBody); err != nil || errBody["error"] != errWebNotificationSaveRestricted {
+			t.Fatalf("unsafe notifications.save %s expected %q, got %q", badSaveBody, errWebNotificationSaveRestricted, w.Body.String())
 		}
 	}
 
@@ -1398,6 +1471,55 @@ func TestCSRFProtectionAndAPIEndpoints(t *testing.T) {
 		bridgeMu.Unlock()
 		if last.method != "settings.assign_proxy.test" || len(last.payload) != 0 {
 			t.Fatalf("expected stripped empty payload for settings.assign_proxy.test, got %+v", last)
+		}
+	}
+
+	// notifications.test allows saved channel tests for system/telegram/bark/email and forwards a clean payload.
+	for _, tc := range []struct {
+		body        string
+		wantChannel string
+	}{
+		{`{"action":"notifications.test","payload":{"channel":"system"}}`, "system"},
+		{`{"action":"notifications.test","payload":{"channel":"telegram"}}`, "telegram"},
+		{`{"action":"notifications.test","payload":{"channel":"bark"}}`, "bark"},
+		{`{"action":"notifications.test","payload":{"channel":"email"}}`, "email"},
+		{`{"action":"notifications.test","payload":{"channel":"  Telegram  "}}`, "telegram"},
+	} {
+		w := cmdPost("127.0.0.1:3232", tc.body, map[string]string{
+			ClientHeaderName: ClientHeaderValue,
+		})
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), fmt.Sprintf(`"channel":%q`, tc.wantChannel)) {
+			t.Fatalf("valid notifications.test %s expected 200 with channel %q, got %d body=%q", tc.body, tc.wantChannel, w.Code, w.Body.String())
+		}
+		bridgeMu.Lock()
+		last := bridgeCalls[len(bridgeCalls)-1]
+		bridgeMu.Unlock()
+		if last.method != "notifications.test" || len(last.payload) != 1 || last.payload["channel"] != tc.wantChannel {
+			t.Fatalf("expected clean payload {channel:%q} for notifications.test, got %+v", tc.wantChannel, last)
+		}
+	}
+
+	// notifications.save allows safe boolean behavioral toggles and channel clear flags in Web Console mode.
+	for _, safeSaveBody := range []string{
+		`{"action":"notifications.save","payload":{"notify_gpu":false,"notify_task":true,"notify_alert":false,"system_only_when_unfocused":false,"remote_only_when_unfocused":true}}`,
+		`{"action":"notifications.save","payload":{"system":{"enabled":false}}}`,
+		`{"action":"notifications.save","payload":{"telegram":{"enabled":true,"send_preview_image":false}}}`,
+		`{"action":"notifications.save","payload":{"telegram":{"clear":true}}}`,
+		`{"action":"notifications.save","payload":{"bark":{"enabled":true}}}`,
+		`{"action":"notifications.save","payload":{"bark":{"clear":true}}}`,
+		`{"action":"notifications.save","payload":{"email":{"enabled":false,"embed_preview_image":true,"clear":false}}}`,
+	} {
+		w := cmdPost("127.0.0.1:3232", safeSaveBody, map[string]string{
+			ClientHeaderName: ClientHeaderValue,
+		})
+		if w.Code != http.StatusOK {
+			t.Fatalf("safe notifications.save %s expected 200, got %d body=%q", safeSaveBody, w.Code, w.Body.String())
+		}
+		bridgeMu.Lock()
+		last := bridgeCalls[len(bridgeCalls)-1]
+		bridgeMu.Unlock()
+		if last.method != "notifications.save" {
+			t.Fatalf("expected bridge call for notifications.save, got %+v", last)
 		}
 	}
 

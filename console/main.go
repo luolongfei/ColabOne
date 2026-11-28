@@ -14,6 +14,7 @@ import (
 	"github.com/luolongfei/ColabOne/console/internal/fsutil"
 	"github.com/luolongfei/ColabOne/console/internal/live"
 	"github.com/luolongfei/ColabOne/console/internal/migration"
+	"github.com/luolongfei/ColabOne/console/internal/notifier"
 	"github.com/luolongfei/ColabOne/console/internal/outboundlog"
 	"github.com/luolongfei/ColabOne/console/internal/updater"
 	"github.com/luolongfei/ColabOne/console/internal/vault"
@@ -46,6 +47,17 @@ type ColabOneCommandRequest struct {
 	Action  string         `json:"action"`
 	Payload map[string]any `json:"payload"`
 }
+
+// ColabOneNavigateRequest directs the desktop frontend to open a specific view
+// after clicking a native OS notification.
+type ColabOneNavigateRequest struct {
+	Tab         string `json:"tab"`
+	OpenOutputs bool   `json:"open_outputs,omitempty"`
+}
+
+// ColabOneNavigateEvent is emitted to the main window when a user clicks a
+// native desktop notification with a target view.
+var ColabOneNavigateEvent = mygo.NewEvent[ColabOneNavigateRequest]("colabone-navigate")
 
 type ColabOneDesktop struct {
 	bridge           *colabOneBridge
@@ -115,7 +127,22 @@ type ColabOneDesktop struct {
 	mediaSecret  string
 	mediaBaseURL string
 	mediaClosed  bool
+
+	notifMu                sync.Mutex
+	notifTargets           map[string]ColabOneNavigateRequest
+	notifTargetOrder       []string
+	notifClearTimer        *time.Timer
+	notificationsSupported atomic.Bool
+	lastNotifClickAt       atomic.Int64
+	mainWinVisible         atomic.Bool
+	mainWinFocused         atomic.Bool
+	mainPageReady          atomic.Bool
+	pendingNavMu           sync.Mutex
+	pendingNavigate        *ColabOneNavigateRequest
+	emitNavigateFn         func(*mygo.Window, ColabOneNavigateRequest) error
 }
+
+const colabOneMaxNotifTargets = 64
 
 func (d *ColabOneDesktop) invalidateSplash() {
 	if d.appQuitting.Load() || !d.isAppReady() {
@@ -138,12 +165,45 @@ func (d *ColabOneDesktop) invalidateSplash() {
 }
 
 func (d *ColabOneDesktop) notifyInitialSnapshotSettled() {
+	d.pendingNavMu.Lock()
+	d.mainPageReady.Store(true)
+	pending := d.pendingNavigate
+	d.pendingNavigate = nil
+	d.pendingNavMu.Unlock()
+
 	d.splashMu.Lock()
 	startup := d.startup
 	d.splashMu.Unlock()
 	if startup != nil {
 		startup.MarkSnapshotSettled()
 	}
+
+	if pending == nil || d.appQuitting.Load() || !d.isAppReady() {
+		return
+	}
+	req := *pending
+	if d.runOnMainFn != nil {
+		d.runOnMainFn(func() {
+			if d.appQuitting.Load() || !d.isAppReady() {
+				return
+			}
+			d.emitNavigateEvent(d.mainWindow(), req)
+		})
+		return
+	}
+	go func() {
+		if d.appQuitting.Load() || !d.isAppReady() {
+			return
+		}
+		mygo.RunOnMain(func() {
+			if d.appQuitting.Load() || !d.isAppReady() {
+				return
+			}
+			if mainWin := d.mainWindow(); mainWin != nil && !mainWin.IsDestroyed() {
+				d.emitNavigateEvent(mainWin, req)
+			}
+		})
+	}()
 }
 
 func (d *ColabOneDesktop) beginSplashFadeOutOnMain(focusMain func()) {
@@ -361,6 +421,253 @@ func (d *ColabOneDesktop) focusMainWindow() {
 			bringColabOneWindowToFront(mainWin)
 		}
 	})
+}
+
+func (d *ColabOneDesktop) emitNavigateEvent(win *mygo.Window, req ColabOneNavigateRequest) {
+	if d.emitNavigateFn != nil {
+		_ = d.emitNavigateFn(win, req)
+		return
+	}
+	if win != nil && !win.IsDestroyed() {
+		_ = ColabOneNavigateEvent.Emit(win, req)
+	}
+}
+
+func (d *ColabOneDesktop) rememberNotificationTarget(id string, req ColabOneNavigateRequest) {
+	cleanID := strings.TrimSpace(id)
+	if cleanID == "" {
+		return
+	}
+	d.notifMu.Lock()
+	if d.notifTargets == nil {
+		d.notifTargets = make(map[string]ColabOneNavigateRequest, 16)
+	}
+	if _, exists := d.notifTargets[cleanID]; !exists {
+		d.notifTargetOrder = append(d.notifTargetOrder, cleanID)
+	}
+	d.notifTargets[cleanID] = req
+	for len(d.notifTargetOrder) > colabOneMaxNotifTargets {
+		oldest := d.notifTargetOrder[0]
+		d.notifTargetOrder = d.notifTargetOrder[1:]
+		delete(d.notifTargets, oldest)
+	}
+	d.notifMu.Unlock()
+}
+
+func (d *ColabOneDesktop) consumeNotificationTarget(id string) (ColabOneNavigateRequest, bool) {
+	cleanID := strings.TrimSpace(id)
+	if cleanID == "" {
+		return ColabOneNavigateRequest{}, false
+	}
+	d.notifMu.Lock()
+	req, ok := d.notifTargets[cleanID]
+	if ok {
+		delete(d.notifTargets, cleanID)
+		for i, existing := range d.notifTargetOrder {
+			if existing == cleanID {
+				d.notifTargetOrder = append(d.notifTargetOrder[:i], d.notifTargetOrder[i+1:]...)
+				break
+			}
+		}
+	}
+	d.notifMu.Unlock()
+	return req, ok
+}
+
+func (d *ColabOneDesktop) handleNotificationClickByID(id string) bool {
+	target, ok := d.consumeNotificationTarget(id)
+	if !ok {
+		return false
+	}
+	d.lastNotifClickAt.Store(time.Now().UnixNano())
+	d.handleSystemNotificationClick(target.Tab, target.OpenOutputs)
+	return true
+}
+
+func (d *ColabOneDesktop) scheduleClearNotificationsOnActive() {
+	if d.appQuitting.Load() || !d.notificationsSupported.Load() {
+		return
+	}
+	d.notifMu.Lock()
+	if d.notifClearTimer != nil {
+		d.notifClearTimer.Stop()
+	}
+	d.notifClearTimer = time.AfterFunc(450*time.Millisecond, func() {
+		if d.appQuitting.Load() || !d.isAppReady() || !d.notificationsSupported.Load() {
+			return
+		}
+		runOnMain := d.runOnMainFn
+		if runOnMain == nil {
+			runOnMain = mygo.RunOnMain
+		}
+		runOnMain(func() {
+			if d.appQuitting.Load() || !d.isAppReady() || !d.notificationsSupported.Load() {
+				return
+			}
+			mygo.ClearNotifications()
+		})
+	})
+	d.notifMu.Unlock()
+}
+
+func (d *ColabOneDesktop) stopNotifClearTimer() {
+	d.notifMu.Lock()
+	if d.notifClearTimer != nil {
+		d.notifClearTimer.Stop()
+		d.notifClearTimer = nil
+	}
+	d.notifMu.Unlock()
+}
+
+func (d *ColabOneDesktop) systemNotificationsSupported() bool {
+	return !d.appQuitting.Load() && d.notificationsSupported.Load()
+}
+
+func (d *ColabOneDesktop) isMainWindowFocused() bool {
+	if d.appQuitting.Load() || !d.isAppReady() {
+		return false
+	}
+	mainWin := d.mainWindow()
+	if mainWin == nil || mainWin.IsDestroyed() || !d.mainWinVisible.Load() {
+		return false
+	}
+	focused := mygo.FocusedWindow()
+	if focused != nil {
+		return focused == mainWin && d.mainWinFocused.Load()
+	}
+	return d.mainWinFocused.Load()
+}
+
+func (d *ColabOneDesktop) handleSystemNotificationClick(tab string, openOutputs bool) {
+	if d.appQuitting.Load() || !d.isAppReady() {
+		return
+	}
+	cleanTab := strings.TrimSpace(tab)
+	hasNav := cleanTab != "" || openOutputs
+	runOnMain := d.runOnMainFn
+	if runOnMain == nil {
+		runOnMain = mygo.RunOnMain
+	}
+	runOnMain(func() {
+		if d.appQuitting.Load() || !d.isAppReady() {
+			return
+		}
+		if d.showMain != nil {
+			d.showMain()
+		}
+		if runtime.GOOS == "darwin" && d.runOnMainFn == nil {
+			mygo.App.Focus()
+		}
+		d.splashMu.Lock()
+		splashActive := d.startup != nil && d.startup.IsActive()
+		d.splashMu.Unlock()
+		mainWin := d.mainWindow()
+		if !splashActive && mainWin != nil && !mainWin.IsDestroyed() {
+			bringColabOneWindowToFront(mainWin)
+		}
+		if !hasNav {
+			return
+		}
+		navReq := ColabOneNavigateRequest{
+			Tab:         cleanTab,
+			OpenOutputs: openOutputs,
+		}
+		d.pendingNavMu.Lock()
+		ready := d.mainPageReady.Load()
+		if !ready || (d.emitNavigateFn == nil && (mainWin == nil || mainWin.IsDestroyed())) {
+			reqCopy := navReq
+			d.pendingNavigate = &reqCopy
+			d.pendingNavMu.Unlock()
+			return
+		}
+		d.pendingNavigate = nil
+		d.pendingNavMu.Unlock()
+		d.emitNavigateEvent(mainWin, navReq)
+	})
+}
+
+func (d *ColabOneDesktop) sendSystemNotification(ctx context.Context, req notifier.ColabOneSystemNotificationRequest) error {
+	if !d.systemNotificationsSupported() || !d.isAppReady() {
+		return notifier.ErrSystemUnsupported
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	opts := mygo.NotificationOptions{
+		ID:       strings.TrimSpace(req.ID),
+		Title:    strings.TrimSpace(req.Title),
+		Subtitle: strings.TrimSpace(req.Subtitle),
+		Body:     strings.TrimSpace(req.Body),
+		Image:    req.ImageBytes,
+	}
+	if req.Category != "" {
+		opts.Group = "colabone-" + string(req.Category)
+	}
+	target := ColabOneNavigateRequest{
+		Tab:         strings.TrimSpace(req.NavigateTab),
+		OpenOutputs: req.OpenOutputs,
+	}
+
+	runOnMain := d.runOnMainFn
+	if runOnMain == nil {
+		runOnMain = mygo.RunOnMain
+	}
+	createdCh := make(chan *mygo.Notification, 1)
+	go func() {
+		var created *mygo.Notification
+		if d.systemNotificationsSupported() && d.isAppReady() {
+			runOnMain(func() {
+				if !d.systemNotificationsSupported() || !d.isAppReady() {
+					return
+				}
+				created = mygo.NewNotification(opts)
+			})
+		}
+		createdCh <- created
+	}()
+
+	var n *mygo.Notification
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case n = <-createdCh:
+	}
+	if n == nil || d.appQuitting.Load() {
+		return notifier.ErrSystemUnsupported
+	}
+
+	notifID := strings.TrimSpace(n.ID())
+	if notifID == "" {
+		notifID = opts.ID
+	}
+	if notifID != "" {
+		d.rememberNotificationTarget(notifID, target)
+	}
+	var clickOnce sync.Once
+	n.OnClick(func() {
+		clickOnce.Do(func() {
+			if notifID != "" {
+				d.handleNotificationClickByID(notifID)
+			} else {
+				d.lastNotifClickAt.Store(time.Now().UnixNano())
+				d.handleSystemNotificationClick(target.Tab, target.OpenOutputs)
+			}
+			n.Close()
+		})
+	})
+	if err := n.ShowContext(ctx); err != nil {
+		if notifID != "" {
+			_, _ = d.consumeNotificationTarget(notifID)
+		}
+		if errors.Is(err, mygo.ErrNotificationsDenied) {
+			return notifier.ErrSystemPermissionDenied
+		}
+		return err
+	}
+	return nil
 }
 
 func (d *ColabOneDesktop) buildTrayMenu() *mygo.Menu {
@@ -1006,6 +1313,10 @@ func colabOneHandlePagePermission(req mygo.PermissionRequest) bool {
 
 func (d *ColabOneDesktop) handleWillQuit() {
 	d.appQuitting.Store(true)
+	d.stopNotifClearTimer()
+	d.pendingNavMu.Lock()
+	d.pendingNavigate = nil
+	d.pendingNavMu.Unlock()
 	d.destroyTray()
 	d.cancelStartup()
 	d.clearMigrationSessions()
@@ -1049,6 +1360,12 @@ func main() {
 		vault:         sharedVault,
 		outboundLog:   d.outboundLog,
 		onFocusWindow: d.focusMainWindow,
+		systemNotifyHooks: controller.ColabOneSystemNotificationHooks{
+			Send:            d.sendSystemNotification,
+			Supported:       d.systemNotificationsSupported,
+			IsWindowFocused: d.isMainWindowFocused,
+			DefaultLocale:   colabOneGetLocale,
+		},
 	}
 	d.initCloseBehavior(nil)
 	d.initUpdater(configDir, nil)
@@ -1109,6 +1426,38 @@ func main() {
 		d.setMainWindow(win)
 		current := win
 		d.closePromptReady.Store(false)
+		d.mainWinVisible.Store(!hidden)
+		d.mainWinFocused.Store(!hidden && mygo.FocusedWindow() == win)
+		d.pendingNavMu.Lock()
+		d.mainPageReady.Store(false)
+		d.pendingNavMu.Unlock()
+		win.OnShow(func() {
+			if d.mainWindow() == current {
+				d.mainWinVisible.Store(true)
+			}
+		})
+		win.OnHide(func() {
+			if d.mainWindow() == current {
+				d.mainWinVisible.Store(false)
+				d.mainWinFocused.Store(false)
+			}
+		})
+		win.OnFocus(func() {
+			if d.mainWindow() == current {
+				d.mainWinVisible.Store(true)
+				d.mainWinFocused.Store(true)
+			}
+		})
+		win.OnBlur(func() {
+			if d.mainWindow() == current {
+				d.mainWinFocused.Store(false)
+			}
+		})
+		win.OnMinimize(func() {
+			if d.mainWindow() == current {
+				d.mainWinFocused.Store(false)
+			}
+		})
 		win.OnClose(func(e *mygo.CloseEvent) {
 			d.handleMainWindowClose(current, e)
 		})
@@ -1117,22 +1466,37 @@ func main() {
 			page.OnDidNavigate(func(string) {
 				if d.mainWindow() == current {
 					d.closePromptReady.Store(false)
+					d.pendingNavMu.Lock()
+					d.mainPageReady.Store(false)
+					d.pendingNavMu.Unlock()
 				}
 			})
 			page.OnDidFailLoad(func(*mygo.LoadError) {
 				if d.mainWindow() == current {
 					d.closePromptReady.Store(false)
+					d.pendingNavMu.Lock()
+					d.mainPageReady.Store(false)
+					d.pendingNavMu.Unlock()
 				}
 			})
 			page.OnRenderProcessGone(func(string) {
 				if d.mainWindow() == current {
 					d.closePromptReady.Store(false)
+					d.pendingNavMu.Lock()
+					d.mainPageReady.Store(false)
+					d.pendingNavMu.Unlock()
 				}
 			})
 		}
 		win.OnClosed(func() {
 			if d.mainWindow() == current {
 				d.closePromptReady.Store(false)
+				d.mainWinVisible.Store(false)
+				d.mainWinFocused.Store(false)
+				d.pendingNavMu.Lock()
+				d.mainPageReady.Store(false)
+				d.pendingNavigate = nil
+				d.pendingNavMu.Unlock()
 			}
 			d.clearMainWindow(current)
 			if win == current {
@@ -1260,8 +1624,18 @@ func main() {
 		mygo.App.OnWindowAllClosed(func() {})
 	}
 	mygo.App.OnActivate(func(bool) { show() })
+	mygo.App.OnNotificationClick(func(id string) {
+		d.handleNotificationClickByID(id)
+	})
+	mygo.App.OnDidBecomeActive(func() {
+		d.scheduleClearNotificationsOnActive()
+	})
+	mygo.App.OnDidResignActive(func() {
+		d.mainWinFocused.Store(false)
+	})
 	mygo.App.OnSecondInstance(func([]string, string) { show() })
 	mygo.App.WhenReady(func() {
+		d.notificationsSupported.Store(mygo.NotificationsSupported())
 		menu := d.buildTrayMenu()
 		tray, err := mygo.NewTray(mygo.TrayOptions{ID: "colabone", Icon: trayIcon, ToolTip: "ColabOne", Menu: menu})
 		if err == nil {

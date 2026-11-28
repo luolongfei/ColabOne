@@ -494,6 +494,14 @@ func newColabOneWiredControllerWithOutboundLog(
 	modelsHTTPClient := *hubClient.HTTPClient
 	modelsHTTPClient.Timeout = 30 * time.Second
 
+	notifierHTTPClient := &http.Client{
+		Transport: outboundlog.WrapTransport(nil, outboundLog, "notifier", ""),
+		Timeout:   20 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
 	ctrl := controller.NewColabOneController(controller.ColabOneControllerConfig{
 		Root:                root,
 		ConfigDir:           configDir,
@@ -512,6 +520,7 @@ func newColabOneWiredControllerWithOutboundLog(
 		Location:            wireLocationAdapter{},
 		OutboundLogger:      outboundLog,
 		OutboundLoggerOwned: ownsOutboundLog,
+		NotifierHTTPClient:  notifierHTTPClient,
 	})
 	return ctrl
 }
@@ -1221,14 +1230,15 @@ func (w *wireControllerProviderAdapter) Start(ctx context.Context, gpu string, n
 		onLog = func(msg, source, level string) { opts.OnLog(msg, source, level) }
 	}
 	return w.p.Start(ctx, gpu, notify, provider.StartOptions{
-		CreateNew:    opts.CreateNew,
-		RcloneConf:   opts.RcloneConf,
-		OnTelemetry:  opts.OnTelemetry,
-		OnLog:        onLog,
-		CancelCh:     bridgeCancelEvent(opts.CancelEvent, done, &bridgeWG),
-		OnRetryState: opts.OnRetryState,
-		AssignProxy:  opts.AssignProxy,
-		MaxAttempts:  opts.MaxAttempts,
+		CreateNew:         opts.CreateNew,
+		RcloneConf:        opts.RcloneConf,
+		OnTelemetry:       opts.OnTelemetry,
+		OnLog:             onLog,
+		CancelCh:          bridgeCancelEvent(opts.CancelEvent, done, &bridgeWG),
+		OnRetryState:      opts.OnRetryState,
+		AssignProxy:       opts.AssignProxy,
+		MaxAttempts:       opts.MaxAttempts,
+		UnlimitedAttempts: opts.UnlimitedAttempts,
 	})
 }
 

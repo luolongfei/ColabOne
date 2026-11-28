@@ -1890,6 +1890,15 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 		)
 		return res, nil
 
+	case "notifications.save":
+		return c.SaveNotificationSettings(ctx, payload)
+
+	case "notifications.test":
+		return c.TestNotificationChannel(ctx, asString(payload["channel"]))
+
+	case "notifications.secret":
+		return c.NotificationSecret(asString(payload["field"]))
+
 	case "auth.colab.begin":
 		if c.auth == nil {
 			return nil, errors.New("AuthClient 未配置")

@@ -292,6 +292,118 @@ func TestNetworkErrorAndSymlinkSafety(t *testing.T) {
 	}
 }
 
+func TestTelegramBotTokenRedactionQuerySanitizationWrapOverrideAndFallbackJSON(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "logs", COLABONE_OUTBOUND_LOG_FILENAME)
+	logger := NewColabOneOutboundLogger(logPath, 64*1024)
+	defer logger.Close()
+
+	// 1. Direct Record() sanitizes sensitive query keys and redacts Telegram bot tokens (colon & %3A, 8+ chars) across Path, Query, Detail, Error.
+	logger.Record(ColabOneOutboundRecord{
+		Component: "notifier_telegram",
+		Method:    "POST",
+		Scheme:    "https",
+		Host:      "api.telegram.org",
+		Path:      "/bot123456:ShortTok8/sendMessage",
+		Query:     "authuser=0&access_token=my_direct_secret&key=my_api_key&note=bot777888%3aEncodedTok9",
+		Detail:    "relay failed for bot555666:DetailTok8 and bot999000%3AUpperTok9",
+		Error:     "upstream error at /bot111222:ErrorTok8 and bot333444%3aLowerTok9",
+	})
+
+	// 2. WrapTransport overrides component/proxy on an already-wrapped transport without double logging.
+	var rtHits int
+	baseRT := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		rtHits++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("ok")),
+		}, nil
+	})
+	wrapped1 := WrapTransport(baseRT, logger, "base_comp", "")
+	wrapped2 := WrapTransport(wrapped1, logger, "telegram_override", "socks5://127.0.0.1:1080")
+
+	req, err := http.NewRequest(http.MethodGet, "https://example.com/test?q=100%25&token=secret_val&authuser=0", nil)
+	if err != nil {
+		t.Fatalf("new req: %v", err)
+	}
+	resp, err := wrapped2.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip failed: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if rtHits != 1 {
+		t.Fatalf("expected 1 underlying RoundTrip, got %d", rtHits)
+	}
+
+	rawBytes, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	raw := string(rawBytes)
+	for _, secret := range []string{
+		"ShortTok8",
+		"my_direct_secret",
+		"my_api_key",
+		"EncodedTok9",
+		"DetailTok8",
+		"UpperTok9",
+		"ErrorTok8",
+		"LowerTok9",
+		"secret_val",
+	} {
+		if strings.Contains(raw, secret) {
+			t.Fatalf("secret %q leaked into outbound log:\n%s", secret, raw)
+		}
+	}
+
+	recs := readJSONLRecords(t, logPath)
+	if len(recs) != 2 {
+		t.Fatalf("expected exactly 2 records (no double logging on WrapTransport override), got %d: %+v", len(recs), recs)
+	}
+	if !strings.Contains(recs[0].Query, "access_token=[REDACTED]") || !strings.Contains(recs[0].Query, "key=[REDACTED]") || !strings.Contains(recs[0].Query, "authuser=0") {
+		t.Fatalf("expected direct Record() Query sanitized cleanly, got %q", recs[0].Query)
+	}
+	if recs[1].Component != "telegram_override" || recs[1].Proxy != "socks5://127.0.0.1:1080" {
+		t.Fatalf("expected WrapTransport override component/proxy, got %+v", recs[1])
+	}
+	if !strings.Contains(recs[1].Query, "q=100%") || !strings.Contains(recs[1].Query, "token=[REDACTED]") {
+		t.Fatalf("expected RoundTrip query with percent sign preserved and token redacted, got %q", recs[1].Query)
+	}
+
+	// 3. marshalBoundedJSONLine fallback always produces valid JSON even with special characters and huge fields.
+	huge := ColabOneOutboundRecord{
+		Timestamp:  "2026-11-28T10:00:00.000Z",
+		Seq:        42,
+		Component:  `comp"quote\slash`,
+		Method:     "POST",
+		Host:       strings.Repeat("h", 5000),
+		Path:       strings.Repeat("p", 5000),
+		Endpoint:   strings.Repeat("e", 5000),
+		Proxy:      strings.Repeat("x", 5000),
+		StatusCode: 500,
+		OK:         false,
+		DurationMs: 99,
+	}
+	line := marshalBoundedJSONLine(huge)
+	if len(line) == 0 || len(line) > maxRecordLineBytes {
+		t.Fatalf("expected bounded fallback line <= %d bytes, got %d", maxRecordLineBytes, len(line))
+	}
+	var parsed ColabOneOutboundRecord
+	if err := json.Unmarshal(line, &parsed); err != nil {
+		t.Fatalf("fallback line is not valid JSON: %v (line=%q)", err, string(line))
+	}
+	if parsed.Component != `comp"quote\slash` || parsed.Seq != 42 {
+		t.Fatalf("unexpected parsed fallback record: %+v", parsed)
+	}
+
+	// 4. Positive maxTotalBytes below 16 KiB clamps cleanly to 16 KiB.
+	clamped := NewColabOneOutboundLogger(filepath.Join(t.TempDir(), "clamped.log"), 1024)
+	if clamped.MaxTotalBytes() != COLABONE_OUTBOUND_LOG_MIN_BYTES || clamped.MaxTotalBytes() != 16*1024 {
+		t.Fatalf("expected clamped MaxTotalBytes 16 KiB, got %d", clamped.MaxTotalBytes())
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

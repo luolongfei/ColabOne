@@ -27,6 +27,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/luolongfei/ColabOne/console/internal/activity"
+	"github.com/luolongfei/ColabOne/console/internal/notifier"
 	"github.com/luolongfei/ColabOne/console/internal/outboundlog"
 )
 
@@ -40,16 +41,19 @@ const (
 	// COLABONE_DEFAULT_GPU_POLICY_VERSION tracks one-time migration of the legacy T4 default to G4.
 	COLABONE_DEFAULT_GPU_POLICY_VERSION = 1
 
-	// COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS is the default maximum GPU allocation attempt count.
-	COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS = 30
+	// COLABONE_ASSIGN_MAX_ATTEMPTS_UNLIMITED disables the maximum GPU allocation attempt cap (retry until succeeded or cancelled).
+	COLABONE_ASSIGN_MAX_ATTEMPTS_UNLIMITED = 0
 
-	// COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS_POLICY_VERSION tracks one-time migration of the legacy 20-attempt default to 30.
-	COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS_POLICY_VERSION = 1
+	// COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS is the default GPU allocation attempt policy (unlimited until succeeded).
+	COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS = COLABONE_ASSIGN_MAX_ATTEMPTS_UNLIMITED
 
-	// COLABONE_MIN_ASSIGN_MAX_ATTEMPTS is the minimum allowed GPU allocation attempt count.
+	// COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS_POLICY_VERSION tracks one-time migration to unlimited GPU allocation retries.
+	COLABONE_DEFAULT_ASSIGN_MAX_ATTEMPTS_POLICY_VERSION = 2
+
+	// COLABONE_MIN_ASSIGN_MAX_ATTEMPTS is the minimum allowed finite GPU allocation attempt count.
 	COLABONE_MIN_ASSIGN_MAX_ATTEMPTS = 1
 
-	// COLABONE_MAX_ASSIGN_MAX_ATTEMPTS is the maximum allowed GPU allocation attempt count.
+	// COLABONE_MAX_ASSIGN_MAX_ATTEMPTS is the maximum allowed finite GPU allocation attempt count.
 	COLABONE_MAX_ASSIGN_MAX_ATTEMPTS = 100
 
 	// COLABONE_RELEASE_MODE_IDLE releases the GPU after idle_minutes of inactivity.
@@ -66,6 +70,11 @@ const (
 
 	colabOneMaxOutputAssetOffset = 512 * 1024 * 1024
 )
+
+func isValidColabOneAssignMaxAttempts(v int) bool {
+	return v == COLABONE_ASSIGN_MAX_ATTEMPTS_UNLIMITED ||
+		(v >= COLABONE_MIN_ASSIGN_MAX_ATTEMPTS && v <= COLABONE_MAX_ASSIGN_MAX_ATTEMPTS)
+}
 
 var validColabOneReleaseModes = map[string]bool{
 	COLABONE_RELEASE_MODE_IDLE:     true,
@@ -610,14 +619,15 @@ type ColabOneRPCOptions struct {
 
 // ColabOneStartOptions configures GPU runtime allocation and startup.
 type ColabOneStartOptions struct {
-	CreateNew    bool
-	RcloneConf   string
-	AssignProxy  string
-	MaxAttempts  int
-	OnLog        LogFunc
-	OnTelemetry  func(endpoint string, location map[string]any, sample map[string]any)
-	OnRetryState func(info map[string]any)
-	CancelEvent  *ColabOneEvent
+	CreateNew         bool
+	RcloneConf        string
+	AssignProxy       string
+	MaxAttempts       int
+	UnlimitedAttempts bool
+	OnLog             LogFunc
+	OnTelemetry       func(endpoint string, location map[string]any, sample map[string]any)
+	OnRetryState      func(info map[string]any)
+	CancelEvent       *ColabOneEvent
 }
 
 // ColabOneDriveMountOptions configures Colab native DriveFS mounting.
@@ -810,6 +820,9 @@ type ColabOneControllerConfig struct {
 	DriveHTTPClient     *http.Client
 	OutboundLogger      *outboundlog.ColabOneOutboundLogger
 	OutboundLoggerOwned bool
+	SystemNotifyHooks   ColabOneSystemNotificationHooks
+	NotifierHTTPClient  *http.Client
+	Notifier            *notifier.ColabOneNotifier
 }
 
 // ---------------------------------------------------------------------------

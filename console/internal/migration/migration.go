@@ -71,17 +71,19 @@ type ColabOneMigrationCredentialsData struct {
 	PublicAPI       map[string]any `json:"public_api,omitempty"`
 	ComfyUICanvas   map[string]any `json:"comfyui_canvas,omitempty"`
 	LiveExternalLLM map[string]any `json:"live_external_llm,omitempty"`
+	Notifications   map[string]any `json:"notifications,omitempty"`
 }
 
 // String redacts third-party secrets so formatting never leaks tokens or proxy credentials.
 func (c ColabOneMigrationCredentialsData) String() string {
 	return fmt.Sprintf(
-		"ColabOneMigrationCredentialsData{HasHF:%t, HasAssignProxy:%t, HasPublicAPI:%t, HasComfyCanvas:%t, HasLiveExternalLLM:%t}",
+		"ColabOneMigrationCredentialsData{HasHF:%t, HasAssignProxy:%t, HasPublicAPI:%t, HasComfyCanvas:%t, HasLiveExternalLLM:%t, HasNotifications:%t}",
 		strings.TrimSpace(c.HFToken) != "",
 		strings.TrimSpace(c.AssignProxy) != "",
 		len(c.PublicAPI) > 0,
 		len(c.ComfyUICanvas) > 0,
 		len(c.LiveExternalLLM) > 0,
+		hasNonEmptyStringValue(c.Notifications),
 	)
 }
 
@@ -229,6 +231,7 @@ type ColabOneMigrationCredentialsSummary struct {
 	HasComfyCanvas     bool   `json:"has_comfy_canvas"`
 	ComfyCanvasDomain  string `json:"comfy_canvas_domain"`
 	HasLiveExternalLLM bool   `json:"has_live_external_llm"`
+	HasNotifications   bool   `json:"has_notifications"`
 	ConfiguredCount    int    `json:"configured_count"`
 }
 
@@ -392,7 +395,33 @@ func summarizeCredentials(c *ColabOneMigrationCredentialsData) *ColabOneMigratio
 			s.ConfiguredCount++
 		}
 	}
+	if hasNonEmptyStringValue(c.Notifications) {
+		s.HasNotifications = true
+		s.ConfiguredCount++
+	}
 	return s
+}
+
+func hasNonEmptyStringValue(m map[string]any) bool {
+	for _, v := range m {
+		switch x := v.(type) {
+		case string:
+			if strings.TrimSpace(x) != "" {
+				return true
+			}
+		case map[string]any:
+			if hasNonEmptyStringValue(x) {
+				return true
+			}
+		case map[string]string:
+			for _, sv := range x {
+				if strings.TrimSpace(sv) != "" {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func summarizeSettings(st *ColabOneMigrationSettingsData) *ColabOneMigrationSettingsSummary {
