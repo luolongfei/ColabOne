@@ -4753,8 +4753,8 @@ test("fullscreen widescreen layout aligns navbar, status bar and cards across al
     overflowX: 0,
     innerWidth: 840,
     centeredDelta: 0,
-    listCount: 7,
-    rowCounts: [3, 6, 5, 3, 1, 1, 4],
+    listCount: 8,
+    rowCounts: [3, 6, 5, 3, 1, 1, 3, 1],
   });
 
   // Verify segmented control icons & labels stay vertically centered inside their pills
