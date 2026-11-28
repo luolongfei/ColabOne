@@ -1,20 +1,3 @@
-<script lang="ts">
-let lastGlobalPointerDownAt = 0;
-let globalPointerTrackerBound = false;
-
-function ensureGlobalPointerTracker() {
-  if (globalPointerTrackerBound || typeof window === "undefined") return;
-  globalPointerTrackerBound = true;
-  window.addEventListener(
-    "pointerdown",
-    () => {
-      lastGlobalPointerDownAt = performance.now();
-    },
-    { capture: true, passive: true },
-  );
-}
-</script>
-
 <script setup lang="ts">
 import {
   computed,
@@ -26,13 +9,19 @@ import {
 } from "vue";
 import { Tooltip as ATooltip } from "ant-design-vue";
 import type { TooltipPlacement } from "ant-design-vue/es/tooltip";
+import {
+  createColabOneTouchLongPressController,
+  ensureColabOneTooltipInputTracker,
+  isColabOneTouchInputActive,
+  shouldSuppressColabOneHoverTooltip,
+} from "./colabOneTooltipInput";
 
 defineOptions({
   name: "ColabOneTooltip",
   inheritAttrs: false,
 });
 
-ensureGlobalPointerTracker();
+ensureColabOneTooltipInputTracker();
 
 const props = withDefaults(
   defineProps<{
@@ -71,14 +60,78 @@ const mergedOverlayClass = computed(() =>
     : "co-tooltip-overlay",
 );
 
+function invokeForwardedHandler(handler: unknown, event: Event) {
+  if (typeof handler === "function") {
+    (handler as (ev: Event) => void)(event);
+  } else if (Array.isArray(handler)) {
+    for (const fn of handler) {
+      if (typeof fn === "function") {
+        (fn as (ev: Event) => void)(event);
+      }
+    }
+  }
+}
+
+const longPress = createColabOneTouchLongPressController({
+  canTrigger: () => !props.disabled && hasTitle.value,
+  onTrigger: () => {
+    if (!props.disabled && hasTitle.value) {
+      isOpen.value = true;
+    }
+  },
+  onDismiss: () => {
+    dismiss();
+  },
+});
+
 function dismiss() {
+  longPress.notifyDismissed();
   if (isOpen.value) {
     isOpen.value = false;
   }
 }
 
+function onTriggerTouchStart(event: TouchEvent) {
+  longPress.start(event);
+}
+
+function onTriggerContextMenu(event: MouseEvent) {
+  if (longPress.shouldSuppressContextMenu(event.target)) {
+    event.preventDefault();
+  }
+}
+
+const forwardedAttrs = computed(() => {
+  const {
+    class: attrClass,
+    onTouchstart,
+    onTouchstartPassive,
+    onContextmenu,
+    ...rest
+  } = attrs as Record<string, unknown>;
+  return {
+    ...rest,
+    class: attrClass
+      ? [attrClass, "co-tooltip-trigger"]
+      : "co-tooltip-trigger",
+    onTouchstart: (event: TouchEvent) => {
+      onTriggerTouchStart(event);
+      invokeForwardedHandler(onTouchstart, event);
+      invokeForwardedHandler(onTouchstartPassive, event);
+    },
+    onContextmenu: (event: MouseEvent) => {
+      onTriggerContextMenu(event);
+      invokeForwardedHandler(onContextmenu, event);
+    },
+  };
+});
+
 function onOpenChange(next: boolean) {
   if (!next) {
+    if (longPress.isLongPressOpen() && isColabOneTouchInputActive()) {
+      return;
+    }
+    longPress.notifyDismissed();
     isOpen.value = false;
     return;
   }
@@ -87,11 +140,7 @@ function onOpenChange(next: boolean) {
     return;
   }
   const enterDelayMs = Math.max(0, props.mouseEnterDelay * 1000);
-  if (
-    enterDelayMs > 0 &&
-    lastGlobalPointerDownAt > 0 &&
-    performance.now() - lastGlobalPointerDownAt < enterDelayMs
-  ) {
+  if (shouldSuppressColabOneHoverTooltip(enterDelayMs)) {
     isOpen.value = false;
     return;
   }
@@ -119,7 +168,12 @@ function attachDismissListeners() {
     capture: true,
     passive: true,
   });
+  window.addEventListener("touchstart", dismiss, {
+    capture: true,
+    passive: true,
+  });
   window.addEventListener("scroll", dismiss, { capture: true, passive: true });
+  window.addEventListener("resize", dismiss, { passive: true });
   window.addEventListener("blur", dismiss);
   window.addEventListener("keydown", onKeydown, { capture: true });
   document.documentElement?.addEventListener("mouseleave", dismiss);
@@ -130,7 +184,9 @@ function detachDismissListeners() {
   if (!listenersAttached || typeof window === "undefined") return;
   listenersAttached = false;
   window.removeEventListener("pointerdown", dismiss, true);
+  window.removeEventListener("touchstart", dismiss, true);
   window.removeEventListener("scroll", dismiss, true);
+  window.removeEventListener("resize", dismiss);
   window.removeEventListener("blur", dismiss);
   window.removeEventListener("keydown", onKeydown, true);
   document.documentElement?.removeEventListener("mouseleave", dismiss);
@@ -143,6 +199,7 @@ watch(
   () => props.disabled || !hasTitle.value,
   (suppressed) => {
     if (suppressed) {
+      longPress.cancel();
       dismiss();
     }
   },
@@ -157,6 +214,7 @@ watch(mergedOpen, (visible) => {
 });
 
 onBeforeUnmount(() => {
+  longPress.cancel();
   dismiss();
   detachDismissListeners();
 });
@@ -164,7 +222,7 @@ onBeforeUnmount(() => {
 
 <template>
   <ATooltip
-    v-bind="attrs"
+    v-bind="forwardedAttrs"
     :open="mergedOpen"
     :title="props.title || undefined"
     :placement="props.placement"

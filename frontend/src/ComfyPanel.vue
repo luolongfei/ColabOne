@@ -11326,14 +11326,10 @@ defineExpose({
             </div>
           </Transition>
           <div class="co-comfy-param-drawer-footer">
-            <div
-              class="co-comfy-param-drawer-footer-left"
-              :class="{
-                'is-mobile-empty': isShareMode && !(comfyRunTask || comfyTask),
-              }"
-            >
+            <div class="co-comfy-param-drawer-footer-left">
               <AButton
                 class="co-comfy-drawer-close-btn"
+                data-testid="comfy-param-drawer-close-btn"
                 @click="closeParamDrawer"
               >
                 {{ t("common.close") }}
@@ -11495,6 +11491,7 @@ defineExpose({
       :z-index="1010"
       :header-style="{ padding: '14px 20px' }"
       :body-style="{ padding: '16px 20px 24px', overflowY: 'auto' }"
+      :footer-style="{ padding: '12px 20px' }"
       root-class-name="co-comfy-outputs-drawer-root"
       @update:open="
         (val) => {
@@ -13177,6 +13174,18 @@ defineExpose({
           </template>
         </div>
       </div>
+
+      <template #footer>
+        <div class="co-comfy-outputs-drawer-footer">
+          <AButton
+            class="co-comfy-drawer-close-btn"
+            data-testid="comfy-outputs-drawer-close-btn"
+            @click="closeOutputsDrawer"
+          >
+            {{ t("common.close") }}
+          </AButton>
+        </div>
+      </template>
     </ADrawer>
 
     <!-- Full-Window Album & Zoomable Lightbox Modal -->
@@ -14139,10 +14148,19 @@ defineExpose({
   padding-bottom: 42px !important;
 }
 
-:global(.ant-drawer.co-comfy-param-drawer-root .ant-drawer-footer) {
+:global(.ant-drawer.co-comfy-param-drawer-root .ant-drawer-footer),
+:global(.ant-drawer.co-comfy-outputs-drawer-root .ant-drawer-footer) {
   position: relative;
   border-top: 1px solid var(--co-border-secondary);
   background: var(--co-elevated);
+}
+
+.co-comfy-outputs-drawer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  width: 100%;
 }
 
 .co-comfy-drawer-title {
@@ -16261,21 +16279,23 @@ defineExpose({
 
   .co-comfy-param-drawer-footer {
     flex-wrap: nowrap;
-    gap: 8px;
+    gap: 6px;
     width: 100%;
   }
 
-  .co-comfy-drawer-close-btn,
   .co-comfy-drawer-autorelease-pill {
     display: none !important;
   }
 
   .co-comfy-param-drawer-footer-left {
-    gap: 8px;
+    gap: 6px;
   }
 
-  .co-comfy-param-drawer-footer-left.is-mobile-empty {
-    display: none;
+  .co-comfy-drawer-close-btn {
+    height: 36px;
+    flex-shrink: 0;
+    padding-inline: 10px !important;
+    white-space: nowrap;
   }
 
   .co-comfy-drawer-autorelease-mobile-btn {
@@ -16318,7 +16338,7 @@ defineExpose({
   .co-comfy-drawer-cancel-btn {
     height: 36px;
     flex-shrink: 0;
-    padding-inline: 10px !important;
+    padding-inline: 9px !important;
     white-space: nowrap;
   }
 
@@ -16327,7 +16347,7 @@ defineExpose({
     min-width: 0;
     margin-left: 0;
     flex-wrap: nowrap;
-    gap: 8px;
+    gap: 6px;
   }
 
   .co-comfy-drawer-run-wrap {
@@ -16346,7 +16366,15 @@ defineExpose({
     width: 100%;
     min-width: 0;
     height: 36px;
-    padding-inline: 12px !important;
+    padding-inline: 10px !important;
+    overflow: hidden;
+  }
+
+  .co-comfy-drawer-run-btn :deep(> span:not(.ant-btn-icon)) {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .co-comfy-import-modal-footer {

@@ -413,7 +413,18 @@ onUnmounted(() => {
 
     <!-- Pinned Footer Bar -->
     <footer class="co-log-drawer-footer">
-      <span class="co-muted co-log-drawer-footer-meta">{{ t("logs.footerLimit") }}</span>
+      <div class="co-log-drawer-footer-left">
+        <AButton
+          v-if="!standalone"
+          size="small"
+          class="co-log-drawer-close-btn"
+          data-testid="log-drawer-footer-close"
+          @click="emit('close')"
+        >
+          {{ t("common.close") }}
+        </AButton>
+        <span class="co-muted co-log-drawer-footer-meta">{{ t("logs.footerLimit") }}</span>
+      </div>
       <AButton
         size="small"
         class="co-log-drawer-follow-btn"
@@ -673,6 +684,19 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
+.co-log-drawer-footer-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.co-log-drawer-close-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 .co-log-drawer-footer-meta {
   min-width: 0;
   overflow: hidden;
@@ -741,6 +765,12 @@ onUnmounted(() => {
   height: auto;
   min-height: 48px;
   padding: 8px 14px calc(8px + var(--co-safe-bottom, 0px));
+}
+
+.co-log-drawer.is-mobile-overlay .co-log-drawer-close-btn,
+.co-log-drawer.is-mobile-overlay .co-log-drawer-follow-btn {
+  height: 32px;
+  padding-inline: 11px;
 }
 
 @media (max-width: 768px) {

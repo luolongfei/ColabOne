@@ -7,10 +7,17 @@ import {
   restoreColabOneNativeTitles,
   stashColabOneNativeTitles,
 } from "./colabOneSelectOverflow";
+import {
+  createColabOneTouchLongPressController,
+  ensureColabOneTooltipInputTracker,
+  isColabOneTouchInputActive,
+} from "./colabOneTooltipInput";
 
 defineOptions({
   name: "ColabOneSelectTooltipHost",
 });
+
+ensureColabOneTooltipInputTracker();
 
 const visible = ref(false);
 const positioned = ref(false);
@@ -29,6 +36,24 @@ let renderToken = 0;
 let lastPointerDownAt = 0;
 let lastPointerDownAnchor: HTMLElement | null = null;
 
+const longPress = createColabOneTouchLongPressController({
+  canTrigger: (target) => {
+    const info = extractColabOneSelectHoverInfo(target ?? null);
+    return Boolean(info && info.anchor.isConnected);
+  },
+  onTrigger: (target) => {
+    const info = extractColabOneSelectHoverInfo(target);
+    if (!info || !info.anchor.isConnected) return false;
+    restoreStashedTitles();
+    stashedTitleElements = stashColabOneNativeTitles(info.anchor);
+    void showTooltipFor(info.anchor, info.text);
+    return true;
+  },
+  onDismiss: () => {
+    dismiss();
+  },
+});
+
 function clearEnterTimer() {
   if (enterTimer !== null) {
     clearTimeout(enterTimer);
@@ -44,6 +69,7 @@ function restoreStashedTitles() {
 }
 
 function dismiss() {
+  longPress.notifyDismissed();
   renderToken += 1;
   clearEnterTimer();
   pendingAnchor = null;
@@ -95,7 +121,10 @@ async function showTooltipFor(anchor: HTMLElement, fallbackText: string) {
   }
 
   const tipEl = tooltipRef.value;
-  if (!tipEl) return;
+  if (!tipEl) {
+    dismiss();
+    return;
+  }
 
   const anchorRect = anchor.getBoundingClientRect();
   if (anchorRect.width <= 0 || anchorRect.height <= 0) {
@@ -121,6 +150,9 @@ async function showTooltipFor(anchor: HTMLElement, fallbackText: string) {
 }
 
 function onMouseOver(event: MouseEvent) {
+  if (isColabOneTouchInputActive()) {
+    return;
+  }
   const info = extractColabOneSelectHoverInfo(event.target);
   if (!info) {
     const current = activeAnchor || pendingAnchor;
@@ -165,6 +197,10 @@ function onMouseOver(event: MouseEvent) {
 
   enterTimer = setTimeout(() => {
     enterTimer = null;
+    if (isColabOneTouchInputActive()) {
+      dismiss();
+      return;
+    }
     const targetAnchor = pendingAnchor;
     const text = pendingText;
     if (!targetAnchor) return;
@@ -173,6 +209,7 @@ function onMouseOver(event: MouseEvent) {
 }
 
 function onMouseOut(event: MouseEvent) {
+  if (longPress.isLongPressOpen() && isColabOneTouchInputActive()) return;
   const current = activeAnchor || pendingAnchor;
   if (!current) return;
   const related = event.relatedTarget as Node | null;
@@ -190,6 +227,23 @@ function onPointerDown(event: PointerEvent) {
   dismiss();
 }
 
+function onTouchStart(event: TouchEvent) {
+  dismiss();
+  if (!event.touches || event.touches.length !== 1) return;
+  const info = extractColabOneSelectHoverInfo(event.target);
+  if (!info) return;
+  const pressTarget = info.anchor.classList.contains("ant-select-selection-item")
+    ? (info.anchor.closest(".ant-select") ?? info.anchor)
+    : info.anchor;
+  longPress.start(event, pressTarget);
+}
+
+function onContextMenu(event: MouseEvent) {
+  if (longPress.shouldSuppressContextMenu(event.target)) {
+    event.preventDefault();
+  }
+}
+
 function onVisibilityChange() {
   if (document.visibilityState === "hidden") {
     dismiss();
@@ -200,6 +254,11 @@ onMounted(() => {
   if (typeof window === "undefined" || typeof document === "undefined") return;
   document.addEventListener("mouseover", onMouseOver, { passive: true });
   document.addEventListener("mouseout", onMouseOut, { passive: true });
+  document.addEventListener("touchstart", onTouchStart, {
+    capture: true,
+    passive: true,
+  });
+  document.addEventListener("contextmenu", onContextMenu, true);
   window.addEventListener("pointerdown", onPointerDown, {
     capture: true,
     passive: true,
@@ -214,11 +273,14 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  longPress.cancel();
   dismiss();
   lastPointerDownAnchor = null;
   if (typeof window === "undefined" || typeof document === "undefined") return;
   document.removeEventListener("mouseover", onMouseOver);
   document.removeEventListener("mouseout", onMouseOut);
+  document.removeEventListener("touchstart", onTouchStart, true);
+  document.removeEventListener("contextmenu", onContextMenu, true);
   window.removeEventListener("pointerdown", onPointerDown, true);
   window.removeEventListener("scroll", dismiss, true);
   window.removeEventListener("wheel", dismiss, true);

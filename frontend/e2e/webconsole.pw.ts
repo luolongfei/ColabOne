@@ -945,13 +945,14 @@ test("mobile drawer and modal footers stay single-row across 375px and 440px whi
     await expect(bottomNav).toBeVisible();
     await bottomNav.getByRole("button", { name: "ComfyUI" }).click();
 
-    // 1. Workflow Param Drawer (idle): bottom Close & desktop pill hidden, compact icon trigger + full-width Run stay single-row
+    // 1. Workflow Param Drawer (idle): bottom-left Close button visible, desktop pill hidden, compact icon trigger + full-width Run stay single-row
     await page.locator(".co-comfy-wf-card-trigger").first().click();
     const paramFooter = page.locator(
       ".co-comfy-param-drawer-root .co-comfy-param-drawer-footer",
     );
     await expect(paramFooter).toBeVisible();
-    await expect(paramFooter.locator(".co-comfy-drawer-close-btn")).toBeHidden();
+    const paramCloseBtn = paramFooter.getByTestId("comfy-param-drawer-close-btn");
+    await expect(paramCloseBtn).toBeVisible();
     await expect(paramFooter.getByTestId("comfy-drawer-auto-release")).toBeHidden();
     const arTrigger = paramFooter.getByTestId(
       "comfy-drawer-auto-release-mobile-trigger",
@@ -961,7 +962,8 @@ test("mobile drawer and modal footers stay single-row across 375px and 440px whi
     const idleMetrics = await assertSingleRowButtons(
       ".co-comfy-param-drawer-root .co-comfy-param-drawer-footer",
     );
-    expect(idleMetrics.count).toBe(2);
+    expect(idleMetrics.count).toBe(3);
+    expect(idleMetrics.rects[0].text).toMatch(/关\s*闭|Close/);
 
     // Tap icon button: opens popover sheet and arms auto-release with status indicator dot
     await arTrigger.click();
@@ -980,7 +982,7 @@ test("mobile drawer and modal footers stay single-row across 375px and 440px whi
     await expect(arSheet).toBeHidden();
     await expect(paramFooter).toBeVisible();
 
-    // 2. Workflow Param Drawer with active task (Cancel Task visible): 3 controls remain single-row without wrapping
+    // 2. Workflow Param Drawer with active task (Cancel Task visible): 4 controls (Close + Auto-Release + Cancel + Run) remain single-row without wrapping
     snapshot = {
       ...snapshot,
       runtime: {
@@ -1001,10 +1003,11 @@ test("mobile drawer and modal footers stay single-row across 375px and 440px whi
     const activeTaskMetrics = await assertSingleRowButtons(
       ".co-comfy-param-drawer-root .co-comfy-param-drawer-footer",
     );
-    expect(activeTaskMetrics.count).toBe(3);
+    expect(activeTaskMetrics.count).toBe(4);
+    expect(activeTaskMetrics.rects[0].text).toMatch(/关\s*闭|Close/);
 
-    // Close drawer via header X
-    await page.locator(".co-comfy-param-drawer-root .ant-drawer-close").click();
+    // Close drawer via bottom-left Close button
+    await paramCloseBtn.click();
     await expect(paramFooter).toBeHidden();
 
     // 3. Import Workflow Modal footer: single-row on mobile
@@ -1053,31 +1056,54 @@ test("mobile drawer and modal footers stay single-row across 375px and 440px whi
     await expect(driveFooter).toBeVisible();
     await page.locator(".co-drive-export-modal-wrap .ant-modal-close").click();
     await expect(driveFooter).toBeHidden();
-    await page.locator(".co-comfy-outputs-drawer-root .ant-drawer-close").click();
+    const outputsCloseBtn = page.getByTestId("comfy-outputs-drawer-close-btn");
+    await expect(outputsCloseBtn).toBeVisible();
+    await outputsCloseBtn.click();
+    await expect(outputsCloseBtn).toBeHidden();
 
-    // 5. LogDrawer footer: single-row without wrapping metadata text
+    // 5. LogDrawer footer: single-row with bottom-left Close button, metadata, and Follow button
     await page.locator(".co-logs-trigger").click();
     const logFooter = page.locator(".co-log-drawer-footer");
     await expect(logFooter).toBeVisible();
+    const logCloseBtn = logFooter.getByTestId("log-drawer-footer-close");
+    await expect(logCloseBtn).toBeVisible();
     const logFooterMetrics = await page.evaluate(() => {
       const footer = document.querySelector(".co-log-drawer-footer");
+      const closeBtn = footer?.querySelector(".co-log-drawer-close-btn");
       const meta = footer?.querySelector(".co-log-drawer-footer-meta");
-      const btn = footer?.querySelector("button");
-      if (!footer || !meta || !btn) return null;
+      const btn = footer?.querySelector(".co-log-drawer-follow-btn");
+      if (!footer || !closeBtn || !meta || !btn) return null;
       const fr = footer.getBoundingClientRect();
+      const cr = closeBtn.getBoundingClientRect();
       const mr = meta.getBoundingClientRect();
       const br = btn.getBoundingClientRect();
       return {
         metaHeight: mr.height,
-        sameRow: Math.abs(mr.top + mr.height / 2 - (br.top + br.height / 2)) <= 4,
+        closeOnLeft: cr.left >= fr.left - 1 && cr.right <= mr.left + 1,
+        sameRow:
+          Math.abs(cr.top + cr.height / 2 - (br.top + br.height / 2)) <= 4 &&
+          Math.abs(mr.top + mr.height / 2 - (br.top + br.height / 2)) <= 4,
         noOverflow: br.right <= fr.right + 1 && mr.right <= br.left + 1,
       };
     });
     expect(logFooterMetrics).not.toBeNull();
     expect(logFooterMetrics!.metaHeight).toBeLessThanOrEqual(24);
+    expect(logFooterMetrics!.closeOnLeft).toBe(true);
     expect(logFooterMetrics!.sameRow).toBe(true);
     expect(logFooterMetrics!.noOverflow).toBe(true);
-    await page.getByTestId("log-drawer-mobile-close").click();
+    await logCloseBtn.click();
+    await expect(logFooter).toBeHidden();
+
+    // 5b. ModelDrawer footer: bottom-left Close button visible and closes drawer cleanly
+    await bottomNav.getByRole("button", { name: "对外 API" }).click();
+    await page
+      .locator(".co-api-model-slot")
+      .getByRole("button", { name: /选择模型|切换模型/ })
+      .click();
+    const modelCloseBtn = page.getByTestId("model-drawer-close-btn");
+    await expect(modelCloseBtn).toBeVisible();
+    await modelCloseBtn.click();
+    await expect(modelCloseBtn).toBeHidden();
   }
 
   // 6. Desktop (1280x800): keeps bottom Close button + inline Auto-Release pill and hides mobile icon button
@@ -1777,4 +1803,282 @@ test("mobile task dock defaults collapsed with thin progress bar and billing tic
   await expect(page.getByTestId("dock-task-mini-percent")).toHaveText("64%");
   await page.getByTestId("dock-task-expand-btn").click();
   await expect(dock).toHaveAttribute("data-collapsed", "false");
+});
+
+test("mobile touch taps suppress hover tooltips while long-press reveals title without triggering click", async ({
+  browser,
+}) => {
+  const mobileCtx = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+    isMobile: true,
+    locale: "zh-CN",
+  });
+  try {
+    const page = await mobileCtx.newPage();
+    const cdp = await mobileCtx.newCDPSession(page);
+
+    await page.route("**/api/web/capabilities", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          runtime: "web",
+          version: "0.1.27",
+          can_open_native_canvas_window: false,
+          can_standalone_log_window: false,
+          can_manage_web_console: false,
+          can_manage_close_behavior: false,
+          can_manage_shortcuts: false,
+          can_self_update: false,
+          can_migrate: false,
+          can_reveal_host_secrets: false,
+          can_loopback_oauth: false,
+          can_download_output: true,
+        }),
+      });
+    });
+
+    const buildSnap = () => {
+      const base = makeBaseSnapshot(true);
+      return {
+        ...base,
+        account: {
+          ...base.account,
+          logged_in: true,
+          balance: 120.5,
+          rate: 2.0,
+          assignments: 1,
+          checked_at: Date.now() / 1000,
+        },
+        runtime: {
+          ...base.runtime,
+          state: "stopped",
+          gpu: undefined,
+        },
+        api: {
+          ...base.api,
+          running: false,
+        },
+      };
+    };
+
+    await page.route("**/api/snapshot", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(buildSnap()),
+      });
+    });
+
+    await page.route("**/api/command", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true }),
+      });
+    });
+
+    await page.route("**/api/telemetry**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ samples: [] }),
+      });
+    });
+
+    await page.route("**/api/output-shares", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          active_count: 0,
+          total_active_sessions: 0,
+          shares: [],
+          items: [],
+        }),
+      });
+    });
+
+    await page.goto("/", { waitUntil: "networkidle" });
+    await expect(page.getByTestId("nav-privacy-toggle")).toBeVisible();
+
+    const dispatchTap = async (x: number, y: number, holdMs = 70) => {
+      await cdp.send("Input.dispatchTouchEvent", {
+        type: "touchStart",
+        touchPoints: [{ x, y, id: 1 }],
+      });
+      await page.waitForTimeout(holdMs);
+      await cdp.send("Input.dispatchTouchEvent", {
+        type: "touchEnd",
+        touchPoints: [],
+      });
+    };
+
+    const centerOf = async (locator: ReturnType<typeof page.locator>) => {
+      await locator.scrollIntoViewIfNeeded();
+      const box = await locator.boundingBox();
+      expect(box).not.toBeNull();
+      return {
+        x: Math.round(box!.x + box!.width / 2),
+        y: Math.round(box!.y + box!.height / 2),
+      };
+    };
+
+    // 1. Quick tap on Privacy toggle executes action without popping any tooltip
+    const privacyBtn = page.getByTestId("nav-privacy-toggle");
+    const privacyBefore = await privacyBtn.getAttribute("aria-pressed");
+    const pCenter = await centerOf(privacyBtn);
+    await dispatchTap(pCenter.x, pCenter.y, 70);
+    await page.waitForTimeout(350);
+    await expect(privacyBtn).toHaveAttribute(
+      "aria-pressed",
+      privacyBefore === "true" ? "false" : "true",
+    );
+    await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
+
+    // 2. Quick tap on BillingCard trend button pops zero tooltips
+    const trendBtn = page.locator(".co-bc-trend-btn").first();
+    const trendCenter = await centerOf(trendBtn);
+    await dispatchTap(trendCenter.x, trendCenter.y, 70);
+    await page.waitForTimeout(350);
+    await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
+
+    // 3. Quick tap on disabled-compatible-wrapper button on Public API pops zero tooltips
+    await page
+      .locator(".co-mobile-tab-item")
+      .filter({ hasText: /对外 API|Public API/ })
+      .first()
+      .tap();
+    const disabledApiWrap = page
+      .locator(".co-api-header-action .ant-tooltip-disabled-compatible-wrapper")
+      .first();
+    await expect(disabledApiWrap).toBeVisible();
+    const apiWrapCenter = await centerOf(disabledApiWrap);
+    await dispatchTap(apiWrapCenter.x, apiWrapCenter.y, 80);
+    await page.waitForTimeout(350);
+    await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
+
+    // 4. Long-press on disabled-compatible-wrapper reveals its disabled reason tooltip cleanly
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [{ x: apiWrapCenter.x, y: apiWrapCenter.y, id: 2 }],
+    });
+    await page.waitForTimeout(560);
+    await expect(page.locator(".ant-tooltip:visible")).toHaveCount(1);
+    await expect(page.locator(".ant-tooltip:visible")).toContainText(
+      /启动远端 GPU|Start a remote GPU/,
+    );
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchEnd",
+      touchPoints: [],
+    });
+    await page.waitForTimeout(250);
+    // Remains readable right after lift, and dismisses immediately on tapping blank space
+    await expect(page.locator(".ant-tooltip:visible")).toHaveCount(1);
+    await dispatchTap(10, 10, 40);
+    await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
+
+    // 5. Long-press on Privacy toggle shows tooltip and suppresses trailing synthetic click
+    const pressedBeforeLongPress = await privacyBtn.getAttribute("aria-pressed");
+    const pCenter2 = await centerOf(privacyBtn);
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [{ x: pCenter2.x, y: pCenter2.y, id: 3 }],
+    });
+    await page.waitForTimeout(560);
+    await expect(page.locator(".ant-tooltip:visible")).toHaveCount(1);
+    await expect(page.locator(".ant-tooltip:visible")).toContainText(
+      /隐私打码|privacy/i,
+    );
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchEnd",
+      touchPoints: [],
+    });
+    await page.waitForTimeout(250);
+    await expect(privacyBtn).toHaveAttribute(
+      "aria-pressed",
+      pressedBeforeLongPress!,
+    );
+    await expect(page.locator(".ant-tooltip:visible")).toHaveCount(1);
+
+    // Immediate fresh quick tap on the same button dismisses tooltip and executes toggle on first try
+    await dispatchTap(pCenter2.x, pCenter2.y, 70);
+    await page.waitForTimeout(350);
+    await expect(privacyBtn).toHaveAttribute(
+      "aria-pressed",
+      pressedBeforeLongPress === "true" ? "false" : "true",
+    );
+    await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
+
+    // 6. Popconfirm-wrapped Sign Out button: quick tap opens Popconfirm cleanly (zero tooltip),
+    //    while long-press shows tooltip without opening Popconfirm
+    const signOutBtn = page.getByTestId("nav-web-signout-btn");
+    const sCenter = await centerOf(signOutBtn);
+    await dispatchTap(sCenter.x, sCenter.y, 70);
+    await page.waitForTimeout(250);
+    await expect(page.locator(".ant-popconfirm:visible")).toHaveCount(1);
+    await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
+    await dispatchTap(10, 10, 40);
+    await expect(page.locator(".ant-popconfirm:visible")).toHaveCount(0);
+
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [{ x: sCenter.x, y: sCenter.y, id: 4 }],
+    });
+    await page.waitForTimeout(560);
+    await expect(page.locator(".ant-tooltip:visible")).toHaveCount(1);
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchEnd",
+      touchPoints: [],
+    });
+    await page.waitForTimeout(250);
+    await expect(page.locator(".ant-popconfirm:visible")).toHaveCount(0);
+    await dispatchTap(10, 10, 40);
+    await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
+
+    // 7. LanguageSwitcher dropdown trigger: quick tap opens menu (zero tooltip),
+    //    long-press shows current language tooltip without opening menu
+    const localeBtn = page.getByTestId("topbar-locale-trigger");
+    const lCenter = await centerOf(localeBtn);
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [{ x: lCenter.x, y: lCenter.y, id: 6 }],
+    });
+    await page.waitForTimeout(560);
+    await expect(page.locator(".ant-tooltip:visible")).toHaveCount(1);
+    await expect(page.locator(".ant-tooltip:visible")).toContainText("简体中文");
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchEnd",
+      touchPoints: [],
+    });
+    await page.waitForTimeout(250);
+    await expect(page.locator(".co-locale-dropdown:visible")).toHaveCount(0);
+    await dispatchTap(lCenter.x, lCenter.y, 70);
+    await page.waitForTimeout(250);
+    await expect(page.locator(".co-locale-dropdown:visible")).toHaveCount(1);
+    await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
+    await dispatchTap(10, 10, 40);
+    await expect(page.locator(".co-locale-dropdown:visible")).toHaveCount(0);
+
+    // 8. Dragging finger (> 10px) during press cancels long-press so scrolling never triggers tooltips
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [{ x: pCenter2.x, y: pCenter2.y, id: 5 }],
+    });
+    await page.waitForTimeout(200);
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchMove",
+      touchPoints: [{ x: pCenter2.x, y: pCenter2.y + 24, id: 5 }],
+    });
+    await page.waitForTimeout(400);
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchEnd",
+      touchPoints: [],
+    });
+    await page.waitForTimeout(150);
+    await expect(page.locator(".ant-tooltip:visible")).toHaveCount(0);
+  } finally {
+    await mobileCtx.close();
+  }
 });

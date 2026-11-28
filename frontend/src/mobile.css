@@ -423,3 +423,19 @@
     font-size: 16px;
   }
 }
+
+/* Prevent iOS native callout / accidental label selection when long-pressing tooltip triggers */
+@media (hover: none) and (pointer: coarse) {
+  button.co-tooltip-trigger,
+  .co-tooltip-trigger.ant-btn,
+  .co-tooltip-trigger button,
+  .co-tooltip-trigger .ant-btn,
+  .co-tooltip-trigger.ant-tooltip-disabled-compatible-wrapper,
+  .co-tooltip-trigger.ant-tag,
+  .ant-select-selection-item,
+  .ant-select-item-option {
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+}

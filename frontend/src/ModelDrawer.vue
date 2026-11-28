@@ -922,6 +922,7 @@ onUnmounted(() => {
       padding: '12px 20px 24px',
       overflowY: 'auto',
     }"
+    :footer-style="{ padding: '12px 20px' }"
     root-class-name="co-model-drawer-root"
     @update:open="onDrawerOpenChange"
   >
@@ -1726,10 +1727,47 @@ onUnmounted(() => {
         </div>
       </div>
     </AModal>
+
+    <template #footer>
+      <div class="co-model-drawer-footer">
+        <AButton
+          class="co-model-drawer-close-btn"
+          data-testid="model-drawer-close-btn"
+          @click="closeDrawer"
+        >
+          {{ t("common.close") }}
+        </AButton>
+      </div>
+    </template>
   </ADrawer>
 </template>
 
 <style scoped>
+:global(.ant-drawer.co-model-drawer-root .ant-drawer-footer) {
+  border-top: 1px solid var(--co-border-secondary);
+  background: var(--co-elevated);
+}
+
+.co-model-drawer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  width: 100%;
+}
+
+.co-model-drawer-close-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+@media (max-width: 680px) {
+  .co-model-drawer-close-btn {
+    height: 36px;
+    padding-inline: 12px !important;
+  }
+}
+
 .co-model-drawer-title {
   display: inline-flex;
   align-items: center;
