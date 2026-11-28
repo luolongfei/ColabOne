@@ -9309,6 +9309,7 @@ test("ComfyUI Drive export modal handles async errors, non-drive operations, and
 
   // 2. Async drive.connect failure populates the error alert inside the modal and does NOT stay stuck loading.
   await driveModal.getByRole("button", { name: "授权并导出到云盘" }).click();
+  await expect(driveModal).toContainText("正在连接并挂载 Google 云盘");
   await page.evaluate(() => {
     const s = (window as any).__state;
     s.operation = {
@@ -9317,7 +9318,7 @@ test("ComfyUI Drive export modal handles async errors, non-drive operations, and
       kind: "drive_connect",
     };
   });
-  await expect(driveModal).toContainText("正在连接并挂载 Google 云盘");
+  await expect(driveModal).toContainText("挂载 Google 云盘 (ColabOne_Drive)");
   await page.evaluate(() => {
     const s = (window as any).__state;
     s.operation = null;
