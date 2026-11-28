@@ -1383,8 +1383,24 @@ def test_go_controller_command_parity_across_timeout_webconsole_and_frontend():
         f"frontend/src calls unknown commands: {sorted(frontend_cmds - controller_cmds)}"
     )
 
-    assert "settings.assign_proxy.test" in blocked_web_cmds, (
-        "settings.assign_proxy.test must be blocked in WebConsole"
+    for must_block in (
+        "desktop.shortcuts",
+        "settings.hf_token",
+        "settings.assign_proxy",
+        "auth.colab.auto",
+    ):
+        assert must_block in blocked_web_cmds, (
+            f"{must_block} must remain blocked in WebConsole"
+        )
+
+    webconsole_src = (
+        ROOT / "console" / "internal" / "webconsole" / "webconsole.go"
+    ).read_text(encoding="utf-8")
+    assert 'if action == "settings.assign_proxy.test"' in webconsole_src, (
+        "webconsole.go must enforce saved-only proxy testing for settings.assign_proxy.test"
+    )
+    assert "errWebAssignProxyTestSavedOnly" in webconsole_src, (
+        "webconsole.go must reject inline assign_proxy probe URLs in WebConsole mode"
     )
 
     phantom_shortcuts = {"shortcuts.status", "shortcuts.create", "shortcuts.remove"}

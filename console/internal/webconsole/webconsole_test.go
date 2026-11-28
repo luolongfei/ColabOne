@@ -1152,7 +1152,11 @@ func TestPersistedSessionsSurviveRestartSlidingRenewalAndRevocation(t *testing.T
 
 func TestCSRFProtectionAndAPIEndpoints(t *testing.T) {
 	largeSnapshot := `{"status":"ready","padding":"` + strings.Repeat("colabone-", 300) + `"}`
-	var bridgeCalls []string
+	type bridgeCallRecord struct {
+		method  string
+		payload map[string]any
+	}
+	var bridgeCalls []bridgeCallRecord
 	var bridgeMu sync.Mutex
 
 	wc := NewColabOneWebConsole(ColabOneWebConsoleOptions{
@@ -1161,13 +1165,17 @@ func TestCSRFProtectionAndAPIEndpoints(t *testing.T) {
 		AppVersion: "0.9.5",
 		CallBridge: func(ctx context.Context, method string, payload map[string]any) (string, error) {
 			bridgeMu.Lock()
-			bridgeCalls = append(bridgeCalls, method)
+			bridgeCalls = append(bridgeCalls, bridgeCallRecord{method: method, payload: payload})
 			bridgeMu.Unlock()
 			switch method {
 			case "snapshot":
 				return largeSnapshot, nil
 			case "models.list":
 				return `{"models":["qwen"]}`, nil
+			case "api.tunnel_token", "comfyui.canvas.tunnel_token":
+				return `{"token":"eyJtunnel"}`, nil
+			case "settings.assign_proxy.test":
+				return `{"proxy":"socks5://proxy.example:1080","latency_ms":42}`, nil
 			case "slow.op":
 				return "", context.DeadlineExceeded
 			case "bad.op":
@@ -1216,6 +1224,7 @@ func TestCSRFProtectionAndAPIEndpoints(t *testing.T) {
 		t.Fatal(err)
 	}
 	if caps.Runtime != "web" || caps.Version != "0.9.5" || !caps.CanDownloadOutput ||
+		!caps.CanManageWorkflowShares || !caps.CanRevealTunnelTokens || !caps.CanTestSavedAssignProxy ||
 		caps.CanOpenNativeCanvasWindow || caps.CanStandaloneLogWindow || caps.CanManageWebConsole ||
 		caps.CanManageCloseBehavior || caps.CanManageShortcuts || caps.CanSelfUpdate ||
 		caps.CanMigrate || caps.CanRevealHostSecrets || caps.CanLoopbackOAuth {
@@ -1319,13 +1328,10 @@ func TestCSRFProtectionAndAPIEndpoints(t *testing.T) {
 	bridgeMu.Unlock()
 
 	blockedCases := map[string]string{
-		"desktop.shortcuts":           "该桌面专属操作仅支持在宿主机客户端执行",
-		"api.tunnel_token":            "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
-		"comfyui.canvas.tunnel_token": "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
-		"settings.hf_token":           "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
-		"settings.assign_proxy":       "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
-		"settings.assign_proxy.test":  "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
-		"auth.colab.auto":             "网页控制台不支持本机回环自动登录，请使用手动授权登录",
+		"desktop.shortcuts":     "该桌面专属操作仅支持在宿主机客户端执行",
+		"settings.hf_token":     "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
+		"settings.assign_proxy": "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
+		"auth.colab.auto":       "网页控制台不支持本机回环自动登录，请使用手动授权登录",
 	}
 	for action, wantMsg := range blockedCases {
 		w := cmdPost("127.0.0.1:3232", fmt.Sprintf(`{"action":%q}`, action), map[string]string{
@@ -1340,11 +1346,60 @@ func TestCSRFProtectionAndAPIEndpoints(t *testing.T) {
 		}
 	}
 
+	// settings.assign_proxy.test rejects inline/arbitrary proxy URLs in web mode (SSRF guard)
+	for _, inlineBody := range []string{
+		`{"action":"settings.assign_proxy.test","payload":{"assign_proxy":"http://127.0.0.1:8080"}}`,
+		`{"action":"settings.assign_proxy.test","payload":{"Assign_Proxy":"http://127.0.0.1:8080"}}`,
+		`{"action":"settings.assign_proxy.test","payload":{"url":"http://169.254.169.254"}}`,
+		`{"action":"settings.assign_proxy.test","payload":{"assign_proxy":123}}`,
+	} {
+		w := cmdPost("127.0.0.1:3232", inlineBody, map[string]string{
+			ClientHeaderName: ClientHeaderValue,
+		})
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("inline settings.assign_proxy.test %s expected 403, got %d", inlineBody, w.Code)
+		}
+		var errBody map[string]string
+		if err := json.Unmarshal(w.Body.Bytes(), &errBody); err != nil || errBody["error"] != errWebAssignProxyTestSavedOnly {
+			t.Fatalf("inline settings.assign_proxy.test expected %q, got %q", errWebAssignProxyTestSavedOnly, w.Body.String())
+		}
+	}
+
 	bridgeMu.Lock()
 	if len(bridgeCalls) != callsBeforeBlocklist {
 		t.Fatalf("blocked commands must never invoke CallBridge")
 	}
 	bridgeMu.Unlock()
+
+	// Business-page tunnel token reads are allowed in host Web Console mode
+	for _, allowedAction := range []string{"api.tunnel_token", "comfyui.canvas.tunnel_token"} {
+		w := cmdPost("127.0.0.1:3232", fmt.Sprintf(`{"action":%q}`, allowedAction), map[string]string{
+			ClientHeaderName: ClientHeaderValue,
+		})
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"eyJtunnel"`) {
+			t.Fatalf("allowed action %q expected 200 token payload, got %d body=%q", allowedAction, w.Code, w.Body.String())
+		}
+	}
+
+	// settings.assign_proxy.test succeeds when testing the saved proxy (empty/omitted assign_proxy)
+	// and always strips payload before forwarding to the controller.
+	for _, savedBody := range []string{
+		`{"action":"settings.assign_proxy.test","payload":{}}`,
+		`{"action":"settings.assign_proxy.test","payload":{"assign_proxy":"   "}}`,
+	} {
+		w := cmdPost("127.0.0.1:3232", savedBody, map[string]string{
+			ClientHeaderName: ClientHeaderValue,
+		})
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"latency_ms":42`) {
+			t.Fatalf("saved settings.assign_proxy.test %s expected 200, got %d body=%q", savedBody, w.Code, w.Body.String())
+		}
+		bridgeMu.Lock()
+		last := bridgeCalls[len(bridgeCalls)-1]
+		bridgeMu.Unlock()
+		if last.method != "settings.assign_proxy.test" || len(last.payload) != 0 {
+			t.Fatalf("expected stripped empty payload for settings.assign_proxy.test, got %+v", last)
+		}
+	}
 
 	// Bridge errors map to 400 and timeouts to 504
 	if w := cmdPost("127.0.0.1:3232", `{"action":"bad.op"}`, map[string]string{ClientHeaderName: ClientHeaderValue}); w.Code != http.StatusBadRequest {

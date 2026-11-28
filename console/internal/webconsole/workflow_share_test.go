@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -2954,5 +2955,224 @@ func TestWorkflowShareOverridesAllowlistLoadedLLMBusyUploadConcurrencyAndSingleU
 	wc.Handler().ServeHTTP(priorCapRec, priorCapReq)
 	if priorCapRec.Code != http.StatusOK {
 		t.Fatalf("prior session cookie should stay valid after fail-closed switch, got %d", priorCapRec.Code)
+	}
+}
+
+func TestHostWebWorkflowSharesAPIAndLANURLs(t *testing.T) {
+	dir := t.TempDir()
+	vault := newMemoryVault()
+	clock := newFakeClock(time.Date(2026, 8, 15, 9, 0, 0, 0, time.UTC))
+
+	wc := NewColabOneWebConsole(ColabOneWebConsoleOptions{
+		ConfigDir:  dir,
+		Vault:      vault,
+		FrontendFS: sampleFrontendFS,
+		AppVersion: "0.1.29",
+		Now:        clock.Now,
+		CallBridge: func(ctx context.Context, method string, payload map[string]any) (string, error) {
+			if method == "snapshot" {
+				return `{"runtime":{"state":"ready"},"workflows":[{"id":"fashion-tryon-h3","name":"Fashion"}],"comfy_outputs":[]}`, nil
+			}
+			return `{"ok":true}`, nil
+		},
+	})
+	defer wc.Close()
+
+	// Stub two LAN interface IPs so we can verify both fallback ordering and request-host matching.
+	wc.listInterfaceIPs = func() []netip.Addr {
+		return []netip.Addr{
+			netip.MustParseAddr("172.17.0.1"),
+			netip.MustParseAddr("192.168.1.50"),
+		}
+	}
+
+	passcode, err := wc.Passcode()
+	if err != nil {
+		t.Fatalf("Passcode: %v", err)
+	}
+	port := reserveFreePort(t)
+	if _, err := wc.Update(ColabOneWebConsoleUpdateRequest{
+		Enabled:  boolPtr(true),
+		BindMode: strPtr(BindModeLAN),
+		Port:     intPtr(port),
+	}); err != nil {
+		t.Fatalf("enable LAN web console: %v", err)
+	}
+
+	lanHost := fmt.Sprintf("192.168.1.50:%d", port)
+	webCookie := loginForCookie(t, wc.Handler(), lanHost, passcode, nil)
+
+	// 1) Unauthenticated GET /api/workflow-shares -> 401.
+	unauthReq := httptest.NewRequest(http.MethodGet, "http://"+lanHost+"/api/workflow-shares", nil)
+	unauthReq.Host = lanHost
+	unauthReq.Header.Set(ClientHeaderName, ClientHeaderValue)
+	unauthRec := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(unauthRec, unauthReq)
+	if unauthRec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated GET /api/workflow-shares expected 401, got %d", unauthRec.Code)
+	}
+
+	// 2) Missing client header on POST /api/workflow-shares -> 403.
+	createBody := `{"label":"Mobile Share","title":"Phone Studio","workflow_ids":["fashion-tryon-h3"],"ttl_mode":"24h"}`
+	noHdrReq := httptest.NewRequest(http.MethodPost, "http://"+lanHost+"/api/workflow-shares", strings.NewReader(createBody))
+	noHdrReq.Host = lanHost
+	noHdrReq.AddCookie(webCookie)
+	noHdrRec := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(noHdrRec, noHdrReq)
+	if noHdrRec.Code != http.StatusForbidden {
+		t.Fatalf("POST /api/workflow-shares without client header expected 403, got %d", noHdrRec.Code)
+	}
+
+	// 3) Cross-origin POST -> 403.
+	crossReq := httptest.NewRequest(http.MethodPost, "http://"+lanHost+"/api/workflow-shares", strings.NewReader(createBody))
+	crossReq.Host = lanHost
+	crossReq.Header.Set("Content-Type", "application/json")
+	crossReq.Header.Set(ClientHeaderName, ClientHeaderValue)
+	crossReq.Header.Set("Origin", "https://evil.example.com")
+	crossReq.AddCookie(webCookie)
+	crossRec := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(crossRec, crossReq)
+	if crossRec.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin POST /api/workflow-shares expected 403, got %d", crossRec.Code)
+	}
+
+	// 4) Authenticated host web POST /api/workflow-shares over LAN host uses the exact LAN Host IP in URL!
+	createReq := httptest.NewRequest(http.MethodPost, "http://"+lanHost+"/api/workflow-shares", strings.NewReader(createBody))
+	createReq.Host = lanHost
+	createReq.Header.Set("Content-Type", "application/json")
+	createReq.Header.Set(ClientHeaderName, ClientHeaderValue)
+	createReq.Header.Set("Origin", "http://"+lanHost)
+	createReq.AddCookie(webCookie)
+	createRec := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("POST /api/workflow-shares expected 200, got %d body=%s", createRec.Code, createRec.Body.String())
+	}
+	var created ColabOneWorkflowShareSummary
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created workflow share: %v", err)
+	}
+	if !created.CanCopyLink || created.Status != "active" {
+		t.Fatalf("unexpected created workflow share: %+v", created)
+	}
+	wantLANPrefix := fmt.Sprintf("http://192.168.1.50:%d/share?k=", port)
+	if !strings.HasPrefix(created.URL, wantLANPrefix) {
+		t.Fatalf("expected created URL prefix %q, got %q", wantLANPrefix, created.URL)
+	}
+	if !strings.HasPrefix(created.LocalURL, fmt.Sprintf("http://127.0.0.1:%d/share?k=", port)) {
+		t.Fatalf("expected loopback LocalURL, got %q", created.LocalURL)
+	}
+
+	// Desktop WorkflowSharesState() in LAN mode prefers a LAN IP rather than 127.0.0.1.
+	desktopState := wc.WorkflowSharesState()
+	if len(desktopState.Shares) != 1 || !strings.HasPrefix(desktopState.Shares[0].URL, fmt.Sprintf("http://172.17.0.1:%d/share?k=", port)) {
+		t.Fatalf("expected desktop LAN fallback URL, got %+v", desktopState.Shares)
+	}
+
+	// 5) Guest workflow-share session cookie must NEVER be allowed to access /api/workflow-shares*.
+	shareKey := extractShareKeyFromURL(t, created.URL)
+	guestCookie := activateShareCookie(t, wc.Handler(), lanHost, shareKey)
+	guestListReq := httptest.NewRequest(http.MethodGet, "http://"+lanHost+"/api/workflow-shares", nil)
+	guestListReq.Host = lanHost
+	guestListReq.Header.Set(ClientHeaderName, ClientHeaderValue)
+	guestListReq.AddCookie(guestCookie)
+	guestListRec := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(guestListRec, guestListReq)
+	if guestListRec.Code != http.StatusUnauthorized {
+		t.Fatalf("guest cookie on GET /api/workflow-shares expected 401, got %d", guestListRec.Code)
+	}
+
+	// 6) Host GET /api/workflow-shares lists the created share with the matching LAN host URL.
+	listReq := httptest.NewRequest(http.MethodGet, "http://"+lanHost+"/api/workflow-shares", nil)
+	listReq.Host = lanHost
+	listReq.Header.Set(ClientHeaderName, ClientHeaderValue)
+	listReq.AddCookie(webCookie)
+	listRec := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("GET /api/workflow-shares expected 200, got %d body=%s", listRec.Code, listRec.Body.String())
+	}
+	var listed ColabOneWorkflowShareListState
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode listed workflow shares: %v", err)
+	}
+	if len(listed.Shares) != 1 || listed.Shares[0].ID != created.ID || !strings.HasPrefix(listed.Shares[0].URL, wantLANPrefix) {
+		t.Fatalf("unexpected listed workflow shares: %+v", listed)
+	}
+
+	// 7) Configuring PublicOrigin switches share URLs to the public origin even on LAN requests.
+	if _, err := wc.Update(ColabOneWebConsoleUpdateRequest{
+		PublicOrigin: strPtr("https://studio.example.com"),
+	}); err != nil {
+		t.Fatalf("set public origin: %v", err)
+	}
+	pubListReq := httptest.NewRequest(http.MethodGet, "http://"+lanHost+"/api/workflow-shares", nil)
+	pubListReq.Host = lanHost
+	pubListReq.Header.Set(ClientHeaderName, ClientHeaderValue)
+	pubListReq.AddCookie(webCookie)
+	pubListRec := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(pubListRec, pubListReq)
+	var pubListed ColabOneWorkflowShareListState
+	if err := json.Unmarshal(pubListRec.Body.Bytes(), &pubListed); err != nil {
+		t.Fatalf("decode public listed workflow shares: %v", err)
+	}
+	if len(pubListed.Shares) != 1 || !pubListed.Shares[0].UsesPublicHost || !strings.HasPrefix(pubListed.Shares[0].URL, "https://studio.example.com/share?k=") {
+		t.Fatalf("expected public origin URL, got %+v", pubListed.Shares)
+	}
+
+	// 8) Host POST /api/workflow-shares/{id}/revoke revokes the share and invalidates guest cookie.
+	revReq := httptest.NewRequest(http.MethodPost, "http://"+lanHost+"/api/workflow-shares/"+created.ID+"/revoke", nil)
+	revReq.Host = lanHost
+	revReq.Header.Set(ClientHeaderName, ClientHeaderValue)
+	revReq.AddCookie(webCookie)
+	revRec := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(revRec, revReq)
+	if revRec.Code != http.StatusOK || !strings.Contains(revRec.Body.String(), `"status":"revoked"`) {
+		t.Fatalf("POST revoke expected 200 revoked, got %d body=%s", revRec.Code, revRec.Body.String())
+	}
+	guestAfterRevokeReq := httptest.NewRequest(http.MethodGet, "http://"+lanHost+"/api/share/snapshot", nil)
+	guestAfterRevokeReq.Host = lanHost
+	guestAfterRevokeReq.AddCookie(guestCookie)
+	guestAfterRevokeRec := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(guestAfterRevokeRec, guestAfterRevokeReq)
+	if guestAfterRevokeRec.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked guest cookie expected 401 on /api/share/snapshot, got %d", guestAfterRevokeRec.Code)
+	}
+
+	// 9) Trailing JSON tokens on POST /api/workflow-shares are rejected with 400.
+	trailingReq := httptest.NewRequest(http.MethodPost, "http://"+lanHost+"/api/workflow-shares", strings.NewReader(createBody+`{"extra":1}`))
+	trailingReq.Host = lanHost
+	trailingReq.Header.Set("Content-Type", "application/json")
+	trailingReq.Header.Set(ClientHeaderName, ClientHeaderValue)
+	trailingReq.Header.Set("Origin", "http://"+lanHost)
+	trailingReq.AddCookie(webCookie)
+	trailingRec := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(trailingRec, trailingReq)
+	if trailingRec.Code != http.StatusBadRequest {
+		t.Fatalf("trailing JSON on POST /api/workflow-shares expected 400, got %d", trailingRec.Code)
+	}
+
+	// 10) Defense-in-depth: resolveWorkflowShareLANBase rejects spoofed non-interface IPs and normalizes default port :80.
+	lanCfg := ColabOneWebConsoleConfig{BindMode: BindModeLAN, Port: port}
+	spoofReq := httptest.NewRequest(http.MethodGet, "http://203.0.113.99:3232/api/workflow-shares", nil)
+	spoofReq.Host = "203.0.113.99:3232"
+	if got := wc.resolveWorkflowShareLANBase(spoofReq, lanCfg); got != fmt.Sprintf("http://172.17.0.1:%d", port) {
+		t.Fatalf("spoofed Host IP must fall back to interface LAN base, got %q", got)
+	}
+	port80Req := httptest.NewRequest(http.MethodGet, "http://192.168.1.50:80/api/workflow-shares", nil)
+	port80Req.Host = "192.168.1.50:80"
+	if got := wc.resolveWorkflowShareLANBase(port80Req, lanCfg); got != "http://192.168.1.50" {
+		t.Fatalf("explicit :80 HTTP Host expected canonical http://192.168.1.50, got %q", got)
+	}
+
+	// 11) Host DELETE /api/workflow-shares/{id} permanently removes it.
+	delReq := httptest.NewRequest(http.MethodDelete, "http://"+lanHost+"/api/workflow-shares/"+created.ID, nil)
+	delReq.Host = lanHost
+	delReq.Header.Set(ClientHeaderName, ClientHeaderValue)
+	delReq.AddCookie(webCookie)
+	delRec := httptest.NewRecorder()
+	wc.Handler().ServeHTTP(delRec, delReq)
+	if delRec.Code != http.StatusOK || strings.Contains(delRec.Body.String(), created.ID) {
+		t.Fatalf("DELETE expected 200 empty list, got %d body=%s", delRec.Code, delRec.Body.String())
 	}
 }

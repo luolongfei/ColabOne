@@ -50,11 +50,14 @@ export interface ColabOneWebCapabilities {
   can_open_native_canvas_window: boolean;
   can_standalone_log_window: boolean;
   can_manage_web_console: boolean;
+  can_manage_workflow_shares: boolean;
   can_manage_close_behavior: boolean;
   can_manage_shortcuts: boolean;
   can_self_update: boolean;
   can_migrate: boolean;
   can_reveal_host_secrets: boolean;
+  can_reveal_tunnel_tokens: boolean;
+  can_test_saved_assign_proxy: boolean;
   can_loopback_oauth: boolean;
   can_download_output: boolean;
 }
@@ -192,11 +195,14 @@ export function createColabOneCapabilities(
       can_open_native_canvas_window: true,
       can_standalone_log_window: true,
       can_manage_web_console: true,
+      can_manage_workflow_shares: true,
       can_manage_close_behavior: true,
       can_manage_shortcuts: true,
       can_self_update: true,
       can_migrate: true,
       can_reveal_host_secrets: true,
+      can_reveal_tunnel_tokens: true,
+      can_test_saved_assign_proxy: true,
       can_loopback_oauth: true,
       can_download_output: true,
     };
@@ -207,11 +213,14 @@ export function createColabOneCapabilities(
     can_open_native_canvas_window: false,
     can_standalone_log_window: false,
     can_manage_web_console: false,
+    can_manage_workflow_shares: true,
     can_manage_close_behavior: false,
     can_manage_shortcuts: false,
     can_self_update: false,
     can_migrate: false,
     can_reveal_host_secrets: false,
+    can_reveal_tunnel_tokens: true,
+    can_test_saved_assign_proxy: true,
     can_loopback_oauth: false,
     can_download_output: true,
   };
@@ -275,6 +284,10 @@ function normalizeCapabilitiesPayload(raw: unknown): ColabOneWebCapabilities {
       "can_manage_web_console",
       base.can_manage_web_console,
     ),
+    can_manage_workflow_shares: boolOr(
+      "can_manage_workflow_shares",
+      base.can_manage_workflow_shares,
+    ),
     can_manage_close_behavior: boolOr(
       "can_manage_close_behavior",
       base.can_manage_close_behavior,
@@ -288,6 +301,14 @@ function normalizeCapabilitiesPayload(raw: unknown): ColabOneWebCapabilities {
     can_reveal_host_secrets: boolOr(
       "can_reveal_host_secrets",
       base.can_reveal_host_secrets,
+    ),
+    can_reveal_tunnel_tokens: boolOr(
+      "can_reveal_tunnel_tokens",
+      base.can_reveal_tunnel_tokens,
+    ),
+    can_test_saved_assign_proxy: boolOr(
+      "can_test_saved_assign_proxy",
+      base.can_test_saved_assign_proxy,
     ),
     can_loopback_oauth: boolOr("can_loopback_oauth", base.can_loopback_oauth),
     can_download_output: boolOr(

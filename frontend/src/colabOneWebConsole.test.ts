@@ -169,8 +169,11 @@ describe("colabOneWebConsole runtime detection and normalization", () => {
     const desktop = createColabOneCapabilities("desktop");
     expect(desktop.runtime).toBe("desktop");
     expect(desktop.can_manage_web_console).toBe(true);
+    expect(desktop.can_manage_workflow_shares).toBe(true);
     expect(desktop.can_open_native_canvas_window).toBe(true);
     expect(desktop.can_reveal_host_secrets).toBe(true);
+    expect(desktop.can_reveal_tunnel_tokens).toBe(true);
+    expect(desktop.can_test_saved_assign_proxy).toBe(true);
     expect(desktop.can_download_output).toBe(true);
 
     const web = createColabOneCapabilities("web");
@@ -178,11 +181,14 @@ describe("colabOneWebConsole runtime detection and normalization", () => {
     expect(web.can_open_native_canvas_window).toBe(false);
     expect(web.can_standalone_log_window).toBe(false);
     expect(web.can_manage_web_console).toBe(false);
+    expect(web.can_manage_workflow_shares).toBe(true);
     expect(web.can_manage_close_behavior).toBe(false);
     expect(web.can_manage_shortcuts).toBe(false);
     expect(web.can_self_update).toBe(false);
     expect(web.can_migrate).toBe(false);
     expect(web.can_reveal_host_secrets).toBe(false);
+    expect(web.can_reveal_tunnel_tokens).toBe(true);
+    expect(web.can_test_saved_assign_proxy).toBe(true);
     expect(web.can_loopback_oauth).toBe(false);
     expect(web.can_download_output).toBe(true);
   });

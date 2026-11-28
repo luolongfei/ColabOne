@@ -3467,6 +3467,7 @@ describe("ColabOne ComfyUI catalog & digital human backend i18n", () => {
       "分享编号无效",
       "未找到对应的工作流分享链接",
       "创建工作流分享返回数据无效",
+      "为防止探测本机内网，网页控制台仅允许测试已保存的分配代理，请先保存后再测",
       "task_id 长度不合法",
       "读取工作流分享签名密钥失败：vault locked",
       "生成工作流分享签名密钥失败：entropy error",

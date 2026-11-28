@@ -900,7 +900,7 @@ onUnmounted(() => {
                 :placeholder="t('api.tunnelTokenEmptyPlaceholder')"
                 :saved-placeholder="t('api.tunnelTokenSavedPlaceholder')"
                 :load-saved="
-                  colabOneRuntimeCapabilities.can_reveal_host_secrets
+                  colabOneRuntimeCapabilities.can_reveal_tunnel_tokens
                     ? loadSavedTunnelToken
                     : undefined
                 "

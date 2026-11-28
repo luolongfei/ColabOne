@@ -1,5 +1,12 @@
 import { ref } from "vue";
-import { isColabOneDesktopRuntime } from "./colabOneWebConsole";
+import {
+  COLABONE_WEB_CLIENT_HEADER,
+  COLABONE_WEB_CLIENT_VALUE,
+  getColabOneWebAuthEpoch,
+  isColabOneDesktopRuntime,
+  markColabOneWebSessionAlive,
+  notifyColabOneWebAuthRequired,
+} from "./colabOneWebConsole";
 
 export type ColabOneWorkflowShareTTLMode = "once" | "24h" | "7d" | "forever";
 export type ColabOneWorkflowShareStatus =
@@ -577,4 +584,89 @@ export async function colabOneWorkflowShareDownloadOutput(
     link.remove();
   }
   return filename;
+}
+
+// ---------------------------------------------------------------------------
+// Host Web Console API Helpers (browser mode without Desktop MyGo IPC)
+// ---------------------------------------------------------------------------
+
+async function colabOneWebWorkflowShareFetchJson(
+  url: string,
+  init: RequestInit,
+): Promise<unknown> {
+  const reqWebEpoch = getColabOneWebAuthEpoch();
+  const res = await fetch(url, {
+    ...init,
+    credentials: "same-origin",
+    headers: {
+      [COLABONE_WEB_CLIENT_HEADER]: COLABONE_WEB_CLIENT_VALUE,
+      ...(init.headers || {}),
+    },
+  });
+  if (res.status === 401) {
+    notifyColabOneWebAuthRequired();
+    throw new Error("Unauthorized");
+  }
+  if (!res.ok) {
+    throw new Error(await extractShareResponseError(res));
+  }
+  const data = (await res.json()) as unknown;
+  markColabOneWebSessionAlive(reqWebEpoch);
+  return data;
+}
+
+export async function colabOneWebGetWorkflowSharesState(): Promise<ColabOneWorkflowShareListState> {
+  const payload = await colabOneWebWorkflowShareFetchJson(
+    "/api/workflow-shares",
+    {
+      method: "GET",
+    },
+  );
+  return normalizeColabOneWorkflowShareListState(payload);
+}
+
+export async function colabOneWebCreateWorkflowShare(
+  req: ColabOneWorkflowShareCreateRequest,
+): Promise<ColabOneWorkflowShareSummary> {
+  const payload = await colabOneWebWorkflowShareFetchJson(
+    "/api/workflow-shares",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(req),
+    },
+  );
+  const normalized = normalizeColabOneWorkflowShareSummary(payload);
+  if (!normalized) {
+    throw new Error("创建工作流分享返回数据无效");
+  }
+  return normalized;
+}
+
+export async function colabOneWebRevokeWorkflowShare(
+  id: string,
+): Promise<ColabOneWorkflowShareListState> {
+  const cleanId = encodeURIComponent(String(id || "").trim());
+  const payload = await colabOneWebWorkflowShareFetchJson(
+    `/api/workflow-shares/${cleanId}/revoke`,
+    {
+      method: "POST",
+    },
+  );
+  return normalizeColabOneWorkflowShareListState(payload);
+}
+
+export async function colabOneWebDeleteWorkflowShare(
+  id: string,
+): Promise<ColabOneWorkflowShareListState> {
+  const cleanId = encodeURIComponent(String(id || "").trim());
+  const payload = await colabOneWebWorkflowShareFetchJson(
+    `/api/workflow-shares/${cleanId}`,
+    {
+      method: "DELETE",
+    },
+  );
+  return normalizeColabOneWorkflowShareListState(payload);
 }

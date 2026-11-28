@@ -64,6 +64,8 @@ function makeBaseSnapshot(ready = true) {
     },
     assign_proxy_settings: {
       enabled: false,
+      has_proxy: true,
+      masked_url: "socks5://127.0.0.1:1080",
       has_url: true,
       redacted: "socks5://127.0.0.1:1080",
     },
@@ -81,6 +83,7 @@ function makeBaseSnapshot(ready = true) {
       drive: ready,
       drive_authorized: ready,
       drive_headless: ready,
+      hf: true,
       hf_token: true,
       start_menu_shortcut: false,
       desktop_shortcut: false,
@@ -302,12 +305,30 @@ test("desktop Settings Remote Web Console card toggles on default port 3232, gen
   await expect(card).toContainText("已关闭");
 });
 
-test("web console browser mode runs over HTTP without window.mygo, hides host-only sections, and handles 401 session expiry", async ({
+test("web console browser mode runs over HTTP without window.mygo, hides host-only sections, allows workflow shares / tunnel tokens / saved assign proxy test, and handles 401 session expiry", async ({
   page,
 }) => {
-  const snapshot = makeBaseSnapshot(true);
+  const baseSnapshot = makeBaseSnapshot(true);
+  const snapshot = {
+    ...baseSnapshot,
+    workflows: [
+      {
+        id: "wf-demo",
+        name: "Demo Studio Workflow",
+        description: "Test workflow for web console sharing",
+        source: "builtin" as const,
+        min_vram_mib: 8192,
+        node_count: 4,
+        fields: [],
+      },
+    ],
+  };
   let expireSession = false;
-  const commandActions: string[] = [];
+  const commandCalls: Array<{
+    action: string;
+    payload?: Record<string, unknown>;
+  }> = [];
+  let workflowShares: Array<Record<string, unknown>> = [];
 
   await page.route("**/api/web/capabilities", async (route) => {
     if (expireSession) {
@@ -327,11 +348,14 @@ test("web console browser mode runs over HTTP without window.mygo, hides host-on
         can_open_native_canvas_window: false,
         can_standalone_log_window: false,
         can_manage_web_console: false,
+        can_manage_workflow_shares: true,
         can_manage_close_behavior: false,
         can_manage_shortcuts: false,
         can_self_update: false,
         can_migrate: false,
         can_reveal_host_secrets: false,
+        can_reveal_tunnel_tokens: true,
+        can_test_saved_assign_proxy: true,
         can_loopback_oauth: false,
         can_download_output: true,
       }),
@@ -356,9 +380,15 @@ test("web console browser mode runs over HTTP without window.mygo, hides host-on
   });
 
   await page.route("**/api/command", async (route) => {
-    const reqBody = route.request().postDataJSON() as { action?: string };
+    const reqBody = route.request().postDataJSON() as {
+      action?: string;
+      payload?: Record<string, unknown>;
+    };
     if (reqBody?.action) {
-      commandActions.push(reqBody.action);
+      commandCalls.push({
+        action: reqBody.action,
+        payload: reqBody.payload,
+      });
     }
     if (reqBody?.action === "auth.colab.begin") {
       await route.fulfill({
@@ -366,6 +396,34 @@ test("web console browser mode runs over HTTP without window.mygo, hides host-on
         contentType: "application/json",
         body: JSON.stringify({
           url: "https://accounts.google.com/o/oauth2/auth?response_type=code",
+        }),
+      });
+      return;
+    }
+    if (reqBody?.action === "comfyui.canvas.tunnel_token") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ token: "eyJ-canvas-tunnel-token-web" }),
+      });
+      return;
+    }
+    if (reqBody?.action === "api.tunnel_token") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ token: "eyJ-api-tunnel-token-web" }),
+      });
+      return;
+    }
+    if (reqBody?.action === "settings.assign_proxy.test") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          latency_ms: 42,
+          masked_url: "socks5://127.0.0.1:1080",
         }),
       });
       return;
@@ -398,6 +456,97 @@ test("web console browser mode runs over HTTP without window.mygo, hides host-on
     });
   });
 
+  await page.route("**/api/workflow-shares**", async (route) => {
+    if (expireSession) {
+      await route.fulfill({
+        status: 401,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Unauthorized" }),
+      });
+      return;
+    }
+    const req = route.request();
+    const url = new URL(req.url());
+    const method = req.method();
+    const buildState = () => ({
+      active_count: workflowShares.filter((s) => s.status === "active").length,
+      total_active_sessions: 0,
+      shares: workflowShares,
+    });
+    if (url.pathname === "/api/workflow-shares" && method === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(buildState()),
+      });
+      return;
+    }
+    if (url.pathname === "/api/workflow-shares" && method === "POST") {
+      const body = (req.postDataJSON() || {}) as {
+        label?: string;
+        title?: string;
+        workflow_ids?: string[];
+        ttl_mode?: string;
+      };
+      const nowSec = Math.floor(Date.now() / 1000);
+      const created = {
+        id: "wfshareweb01",
+        label: body.label || "Mobile Share",
+        title: body.title || "",
+        workflow_ids: body.workflow_ids || ["wf-demo"],
+        ttl_mode: body.ttl_mode || "24h",
+        single_use: body.ttl_mode === "once",
+        status: "active",
+        created_at: nowSec,
+        expires_at: nowSec + 86400,
+        active_sessions: 0,
+        output_count: 0,
+        uses_public_host: false,
+        url: "http://192.168.1.50:3232/share/s_web_token_1",
+        local_url: "http://127.0.0.1:3232/share/s_web_token_1",
+        can_copy_link: true,
+      };
+      workflowShares = [created, ...workflowShares];
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(created),
+      });
+      return;
+    }
+    const revokeMatch = url.pathname.match(/^\/api\/workflow-shares\/([^/]+)\/revoke$/);
+    if (revokeMatch && method === "POST") {
+      const targetId = revokeMatch[1];
+      workflowShares = workflowShares.map((item) =>
+        item.id === targetId
+          ? { ...item, status: "revoked", can_copy_link: false }
+          : item,
+      );
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(buildState()),
+      });
+      return;
+    }
+    const deleteMatch = url.pathname.match(/^\/api\/workflow-shares\/([^/]+)$/);
+    if (deleteMatch && method === "DELETE") {
+      const targetId = deleteMatch[1];
+      workflowShares = workflowShares.filter((item) => item.id !== targetId);
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(buildState()),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 404,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Not found" }),
+    });
+  });
+
   await page.goto("/");
 
   // Navbar shows Web Mode badge and Sign Out button
@@ -412,15 +561,92 @@ test("web console browser mode runs over HTTP without window.mygo, hides host-on
   await expect(page.getByTestId("settings-close-behavior-row")).toHaveCount(0);
   await expect(page.getByTestId("settings-update-row")).toHaveCount(0);
 
-  // ComfyUI canvas shows "Open Canvas in New Tab" instead of desktop native window button
+  // Settings host secrets (HF Token + Assign Proxy) remain non-revealable in web mode,
+  // while testing the saved Assign Proxy is allowed (saved-only, disabled when unsaved draft exists)
+  const hfToggle = page
+    .locator(".co-secret-field", { has: page.locator("#settings-hf-token") })
+    .locator(".co-secret-toggle");
+  await expect(hfToggle).toHaveAttribute("aria-label", "显示密钥");
+  await hfToggle.click();
+  await expect(page.locator("#settings-hf-token")).toHaveValue("");
+  await page.getByRole("button", { name: /^编\s*辑$/ }).click();
+  const proxyToggle = page
+    .locator(".co-secret-field", {
+      has: page.locator("#settings-assign-proxy"),
+    })
+    .locator(".co-secret-toggle");
+  await expect(proxyToggle).toHaveAttribute("aria-label", "显示密钥");
+  await proxyToggle.click();
+  await expect(page.locator("#settings-assign-proxy")).toHaveValue("");
+  const proxyTestBtn = page.getByTestId("settings-assign-proxy-test-btn");
+  await expect(proxyTestBtn).toBeVisible();
+  await expect(proxyTestBtn).toBeEnabled();
+  await proxyTestBtn.click();
+  await expect
+    .poll(() =>
+      commandCalls.filter((c) => c.action === "settings.assign_proxy.test").length,
+    )
+    .toBe(1);
+  const proxyTestCall = commandCalls.find(
+    (c) => c.action === "settings.assign_proxy.test",
+  );
+  expect(proxyTestCall?.payload || {}).toEqual({});
+  await page.locator("#settings-assign-proxy").fill("socks5://10.0.0.2:1080");
+  await expect(proxyTestBtn).toBeDisabled();
+  await page.getByTestId("settings-assign-proxy-test-wrap").hover();
+  await expect(
+    page.getByRole("tooltip", { name: /网页模式下请先保存代理地址/ }),
+  ).toBeVisible();
+
+  // ComfyUI Studio exposes Workflow Sharing in Web Mode (hiding desktop-only Web Console settings buttons)
   await page.getByRole("button", { name: "ComfyUI" }).click();
+  const shareBtn = page.getByTestId("comfy-share-workflows-btn");
+  await expect(shareBtn).toBeVisible();
+  await shareBtn.click();
+  await expect(page.getByTestId("workflow-share-modal")).toBeVisible();
+  await expect(page.getByTestId("workflow-share-open-settings-btn")).toHaveCount(0);
+  await expect(page.getByTestId("workflow-share-local-origin-hint")).toContainText(
+    "请在宿主机客户端设置中配置公网域名",
+  );
+  await page.getByTestId("workflow-share-label-input").fill("Mobile Client Link");
+  await page.getByTestId("workflow-share-create-btn").click();
+  await expect(page.getByTestId("workflow-share-created-card")).toBeVisible();
+  await expect(page.getByTestId("workflow-share-created-card")).toContainText(
+    "http://192.168.1.50:3232/share/s_web_token_1",
+  );
+  await page.getByRole("tab", { name: /管理分享/ }).click();
+  await expect(page.getByTestId("workflow-share-card-wfshareweb01")).toBeVisible();
+  await page.getByTestId("workflow-share-revoke-wfshareweb01").click();
+  await page.locator(".ant-popconfirm .ant-btn-primary, .ant-popover .ant-btn-primary").last().click();
+  await expect(page.getByTestId("workflow-share-delete-wfshareweb01")).toBeVisible();
+  await page.getByTestId("workflow-share-delete-wfshareweb01").click();
+  await expect(page.getByTestId("workflow-share-empty-state")).toBeVisible();
+  await page
+    .getByRole("dialog", { name: "分享工作流" })
+    .getByRole("button", { name: "Close" })
+    .click();
+  await expect(page.getByTestId("workflow-share-modal")).toBeHidden();
+
+  // ComfyUI canvas shows "Open Canvas in New Tab" instead of desktop native window button
   await page.getByRole("tab", { name: /原生画布/ }).click();
   await expect(page.getByRole("button", { name: "在新标签页打开画布" })).toBeVisible();
   await expect(page.getByRole("button", { name: "在应用窗口中打开" })).toHaveCount(0);
-  // Web mode cannot reveal or copy host-saved Tunnel Tokens (can_reveal_host_secrets: false)
-  await expect(page.locator(".co-comfy-canvas-grid .co-secret-copy-btn")).toBeDisabled();
+  // Web mode CAN reveal/copy business Tunnel Tokens (can_reveal_tunnel_tokens: true)
+  const comfyTokenCopyBtn = page.locator(".co-comfy-canvas-grid .co-secret-copy-btn");
+  await expect(comfyTokenCopyBtn).toBeEnabled();
+  await comfyTokenCopyBtn.click();
+  await expect
+    .poll(() =>
+      commandCalls.some((c) => c.action === "comfyui.canvas.tunnel_token"),
+    )
+    .toBe(true);
   await page.getByRole("button", { name: "对外 API" }).click();
-  await expect(page.locator(".co-api-connection .co-secret-copy-btn")).toBeDisabled();
+  const apiTokenCopyBtn = page.locator(".co-api-connection .co-secret-copy-btn");
+  await expect(apiTokenCopyBtn).toBeEnabled();
+  await apiTokenCopyBtn.click();
+  await expect
+    .poll(() => commandCalls.some((c) => c.action === "api.tunnel_token"))
+    .toBe(true);
 
   // Trigger 401 session expiration and confirm ONLY the session expired banner appears (no duplicate error banner)
   expireSession = true;
@@ -429,7 +655,10 @@ test("web console browser mode runs over HTTP without window.mygo, hides host-on
   });
   await page.waitForTimeout(2600);
   await expect(page.locator(".co-banners .ant-alert-error")).toHaveCount(0);
+  const commandActions = commandCalls.map((c) => c.action);
   expect(commandActions).not.toContain("auth.colab.auto");
+  expect(commandActions).not.toContain("settings.hf_token");
+  expect(commandActions).not.toContain("settings.assign_proxy");
 });
 
 test("mobile web mode (440x956 and 375x812) renders bottom tab bar, keeps header/status unclipped, prevents API hero squish, and opens full-width drawers", async ({
@@ -501,11 +730,14 @@ test("mobile web mode (440x956 and 375x812) renders bottom tab bar, keeps header
         can_open_native_canvas_window: false,
         can_standalone_log_window: false,
         can_manage_web_console: false,
+        can_manage_workflow_shares: true,
         can_manage_close_behavior: false,
         can_manage_shortcuts: false,
         can_self_update: false,
         can_migrate: false,
         can_reveal_host_secrets: false,
+        can_reveal_tunnel_tokens: true,
+        can_test_saved_assign_proxy: true,
         can_loopback_oauth: false,
         can_download_output: true,
       }),
@@ -546,6 +778,18 @@ test("mobile web mode (440x956 and 375x812) renders bottom tab bar, keeps header
         total_active_sessions: 0,
         shares: [],
         items: [],
+      }),
+    });
+  });
+
+  await page.route("**/api/workflow-shares", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        active_count: 0,
+        total_active_sessions: 0,
+        shares: [],
       }),
     });
   });
@@ -771,11 +1015,14 @@ test("mobile drawer and modal footers stay single-row across 375px and 440px whi
         can_open_native_canvas_window: false,
         can_standalone_log_window: false,
         can_manage_web_console: false,
+        can_manage_workflow_shares: true,
         can_manage_close_behavior: false,
         can_manage_shortcuts: false,
         can_self_update: false,
         can_migrate: false,
         can_reveal_host_secrets: false,
+        can_reveal_tunnel_tokens: true,
+        can_test_saved_assign_proxy: true,
         can_loopback_oauth: false,
         can_download_output: true,
       }),
@@ -840,6 +1087,18 @@ test("mobile drawer and modal footers stay single-row across 375px and 440px whi
         total_active_sessions: 0,
         shares: [],
         items: [],
+      }),
+    });
+  });
+
+  await page.route("**/api/workflow-shares", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        active_count: 0,
+        total_active_sessions: 0,
+        shares: [],
       }),
     });
   });
@@ -1336,11 +1595,14 @@ test("mobile iPhone viewports keep running status bar in 2 compact rows and prev
         can_open_native_canvas_window: false,
         can_standalone_log_window: false,
         can_manage_web_console: false,
+        can_manage_workflow_shares: true,
         can_manage_close_behavior: false,
         can_manage_shortcuts: false,
         can_self_update: false,
         can_migrate: false,
         can_reveal_host_secrets: false,
+        can_reveal_tunnel_tokens: true,
+        can_test_saved_assign_proxy: true,
         can_loopback_oauth: false,
         can_download_output: true,
       }),
@@ -1381,6 +1643,18 @@ test("mobile iPhone viewports keep running status bar in 2 compact rows and prev
         total_active_sessions: 0,
         shares: [],
         items: [],
+      }),
+    });
+  });
+
+  await page.route("**/api/workflow-shares", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        active_count: 0,
+        total_active_sessions: 0,
+        shares: [],
       }),
     });
   });
@@ -1633,11 +1907,14 @@ test("mobile task dock defaults collapsed with thin progress bar and billing tic
         can_open_native_canvas_window: false,
         can_standalone_log_window: false,
         can_manage_web_console: false,
+        can_manage_workflow_shares: true,
         can_manage_close_behavior: false,
         can_manage_shortcuts: false,
         can_self_update: false,
         can_migrate: false,
         can_reveal_host_secrets: false,
+        can_reveal_tunnel_tokens: true,
+        can_test_saved_assign_proxy: true,
         can_loopback_oauth: false,
         can_download_output: true,
       }),
@@ -1678,6 +1955,18 @@ test("mobile task dock defaults collapsed with thin progress bar and billing tic
         total_active_sessions: 0,
         shares: [],
         items: [],
+      }),
+    });
+  });
+
+  await page.route("**/api/workflow-shares", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        active_count: 0,
+        total_active_sessions: 0,
+        shares: [],
       }),
     });
   });
@@ -1828,11 +2117,14 @@ test("mobile touch taps suppress hover tooltips while long-press reveals title w
           can_open_native_canvas_window: false,
           can_standalone_log_window: false,
           can_manage_web_console: false,
+          can_manage_workflow_shares: true,
           can_manage_close_behavior: false,
           can_manage_shortcuts: false,
           can_self_update: false,
           can_migrate: false,
           can_reveal_host_secrets: false,
+          can_reveal_tunnel_tokens: true,
+          can_test_saved_assign_proxy: true,
           can_loopback_oauth: false,
           can_download_output: true,
         }),
@@ -1896,6 +2188,18 @@ test("mobile touch taps suppress hover tooltips while long-press reveals title w
           total_active_sessions: 0,
           shares: [],
           items: [],
+        }),
+      });
+    });
+
+    await page.route("**/api/workflow-shares", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          active_count: 0,
+          total_active_sessions: 0,
+          shares: [],
         }),
       });
     });

@@ -10491,7 +10491,7 @@ defineExpose({
                       :placeholder="t('comfy.canvasTokenEmptyPlaceholder')"
                       :saved-placeholder="t('api.tunnelTokenSavedPlaceholder')"
                       :load-saved="
-                        colabOneRuntimeCapabilities.can_reveal_host_secrets
+                        colabOneRuntimeCapabilities.can_reveal_tunnel_tokens
                           ? loadSavedCanvasToken
                           : undefined
                       "

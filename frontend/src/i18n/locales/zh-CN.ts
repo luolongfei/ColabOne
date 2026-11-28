@@ -1768,6 +1768,7 @@ export const zhCNMessages = {
   "settings.assignProxySavedPlaceholderWithUrl": "已保存：{url}（输入新地址可更新）",
   "settings.assignProxySaveBtn": "保存代理",
   "settings.assignProxyTestBtn": "测试连通性",
+  "settings.assignProxyTestSaveFirstHint": "网页模式下请先保存代理地址，再测试连通性",
   "settings.assignProxyClearBtn": "清除代理",
   "settings.assignProxyNeedUrlFirst": "请先填写代理地址后再启用",
   "settings.assignProxyEnabledToast": "已开启 GPU 分配代理（仅分配阶段生效）",
@@ -2159,6 +2160,12 @@ export const zhCNMessages = {
   "workflowShare.openWebConsoleSettingsBtn": "前往设置公网域名",
   "workflowShare.noPublicOriginHint":
     "当前未配置公网固定域名，生成的链接将使用本机地址；如需分享给外部朋友，建议在设置中配置公网域名。",
+  "workflowShare.noPublicOriginWebHint":
+    "当前未配置公网固定域名，生成的链接将使用本机地址；如需分享给外部朋友，请在宿主机客户端设置中配置公网域名。",
+  "workflowShare.lanOriginHint":
+    "当前未配置公网固定域名，生成的链接将使用局域网地址；如需分享给外网朋友，建议在设置中配置公网域名。",
+  "workflowShare.lanOriginWebHint":
+    "当前未配置公网固定域名，生成的链接将使用局域网地址；如需分享给外网朋友，请在宿主机客户端设置中配置公网域名。",
   "workflowShare.publicOriginHint": "将使用公网地址 {origin} 生成分享链接。",
   "workflowShare.selectWorkflowsLabel": "选择要分享的工作流",
   "workflowShare.selectWorkflowsHint": "访客打开链接后只能看到并运行这里勾选的工作流。",

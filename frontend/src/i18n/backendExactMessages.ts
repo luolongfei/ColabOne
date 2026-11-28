@@ -9909,6 +9909,14 @@ export const EXACT_MESSAGES: Record<string, ColabOneLocaleTable> = {
     "ローカル認証情報を保護するため、Web コンソールでは平文キーやプロキシ設定の読み取りを禁止しています",
     "로컬 자격 증명을 보호하기 위해 웹 콘솔에서는 평문 키나 프록시 설정 읽기가 차단됩니다",
   ),
+  "为防止探测本机内网，网页控制台仅允许测试已保存的分配代理，请先保存后再测": row(
+    "为防止探测本机内网，网页控制台仅允许测试已保存的分配代理，请先保存后再测",
+    "To prevent local network probing, Web Console only allows testing the saved allocation proxy. Save it first and try again",
+    "為防止探測本機內網，網頁主控台僅允許測試已儲存的分配代理，請先儲存後再試",
+    "為防止探測本地內網，網頁控制台僅允許測試已儲存的分配代理，請先儲存後再試",
+    "ローカルネットワーク探索を防ぐため、Web コンソールでは保存済みの割り当てプロキシのみテストできます。先に保存してから再試行してください",
+    "로컬 네트워크 탐색을 방지하기 위해 웹 콘솔에서는 저장된 할당 프록시만 테스트할 수 있습니다. 먼저 저장한 뒤 다시 시도해 주세요",
+  ),
   "网页控制台不支持本机回环自动登录，请使用手动授权登录": row(
     "网页控制台不支持本机回环自动登录，请使用手动授权登录",
     "Web Console does not support localhost loopback sign-in; please use manual authorization",

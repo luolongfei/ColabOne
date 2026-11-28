@@ -61,6 +61,7 @@ const props = withDefaults(
     workflows: WorkflowTemplate[];
     webConsoleState: ColabOneWebConsoleState;
     sharesState: ColabOneWorkflowShareListState;
+    canManageWebConsole?: boolean;
     loading?: boolean;
     creating?: boolean;
     mutating?: boolean;
@@ -72,6 +73,7 @@ const props = withDefaults(
     copyLink?: (url: string) => Promise<boolean> | boolean;
   }>(),
   {
+    canManageWebConsole: true,
     loading: false,
     creating: false,
     mutating: false,
@@ -131,6 +133,14 @@ const activeShareCount = computed<number>(() => {
 
 const publicOrigin = computed<string>(() =>
   (props.webConsoleState?.public_origin || "").trim(),
+);
+
+const hasLanOrigin = computed<boolean>(
+  () =>
+    !publicOrigin.value &&
+    props.webConsoleState?.bind_mode === "lan" &&
+    Array.isArray(props.webConsoleState?.lan_urls) &&
+    props.webConsoleState.lan_urls.length > 0,
 );
 
 const publicOriginHintParts = computed<{ before: string; after: string }>(() => {
@@ -588,7 +598,7 @@ function entrySubtitle(entry: ColabOneStudioWorkflowEntry): string {
             <p class="co-ws-offline-copy">
               {{ t("workflowShare.webConsoleOffDesc") }}
             </p>
-            <div class="co-ws-offline-actions">
+            <div v-if="canManageWebConsole" class="co-ws-offline-actions">
               <AButton
                 type="primary"
                 size="small"
@@ -621,9 +631,18 @@ function entrySubtitle(entry: ColabOneStudioWorkflowEntry): string {
       >
         <PhInfo :size="15" weight="duotone" class="co-ws-origin-icon" aria-hidden="true" />
         <span class="co-ws-origin-text">
-          {{ t("workflowShare.noPublicOriginHint") }}
+          {{
+            hasLanOrigin
+              ? canManageWebConsole
+                ? t("workflowShare.lanOriginHint")
+                : t("workflowShare.lanOriginWebHint")
+              : canManageWebConsole
+                ? t("workflowShare.noPublicOriginHint")
+                : t("workflowShare.noPublicOriginWebHint")
+          }}
         </span>
         <AButton
+          v-if="canManageWebConsole"
           size="small"
           type="link"
           class="co-ws-origin-settings-btn"

@@ -1808,6 +1808,8 @@ export const koKRMessages: ColabOneMessages = {
   "settings.assignProxySavedPlaceholderWithUrl": "저장됨: {url} (새 주소 입력 시 업데이트)",
   "settings.assignProxySaveBtn": "프록시 저장",
   "settings.assignProxyTestBtn": "연결 테스트",
+  "settings.assignProxyTestSaveFirstHint":
+    "웹 모드에서는 먼저 프록시 주소를 저장한 뒤 연결 테스트를 실행해 주세요",
   "settings.assignProxyClearBtn": "프록시 삭제",
   "settings.assignProxyNeedUrlFirst": "활성화하기 전에 프록시 주소를 입력하세요",
   "settings.assignProxyEnabledToast": "GPU 할당 전용 프록시가 활성화되었습니다",
@@ -2214,6 +2216,12 @@ export const koKRMessages: ColabOneMessages = {
   "workflowShare.openWebConsoleSettingsBtn": "공개 도메인 설정으로 이동",
   "workflowShare.noPublicOriginHint":
     "고정 공개 도메인이 설정되지 않아 생성된 링크에 로컬 주소가 사용됩니다. 외부 사용자에게 공유하려면 설정에서 공개 도메인을 구성해 주세요.",
+  "workflowShare.noPublicOriginWebHint":
+    "고정 공개 도메인이 설정되지 않아 생성된 링크에 로컬 주소가 사용됩니다. 외부 사용자에게 공유하려면 호스트 데스크톱 클라이언트의 설정에서 공개 도메인을 구성해 주세요.",
+  "workflowShare.lanOriginHint":
+    "고정 공개 도메인이 설정되지 않아 생성된 링크에 LAN 주소가 사용됩니다. 외부에 공유하려면 설정에서 공개 도메인을 구성해 주세요.",
+  "workflowShare.lanOriginWebHint":
+    "고정 공개 도메인이 설정되지 않아 생성된 링크에 LAN 주소가 사용됩니다. 외부에 공유하려면 호스트 데스크톱 클라이언트의 설정에서 공개 도메인을 구성해 주세요.",
   "workflowShare.publicOriginHint":
     "공개 주소 {origin}을(를) 사용하여 공유 링크를 생성합니다.",
   "workflowShare.selectWorkflowsLabel": "공유할 워크플로 선택",

@@ -14,7 +14,9 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -80,6 +82,7 @@ const (
 	maxWorkflowShareTasksTracked       = 256
 	maxWorkflowSharePreviewsPerShare   = 128
 	maxWorkflowShareOutputsTracked     = 4096
+	maxWorkflowShareCreateBodyBytes    = int64(64 << 10)
 	maxWorkflowShareUploadBodyBytes    = int64(96 << 20)
 	maxWorkflowShareConcurrentUploads  = 2
 	maxGuestOverrideStringRunes        = 200000
@@ -877,11 +880,52 @@ func allowsDigitalHumanWorkflow(expandedIDs []string) bool {
 	return false
 }
 
+func (w *ColabOneWebConsole) preferredWorkflowShareLANBase(cfg ColabOneWebConsoleConfig) string {
+	return w.preferredOutputShareLANBase(cfg)
+}
+
+func (w *ColabOneWebConsole) resolveWorkflowShareLANBase(r *http.Request, cfg ColabOneWebConsoleConfig) string {
+	if cfg.PublicOrigin != "" || cfg.BindMode != BindModeLAN {
+		return ""
+	}
+	if r != nil {
+		if host, port, ok := parseRequestHost(r.Host); ok {
+			if addr, err := netip.ParseAddr(host); err == nil {
+				unmapped := addr.Unmap()
+				if !unmapped.IsLoopback() && !unmapped.IsUnspecified() && w.isHostAllowed(unmapped.String()) {
+					scheme := "http"
+					isHTTPS := w.isHTTPSRequest(r)
+					if isHTTPS {
+						scheme = "https"
+					}
+					hasExplicitPort := port != ""
+					normPort := normalizePortForScheme(scheme, port)
+					hostPort := unmapped.String()
+					if hasExplicitPort {
+						if normPort != "" {
+							hostPort = net.JoinHostPort(hostPort, normPort)
+						} else if unmapped.Is6() {
+							hostPort = "[" + hostPort + "]"
+						}
+					} else if !isHTTPS && cfg.Port > 0 && cfg.Port != 80 {
+						hostPort = net.JoinHostPort(hostPort, strconv.Itoa(cfg.Port))
+					} else if unmapped.Is6() {
+						hostPort = "[" + hostPort + "]"
+					}
+					return scheme + "://" + hostPort
+				}
+			}
+		}
+	}
+	return w.preferredWorkflowShareLANBase(cfg)
+}
+
 func (w *ColabOneWebConsole) buildWorkflowShareSummaryLocked(
 	rec colabOneWorkflowShareRecord,
 	now time.Time,
 	sessionCounts map[string]int,
 	outputCounts map[string]int,
+	lanBase string,
 ) ColabOneWorkflowShareSummary {
 	status := computeWorkflowShareStatus(rec, now)
 	canCopy := status == "active" && len(w.shareHMACKey) == workflowShareHMACKeyBytes
@@ -895,6 +939,8 @@ func (w *ColabOneWebConsole) buildWorkflowShareSummaryLocked(
 		if w.cfg.PublicOrigin != "" {
 			shareURL = fmt.Sprintf("%s%s?k=%s", w.cfg.PublicOrigin, WorkflowShareRoutePath, key)
 			usesPublic = true
+		} else if w.cfg.BindMode == BindModeLAN && lanBase != "" {
+			shareURL = fmt.Sprintf("%s%s?k=%s", lanBase, WorkflowShareRoutePath, key)
 		}
 	}
 
@@ -928,9 +974,22 @@ func (w *ColabOneWebConsole) buildWorkflowShareSummaryLocked(
 
 // WorkflowSharesState returns the live summary list of all workflow shares and active guest sessions.
 func (w *ColabOneWebConsole) WorkflowSharesState() ColabOneWorkflowShareListState {
+	return w.workflowSharesStateForRequest(nil)
+}
+
+func (w *ColabOneWebConsole) workflowSharesStateForRequest(r *http.Request) ColabOneWorkflowShareListState {
+	w.mu.RLock()
+	cfgSnapshot := w.cfg
+	w.mu.RUnlock()
+	lanBase := w.resolveWorkflowShareLANBase(r, cfgSnapshot)
+
 	now := w.now()
 	w.mu.RLock()
 	defer w.mu.RUnlock()
+	effectiveLANBase := ""
+	if w.cfg.PublicOrigin == "" && w.cfg.BindMode == BindModeLAN && w.cfg.Port == cfgSnapshot.Port {
+		effectiveLANBase = lanBase
+	}
 
 	sessionCounts := make(map[string]int)
 	for _, s := range w.shareSessions {
@@ -951,7 +1010,7 @@ func (w *ColabOneWebConsole) WorkflowSharesState() ColabOneWorkflowShareListStat
 	activeCount := 0
 	totalActiveSessions := 0
 	for _, rec := range w.workflowShares {
-		summary := w.buildWorkflowShareSummaryLocked(rec, now, sessionCounts, outputCounts)
+		summary := w.buildWorkflowShareSummaryLocked(rec, now, sessionCounts, outputCounts, effectiveLANBase)
 		if summary.Status == "active" {
 			activeCount++
 		}
@@ -977,6 +1036,13 @@ func (w *ColabOneWebConsole) WorkflowSharesState() ColabOneWorkflowShareListStat
 func (w *ColabOneWebConsole) CreateWorkflowShare(
 	req ColabOneWorkflowShareCreateRequest,
 ) (ColabOneWorkflowShareSummary, error) {
+	return w.createWorkflowShareForRequest(req, nil)
+}
+
+func (w *ColabOneWebConsole) createWorkflowShareForRequest(
+	req ColabOneWorkflowShareCreateRequest,
+	r *http.Request,
+) (ColabOneWorkflowShareSummary, error) {
 	label, err := normalizeWorkflowShareText(req.Label, maxWorkflowShareLabelRunes, "分享备注")
 	if err != nil {
 		return ColabOneWorkflowShareSummary{}, err
@@ -998,6 +1064,7 @@ func (w *ColabOneWebConsole) CreateWorkflowShare(
 	w.mu.RLock()
 	closed := w.closed
 	existingCount := len(w.workflowShares)
+	cfgSnapshot := w.cfg
 	w.mu.RUnlock()
 	if closed {
 		w.workflowShareOpMu.Unlock()
@@ -1012,6 +1079,8 @@ func (w *ColabOneWebConsole) CreateWorkflowShare(
 		w.workflowShareOpMu.Unlock()
 		return ColabOneWorkflowShareSummary{}, err
 	}
+
+	lanBase := w.resolveWorkflowShareLANBase(r, cfgSnapshot)
 
 	nonceRaw := make([]byte, workflowShareNonceBytes)
 	if _, err := rand.Read(nonceRaw); err != nil {
@@ -1071,7 +1140,11 @@ func (w *ColabOneWebConsole) CreateWorkflowShare(
 		return ColabOneWorkflowShareSummary{}, errWebConsoleClosed
 	}
 	w.workflowShares[shareID] = rec
-	summary := w.buildWorkflowShareSummaryLocked(rec, now, map[string]int{}, map[string]int{})
+	effectiveLANBase := ""
+	if w.cfg.PublicOrigin == "" && w.cfg.BindMode == BindModeLAN && w.cfg.Port == cfgSnapshot.Port {
+		effectiveLANBase = lanBase
+	}
+	summary := w.buildWorkflowShareSummaryLocked(rec, now, map[string]int{}, map[string]int{}, effectiveLANBase)
 	w.mu.Unlock()
 
 	if err := w.persistWorkflowShares(); err != nil {
@@ -1090,9 +1163,13 @@ func (w *ColabOneWebConsole) CreateWorkflowShare(
 
 // RevokeWorkflowShare manually revokes a share link and immediately invalidates all of its active guest sessions.
 func (w *ColabOneWebConsole) RevokeWorkflowShare(shareID string) (ColabOneWorkflowShareListState, error) {
+	return w.revokeWorkflowShareForRequest(shareID, nil)
+}
+
+func (w *ColabOneWebConsole) revokeWorkflowShareForRequest(shareID string, r *http.Request) (ColabOneWorkflowShareListState, error) {
 	shareID = strings.TrimSpace(shareID)
 	if !workflowShareIDRe.MatchString(shareID) {
-		return w.WorkflowSharesState(), errors.New("分享编号无效")
+		return w.workflowSharesStateForRequest(r), errors.New("分享编号无效")
 	}
 
 	w.workflowShareOpMu.Lock()
@@ -1100,13 +1177,13 @@ func (w *ColabOneWebConsole) RevokeWorkflowShare(shareID string) (ColabOneWorkfl
 	if w.closed {
 		w.mu.Unlock()
 		w.workflowShareOpMu.Unlock()
-		return w.WorkflowSharesState(), errWebConsoleClosed
+		return w.workflowSharesStateForRequest(r), errWebConsoleClosed
 	}
 	rec, exists := w.workflowShares[shareID]
 	if !exists {
 		w.mu.Unlock()
 		w.workflowShareOpMu.Unlock()
-		return w.WorkflowSharesState(), errors.New("未找到对应的工作流分享链接")
+		return w.workflowSharesStateForRequest(r), errors.New("未找到对应的工作流分享链接")
 	}
 	now := w.now()
 	changed := false
@@ -1123,25 +1200,35 @@ func (w *ColabOneWebConsole) RevokeWorkflowShare(shareID string) (ColabOneWorkfl
 	}
 	if err := w.persistWorkflowShares(); err != nil {
 		w.workflowShareOpMu.Unlock()
-		state := w.WorkflowSharesState()
+		desktopState := w.WorkflowSharesState()
 		if changed || purgedSessions {
-			w.emitWorkflowSharesChange(state)
+			w.emitWorkflowSharesChange(desktopState)
 		}
-		return state, err
+		if r != nil {
+			return w.workflowSharesStateForRequest(r), err
+		}
+		return desktopState, err
 	}
 	w.workflowShareOpMu.Unlock()
 
 	w.logActivity(fmt.Sprintf("已撤销工作流分享链接 %s 并注销关联访客会话", shareID), "info")
-	state := w.WorkflowSharesState()
-	w.emitWorkflowSharesChange(state)
-	return state, nil
+	desktopState := w.WorkflowSharesState()
+	w.emitWorkflowSharesChange(desktopState)
+	if r != nil {
+		return w.workflowSharesStateForRequest(r), nil
+	}
+	return desktopState, nil
 }
 
 // DeleteWorkflowShare permanently removes a workflow share entry and immediately invalidates all of its active guest sessions.
 func (w *ColabOneWebConsole) DeleteWorkflowShare(shareID string) (ColabOneWorkflowShareListState, error) {
+	return w.deleteWorkflowShareForRequest(shareID, nil)
+}
+
+func (w *ColabOneWebConsole) deleteWorkflowShareForRequest(shareID string, r *http.Request) (ColabOneWorkflowShareListState, error) {
 	shareID = strings.TrimSpace(shareID)
 	if !workflowShareIDRe.MatchString(shareID) {
-		return w.WorkflowSharesState(), errors.New("分享编号无效")
+		return w.workflowSharesStateForRequest(r), errors.New("分享编号无效")
 	}
 
 	w.workflowShareOpMu.Lock()
@@ -1149,13 +1236,13 @@ func (w *ColabOneWebConsole) DeleteWorkflowShare(shareID string) (ColabOneWorkfl
 	if w.closed {
 		w.mu.Unlock()
 		w.workflowShareOpMu.Unlock()
-		return w.WorkflowSharesState(), errWebConsoleClosed
+		return w.workflowSharesStateForRequest(r), errWebConsoleClosed
 	}
 	existingRec, exists := w.workflowShares[shareID]
 	if !exists {
 		w.mu.Unlock()
 		w.workflowShareOpMu.Unlock()
-		return w.WorkflowSharesState(), errors.New("未找到对应的工作流分享链接")
+		return w.workflowSharesStateForRequest(r), errors.New("未找到对应的工作流分享链接")
 	}
 	backupRec := existingRec
 	backupRec.WorkflowIDs = append([]string(nil), existingRec.WorkflowIDs...)
@@ -1191,16 +1278,22 @@ func (w *ColabOneWebConsole) DeleteWorkflowShare(shareID string) (ColabOneWorkfl
 		}
 		w.mu.Unlock()
 		w.workflowShareOpMu.Unlock()
-		state := w.WorkflowSharesState()
-		w.emitWorkflowSharesChange(state)
-		return state, err
+		desktopState := w.WorkflowSharesState()
+		w.emitWorkflowSharesChange(desktopState)
+		if r != nil {
+			return w.workflowSharesStateForRequest(r), err
+		}
+		return desktopState, err
 	}
 	w.workflowShareOpMu.Unlock()
 
 	w.logActivity(fmt.Sprintf("已删除工作流分享记录 %s", shareID), "info")
-	state := w.WorkflowSharesState()
-	w.emitWorkflowSharesChange(state)
-	return state, nil
+	desktopState := w.WorkflowSharesState()
+	w.emitWorkflowSharesChange(desktopState)
+	if r != nil {
+		return w.workflowSharesStateForRequest(r), nil
+	}
+	return desktopState, nil
 }
 
 func (w *ColabOneWebConsole) purgeShareSessionsForShareLocked(shareID string) bool {
@@ -3715,4 +3808,69 @@ func encodeJSONNoEscape(v any) ([]byte, error) {
 		return nil, err
 	}
 	return bytes.TrimSuffix(buf.Bytes(), []byte{'\n'}), nil
+}
+
+// --- Host Authenticated Web Console HTTP Handlers ---
+
+func (w *ColabOneWebConsole) handleHostWorkflowSharesList(rw http.ResponseWriter, r *http.Request) {
+	writeJSON(rw, http.StatusOK, w.workflowSharesStateForRequest(r))
+}
+
+func (w *ColabOneWebConsole) handleHostWorkflowShareCreate(rw http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(rw, r.Body, maxWorkflowShareCreateBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	var req ColabOneWorkflowShareCreateRequest
+	if err := dec.Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeJSONError(rw, http.StatusRequestEntityTooLarge, "请求体超出限制")
+			return
+		}
+		writeJSONError(rw, http.StatusBadRequest, "请求格式无效")
+		return
+	}
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeJSONError(rw, http.StatusBadRequest, "请求格式无效")
+		return
+	}
+	summary, err := w.createWorkflowShareForRequest(req, r)
+	if err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, errWebConsoleClosed) {
+			status = http.StatusServiceUnavailable
+		}
+		writeJSONError(rw, status, err.Error())
+		return
+	}
+	writeJSON(rw, http.StatusOK, summary)
+}
+
+func (w *ColabOneWebConsole) handleHostWorkflowShareRevoke(rw http.ResponseWriter, r *http.Request, shareID string) {
+	state, err := w.revokeWorkflowShareForRequest(shareID, r)
+	if err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, errWebConsoleClosed) {
+			status = http.StatusServiceUnavailable
+		} else if strings.Contains(err.Error(), "未找到") {
+			status = http.StatusNotFound
+		}
+		writeJSONError(rw, status, err.Error())
+		return
+	}
+	writeJSON(rw, http.StatusOK, state)
+}
+
+func (w *ColabOneWebConsole) handleHostWorkflowShareDelete(rw http.ResponseWriter, r *http.Request, shareID string) {
+	state, err := w.deleteWorkflowShareForRequest(shareID, r)
+	if err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, errWebConsoleClosed) {
+			status = http.StatusServiceUnavailable
+		} else if strings.Contains(err.Error(), "未找到") {
+			status = http.StatusNotFound
+		}
+		writeJSONError(rw, status, err.Error())
+		return
+	}
+	writeJSON(rw, http.StatusOK, state)
 }

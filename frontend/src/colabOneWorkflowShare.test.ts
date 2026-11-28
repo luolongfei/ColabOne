@@ -5,7 +5,9 @@ import {
   colabOneCancelUpdateInstall,
   colabOneCheckForUpdate,
   colabOneCommand,
+  colabOneCreateWorkflowShare,
   colabOneDecryptMigrationPreview,
+  colabOneDeleteWorkflowShare,
   colabOneExportMigrationFile,
   colabOneExportWorkflowOutput,
   colabOneGetMigrationExportSummary,
@@ -16,6 +18,7 @@ import {
   colabOnePickMigrationFile,
   colabOneRelaunchForUpdate,
   colabOneResolveCloseRequest,
+  colabOneRevokeWorkflowShare,
   colabOneSetCloseBehavior,
   colabOneSetUpdatePreferences,
   colabOneSkipUpdateVersion,
@@ -25,6 +28,8 @@ import {
   isColabOneWorkflowShareActive,
 } from "./api";
 import {
+  COLABONE_WEB_CLIENT_HEADER,
+  COLABONE_WEB_CLIENT_VALUE,
   colabOneWebBackendReady,
   colabOneWebOutputPreviewURL,
   colabOneWebSessionExpired,
@@ -1171,5 +1176,161 @@ describe("api.ts desktop-only web runtime guards", () => {
 
     await expect(colabOneSetCloseBehavior("quit")).rejects.toThrow(expected);
     await expect(colabOneResolveCloseRequest("quit", false)).rejects.toThrow(expected);
+  });
+
+  it("routes host workflow-share API calls to /api/workflow-shares in web console mode and blocks them in guest share mode", async () => {
+    const originalFetch = globalThis.fetch;
+    const originalWindow = globalThis.window;
+    try {
+      delete globalWithMyGo.mygo;
+      colabOneWorkflowShareMode.value = false;
+      colabOneWebSessionExpired.value = false;
+      Object.defineProperty(globalThis, "window", {
+        value: { location: { pathname: "/", protocol: "http:" } },
+        configurable: true,
+        writable: true,
+      });
+
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(
+          makeResponse(
+            JSON.stringify({
+              shares: [
+                {
+                  id: "wfshare00001",
+                  label: "Mobile",
+                  title: "Studio",
+                  workflow_ids: ["fashion-tryon-h3"],
+                  ttl_mode: "24h",
+                  status: "active",
+                  can_copy_link: true,
+                  url: "http://192.168.1.50:3232/share?k=co_wf_abc",
+                },
+              ],
+            }),
+          ),
+        )
+        .mockResolvedValueOnce(
+          makeResponse(
+            JSON.stringify({
+              id: "wfshare00002",
+              label: "New Share",
+              title: "Phone Studio",
+              workflow_ids: ["fashion-tryon-h3"],
+              ttl_mode: "7d",
+              status: "active",
+              can_copy_link: true,
+              url: "http://192.168.1.50:3232/share?k=co_wf_def",
+            }),
+          ),
+        )
+        .mockResolvedValueOnce(
+          makeResponse(
+            JSON.stringify({
+              shares: [
+                {
+                  id: "wfshare00002",
+                  label: "New Share",
+                  title: "Phone Studio",
+                  workflow_ids: ["fashion-tryon-h3"],
+                  ttl_mode: "7d",
+                  status: "revoked",
+                },
+              ],
+            }),
+          ),
+        )
+        .mockResolvedValueOnce(makeResponse(JSON.stringify({ shares: [] })))
+        .mockResolvedValueOnce(
+          makeResponse(JSON.stringify({ error: "Unauthorized" }), {
+            status: 401,
+          }),
+        );
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+      const list = await colabOneGetWorkflowSharesState();
+      expect(list.shares).toHaveLength(1);
+      expect(list.shares[0].id).toBe("wfshare00001");
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        1,
+        "/api/workflow-shares",
+        expect.objectContaining({
+          method: "GET",
+          credentials: "same-origin",
+          headers: expect.objectContaining({
+            [COLABONE_WEB_CLIENT_HEADER]: COLABONE_WEB_CLIENT_VALUE,
+          }),
+        }),
+      );
+
+      const created = await colabOneCreateWorkflowShare({
+        label: "New Share",
+        title: "Phone Studio",
+        workflow_ids: ["fashion-tryon-h3"],
+        ttl_mode: "7d",
+      });
+      expect(created.id).toBe("wfshare00002");
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        2,
+        "/api/workflow-shares",
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.objectContaining({
+            "Content-Type": "application/json",
+            [COLABONE_WEB_CLIENT_HEADER]: COLABONE_WEB_CLIENT_VALUE,
+          }),
+        }),
+      );
+
+      const revoked = await colabOneRevokeWorkflowShare("wfshare00002");
+      expect(revoked.shares[0].status).toBe("revoked");
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        3,
+        "/api/workflow-shares/wfshare00002/revoke",
+        expect.objectContaining({ method: "POST" }),
+      );
+
+      const deleted = await colabOneDeleteWorkflowShare("wfshare00002");
+      expect(deleted.shares).toEqual([]);
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        4,
+        "/api/workflow-shares/wfshare00002",
+        expect.objectContaining({ method: "DELETE" }),
+      );
+
+      // 401 expires host web session
+      await expect(colabOneGetWorkflowSharesState()).rejects.toThrow("Unauthorized");
+      expect(colabOneWebSessionExpired.value).toBe(true);
+
+      // Guest share mode never invokes /api/workflow-shares
+      fetchMock.mockClear();
+      colabOneWorkflowShareMode.value = true;
+      expect((await colabOneGetWorkflowSharesState()).shares).toEqual([]);
+      await expect(
+        colabOneCreateWorkflowShare({
+          label: "Blocked",
+          title: "",
+          workflow_ids: ["fashion-tryon-h3"],
+          ttl_mode: "24h",
+        }),
+      ).rejects.toThrow("该桌面专属操作仅支持在宿主机客户端执行");
+      await expect(colabOneRevokeWorkflowShare("wfshare00002")).rejects.toThrow(
+        "该桌面专属操作仅支持在宿主机客户端执行",
+      );
+      await expect(colabOneDeleteWorkflowShare("wfshare00002")).rejects.toThrow(
+        "该桌面专属操作仅支持在宿主机客户端执行",
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      colabOneWorkflowShareMode.value = false;
+      colabOneWebSessionExpired.value = false;
+      globalThis.fetch = originalFetch;
+      Object.defineProperty(globalThis, "window", {
+        value: originalWindow,
+        configurable: true,
+        writable: true,
+      });
+    }
   });
 });

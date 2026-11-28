@@ -169,15 +169,18 @@ type ColabOneWebCapabilities struct {
 	LANURLs                   []string `json:"lan_urls,omitempty"`
 	PublicOrigin              string   `json:"public_origin,omitempty"`
 	CanOpenNativeCanvasWindow bool     `json:"can_open_native_canvas_window"`
-	CanStandaloneLogWindow    bool   `json:"can_standalone_log_window"`
-	CanManageWebConsole       bool   `json:"can_manage_web_console"`
-	CanManageCloseBehavior    bool   `json:"can_manage_close_behavior"`
-	CanManageShortcuts        bool   `json:"can_manage_shortcuts"`
-	CanSelfUpdate             bool   `json:"can_self_update"`
-	CanMigrate                bool   `json:"can_migrate"`
-	CanRevealHostSecrets      bool   `json:"can_reveal_host_secrets"`
-	CanLoopbackOAuth          bool   `json:"can_loopback_oauth"`
-	CanDownloadOutput         bool   `json:"can_download_output"`
+	CanStandaloneLogWindow    bool     `json:"can_standalone_log_window"`
+	CanManageWebConsole       bool     `json:"can_manage_web_console"`
+	CanManageWorkflowShares   bool     `json:"can_manage_workflow_shares"`
+	CanManageCloseBehavior    bool     `json:"can_manage_close_behavior"`
+	CanManageShortcuts        bool     `json:"can_manage_shortcuts"`
+	CanSelfUpdate             bool     `json:"can_self_update"`
+	CanMigrate                bool     `json:"can_migrate"`
+	CanRevealHostSecrets      bool     `json:"can_reveal_host_secrets"`
+	CanRevealTunnelTokens     bool     `json:"can_reveal_tunnel_tokens"`
+	CanTestSavedAssignProxy   bool     `json:"can_test_saved_assign_proxy"`
+	CanLoopbackOAuth          bool     `json:"can_loopback_oauth"`
+	CanDownloadOutput         bool     `json:"can_download_output"`
 }
 
 // ColabOneWebConsoleOptions configures a ColabOneWebConsole instance.
@@ -321,14 +324,13 @@ var (
 	}
 
 	blockedWebCommands = map[string]string{
-		"desktop.shortcuts":           "该桌面专属操作仅支持在宿主机客户端执行",
-		"api.tunnel_token":            "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
-		"comfyui.canvas.tunnel_token": "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
-		"settings.hf_token":           "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
-		"settings.assign_proxy":       "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
-		"settings.assign_proxy.test":  "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
-		"auth.colab.auto":             "网页控制台不支持本机回环自动登录，请使用手动授权登录",
+		"desktop.shortcuts":     "该桌面专属操作仅支持在宿主机客户端执行",
+		"settings.hf_token":     "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
+		"settings.assign_proxy": "为保护本机凭据安全，网页控制台禁止读取明文密钥或代理配置",
+		"auth.colab.auto":       "网页控制台不支持本机回环自动登录，请使用手动授权登录",
 	}
+
+	errWebAssignProxyTestSavedOnly = "为防止探测本机内网，网页控制台仅允许测试已保存的分配代理，请先保存后再测"
 
 	mediaUploadWebCommands = map[string]bool{
 		"comfyui.input.upload":             true,
@@ -1774,6 +1776,67 @@ func (w *ColabOneWebConsole) serveHTTP(rw http.ResponseWriter, r *http.Request) 
 		writeJSONError(rw, http.StatusNotFound, "接口不存在")
 		return
 
+	case reqPath == "/api/workflow-shares":
+		switch r.Method {
+		case http.MethodGet:
+			if !w.authenticateRequest(rw, r) {
+				writeJSONError(rw, http.StatusUnauthorized, "未登录或会话已过期")
+				return
+			}
+			if !isHostWebClientHeader(r) {
+				writeJSONError(rw, http.StatusForbidden, "跨源请求已被拒绝")
+				return
+			}
+			w.handleHostWorkflowSharesList(rw, r)
+		case http.MethodPost:
+			if !w.authenticateRequest(rw, r) {
+				writeJSONError(rw, http.StatusUnauthorized, "未登录或会话已过期")
+				return
+			}
+			if !w.validateHostWebSameOrigin(r) {
+				writeJSONError(rw, http.StatusForbidden, "跨源请求已被拒绝")
+				return
+			}
+			w.handleHostWorkflowShareCreate(rw, r)
+		default:
+			writeMethodNotAllowed(rw, "GET, POST")
+		}
+		return
+
+	case strings.HasPrefix(reqPath, "/api/workflow-shares/") && strings.HasSuffix(reqPath, "/revoke"):
+		if r.Method != http.MethodPost {
+			writeMethodNotAllowed(rw, "POST")
+			return
+		}
+		if !w.authenticateRequest(rw, r) {
+			writeJSONError(rw, http.StatusUnauthorized, "未登录或会话已过期")
+			return
+		}
+		if !w.validateHostWebSameOrigin(r) {
+			writeJSONError(rw, http.StatusForbidden, "跨源请求已被拒绝")
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimPrefix(reqPath, "/api/workflow-shares/"), "/revoke")
+		w.handleHostWorkflowShareRevoke(rw, r, id)
+		return
+
+	case strings.HasPrefix(reqPath, "/api/workflow-shares/") && !strings.Contains(strings.TrimPrefix(reqPath, "/api/workflow-shares/"), "/"):
+		if r.Method != http.MethodDelete {
+			writeMethodNotAllowed(rw, "DELETE")
+			return
+		}
+		if !w.authenticateRequest(rw, r) {
+			writeJSONError(rw, http.StatusUnauthorized, "未登录或会话已过期")
+			return
+		}
+		if !w.validateHostWebSameOrigin(r) {
+			writeJSONError(rw, http.StatusForbidden, "跨源请求已被拒绝")
+			return
+		}
+		id := strings.TrimPrefix(reqPath, "/api/workflow-shares/")
+		w.handleHostWorkflowShareDelete(rw, r, id)
+		return
+
 	case reqPath == "/api/output-shares":
 		switch r.Method {
 		case http.MethodGet:
@@ -2573,11 +2636,14 @@ func (w *ColabOneWebConsole) handleCapabilities(rw http.ResponseWriter) {
 		CanOpenNativeCanvasWindow: false,
 		CanStandaloneLogWindow:    false,
 		CanManageWebConsole:       false,
+		CanManageWorkflowShares:   true,
 		CanManageCloseBehavior:    false,
 		CanManageShortcuts:        false,
 		CanSelfUpdate:             false,
 		CanMigrate:                false,
 		CanRevealHostSecrets:      false,
+		CanRevealTunnelTokens:     true,
+		CanTestSavedAssignProxy:   true,
 		CanLoopbackOAuth:          false,
 		CanDownloadOutput:         true,
 	})
@@ -2797,6 +2863,22 @@ func (w *ColabOneWebConsole) handleCommand(rw http.ResponseWriter, r *http.Reque
 	if reason, blocked := blockedWebCommands[action]; blocked {
 		writeJSONError(rw, http.StatusForbidden, reason)
 		return
+	}
+
+	if action == "settings.assign_proxy.test" {
+		for _, val := range req.Payload {
+			if val == nil {
+				continue
+			}
+			s, isStr := val.(string)
+			if !isStr || strings.TrimSpace(s) != "" {
+				writeJSONError(rw, http.StatusForbidden, errWebAssignProxyTestSavedOnly)
+				return
+			}
+		}
+		// Always forward an empty payload in Web Console mode so the controller
+		// tests strictly the host vault-saved proxy and never an inline probe URL.
+		req.Payload = map[string]any{}
 	}
 
 	if action == "comfyui.run" {

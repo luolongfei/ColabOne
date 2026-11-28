@@ -1811,6 +1811,8 @@ export const jaJPMessages: ColabOneMessages = {
   "settings.assignProxySavedPlaceholderWithUrl": "保存済み：{url}（新しいアドレスで更新）",
   "settings.assignProxySaveBtn": "プロキシを保存",
   "settings.assignProxyTestBtn": "接続テスト",
+  "settings.assignProxyTestSaveFirstHint":
+    "Web モードでは先にプロキシアドレスを保存してから接続テストを実行してください",
   "settings.assignProxyClearBtn": "プロキシを削除",
   "settings.assignProxyNeedUrlFirst": "有効にする前にプロキシアドレスを入力してください",
   "settings.assignProxyEnabledToast": "GPU 割り当て専用プロキシを有効にしました",
@@ -2218,6 +2220,12 @@ export const jaJPMessages: ColabOneMessages = {
   "workflowShare.openWebConsoleSettingsBtn": "公開ドメインを設定",
   "workflowShare.noPublicOriginHint":
     "固定公開ドメインが未設定のため、生成されるリンクにはローカルアドレスが使用されます。外部へ共有する場合は、設定で公開ドメインを構成することをおすすめします。",
+  "workflowShare.noPublicOriginWebHint":
+    "固定公開ドメインが未設定のため、生成されるリンクにはローカルアドレスが使用されます。外部へ共有する場合は、ホストのデスクトップクライアントの設定で公開ドメインを構成してください。",
+  "workflowShare.lanOriginHint":
+    "固定公開ドメインが未設定のため、生成されるリンクには LAN アドレスが使用されます。外部へ共有する場合は、設定で公開ドメインを構成することをおすすめします。",
+  "workflowShare.lanOriginWebHint":
+    "固定公開ドメインが未設定のため、生成されるリンクには LAN アドレスが使用されます。外部へ共有する場合は、ホストのデスクトップクライアントの設定で公開ドメインを構成してください。",
   "workflowShare.publicOriginHint":
     "公開アドレス {origin} を使用して共有リンクを生成します。",
   "workflowShare.selectWorkflowsLabel": "共有するワークフローを選択",

@@ -79,6 +79,10 @@ import {
   COLABONE_SHARE_AUTH_REQUIRED_EVENT,
   COLABONE_SHARE_CLIENT_HEADER,
   COLABONE_SHARE_CLIENT_VALUE,
+  colabOneWebCreateWorkflowShare,
+  colabOneWebDeleteWorkflowShare,
+  colabOneWebGetWorkflowSharesState,
+  colabOneWebRevokeWorkflowShare,
   colabOneWorkflowShareCapabilities,
   colabOneWorkflowShareCommandRaw,
   colabOneWorkflowShareDownloadOutput,
@@ -118,6 +122,10 @@ export {
   colabOneWebLogout,
   colabOneWebOpenDeferredTab,
   colabOneWebSessionExpired,
+  colabOneWebCreateWorkflowShare,
+  colabOneWebDeleteWorkflowShare,
+  colabOneWebGetWorkflowSharesState,
+  colabOneWebRevokeWorkflowShare,
   colabOneWorkflowShareCapabilities,
   colabOneWorkflowShareId,
   colabOneWorkflowShareMode,
@@ -785,7 +793,10 @@ export function colabOneOnWebConsoleState(
 
 export async function colabOneGetWorkflowSharesState(): Promise<ColabOneWorkflowShareListState> {
   if (!isColabOneDesktopRuntime()) {
-    return createColabOneDefaultWorkflowShareListState();
+    if (isColabOneWorkflowShareActive() || isColabOneOutputShareActive()) {
+      return createColabOneDefaultWorkflowShareListState();
+    }
+    return colabOneWebGetWorkflowSharesState();
   }
   const res = await ColabOneDesktop.getWorkflowSharesState();
   return normalizeColabOneWorkflowShareListState(res);
@@ -795,7 +806,10 @@ export async function colabOneCreateWorkflowShare(
   req: ColabOneWorkflowShareCreateRequest,
 ): Promise<ColabOneWorkflowShareSummary> {
   if (!isColabOneDesktopRuntime()) {
-    throw new Error(DESKTOP_ONLY_WEB_ERROR);
+    if (isColabOneWorkflowShareActive() || isColabOneOutputShareActive()) {
+      throw new Error(DESKTOP_ONLY_WEB_ERROR);
+    }
+    return colabOneWebCreateWorkflowShare(req);
   }
   const res = await ColabOneDesktop.createWorkflowShare(req);
   const normalized = normalizeColabOneWorkflowShareSummary(res);
@@ -809,7 +823,10 @@ export async function colabOneRevokeWorkflowShare(
   shareID: string,
 ): Promise<ColabOneWorkflowShareListState> {
   if (!isColabOneDesktopRuntime()) {
-    throw new Error(DESKTOP_ONLY_WEB_ERROR);
+    if (isColabOneWorkflowShareActive() || isColabOneOutputShareActive()) {
+      throw new Error(DESKTOP_ONLY_WEB_ERROR);
+    }
+    return colabOneWebRevokeWorkflowShare(shareID);
   }
   const res = await ColabOneDesktop.revokeWorkflowShare(shareID);
   return normalizeColabOneWorkflowShareListState(res);
@@ -819,7 +836,10 @@ export async function colabOneDeleteWorkflowShare(
   shareID: string,
 ): Promise<ColabOneWorkflowShareListState> {
   if (!isColabOneDesktopRuntime()) {
-    throw new Error(DESKTOP_ONLY_WEB_ERROR);
+    if (isColabOneWorkflowShareActive() || isColabOneOutputShareActive()) {
+      throw new Error(DESKTOP_ONLY_WEB_ERROR);
+    }
+    return colabOneWebDeleteWorkflowShare(shareID);
   }
   const res = await ColabOneDesktop.deleteWorkflowShare(shareID);
   return normalizeColabOneWorkflowShareListState(res);

@@ -1766,6 +1766,7 @@ export const zhHKMessages: ColabOneMessages = {
   "settings.assignProxySavedPlaceholderWithUrl": "已儲存：{url}（輸入新地址可更新）",
   "settings.assignProxySaveBtn": "儲存代理",
   "settings.assignProxyTestBtn": "測試連通性",
+  "settings.assignProxyTestSaveFirstHint": "網頁模式下請先儲存代理地址，再測試連通性",
   "settings.assignProxyClearBtn": "清除代理",
   "settings.assignProxyNeedUrlFirst": "請先填寫代理地址後再啟用",
   "settings.assignProxyEnabledToast": "已開啟 GPU 分配代理（僅分配階段生效）",
@@ -2160,6 +2161,12 @@ export const zhHKMessages: ColabOneMessages = {
   "workflowShare.openWebConsoleSettingsBtn": "前往設定公網域名",
   "workflowShare.noPublicOriginHint":
     "目前未設定固定公網域名，產生的連結會使用本地網址；如需分享給外部朋友，建議在設定中設定公網域名。",
+  "workflowShare.noPublicOriginWebHint":
+    "目前未設定固定公網域名，產生的連結會使用本地網址；如需分享給外部朋友，請在宿主機用戶端設定中設定公網域名。",
+  "workflowShare.lanOriginHint":
+    "目前未設定固定公網域名，產生的連結將使用區域網絡網址；如需分享給外網朋友，建議在設定中設定公網域名。",
+  "workflowShare.lanOriginWebHint":
+    "目前未設定固定公網域名，產生的連結將使用區域網絡網址；如需分享給外網朋友，請在宿主機用戶端設定中設定公網域名。",
   "workflowShare.publicOriginHint": "將使用公網網址 {origin} 產生分享連結。",
   "workflowShare.selectWorkflowsLabel": "選擇要分享的工作流",
   "workflowShare.selectWorkflowsHint": "訪客開啟連結後只會看到並運行這裡勾選的工作流。",

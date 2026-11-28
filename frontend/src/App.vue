@@ -619,6 +619,13 @@ async function onPanelSync() {
 function showError(raw: unknown, source: "action" | "state" = "action") {
   const cleaned = normalizeErrorKey(raw);
   if (!cleaned) return;
+  if (
+    isWebMode.value &&
+    colabOneWebSessionExpired.value &&
+    cleaned.toLowerCase() === "unauthorized"
+  ) {
+    return;
+  }
   const isTransient = isTransientIpcError(cleaned);
   toastManager.push({
     kind: "error",
@@ -3084,17 +3091,45 @@ async function clearAssignProxy() {
   }
 }
 
+const canTestAssignProxy = computed(
+  () =>
+    capabilities.value.can_reveal_host_secrets ||
+    capabilities.value.can_test_saved_assign_proxy,
+);
+
+const assignProxyTestNeedsSaveFirst = computed(
+  () =>
+    !capabilities.value.can_reveal_host_secrets &&
+    Boolean(form.value.assign_proxy.trim()),
+);
+
+const assignProxyTestDisabled = computed(
+  () =>
+    busy.value ||
+    assignProxyMutating.value ||
+    (capabilities.value.can_reveal_host_secrets
+      ? !form.value.assign_proxy.trim() && !hasSavedAssignProxy.value
+      : !hasSavedAssignProxy.value || Boolean(form.value.assign_proxy.trim())),
+);
+
 async function testAssignProxy() {
-  if (!capabilities.value.can_reveal_host_secrets) return;
+  if (!canTestAssignProxy.value) return;
   if (assignProxyMutating.value || testingAssignProxy.value) return;
   const raw = form.value.assign_proxy.trim();
-  if (!raw && !hasSavedAssignProxy.value) return;
+  if (!capabilities.value.can_reveal_host_secrets) {
+    if (raw || !hasSavedAssignProxy.value) return;
+  } else if (!raw && !hasSavedAssignProxy.value) {
+    return;
+  }
   testingAssignProxy.value = true;
   try {
     const res = await colabOneCommand(
       "settings.assign_proxy.test",
-      raw ? { assign_proxy: raw } : {},
+      capabilities.value.can_reveal_host_secrets && raw
+        ? { assign_proxy: raw }
+        : {},
     );
+    if (stopped) return;
     const ms = Number(res?.latency_ms || 0);
     notify(
       t("settings.assignProxyTestOkToast", { ms: ms > 0 ? ms : 1 }),
@@ -3103,9 +3138,11 @@ async function testAssignProxy() {
     );
     await syncSnapshot().catch(() => {});
   } catch (err) {
-    showError(err);
+    if (!stopped && !(isWebMode.value && colabOneWebSessionExpired.value)) {
+      showError(err);
+    }
   } finally {
-    testingAssignProxy.value = false;
+    if (!stopped) testingAssignProxy.value = false;
   }
 }
 
@@ -4635,11 +4672,63 @@ async function handleOutputShareCopyText(
   );
 }
 
+const WEB_WORKFLOW_SHARES_POLL_MS = 5000;
+let webWorkflowSharesPollTimer: ReturnType<typeof setInterval> | null = null;
+let webWorkflowSharesPollInFlight = false;
+
+function stopWebWorkflowSharesPoll() {
+  if (webWorkflowSharesPollTimer !== null) {
+    clearInterval(webWorkflowSharesPollTimer);
+    webWorkflowSharesPollTimer = null;
+  }
+}
+
+function pollWebWorkflowSharesOnce() {
+  if (
+    stopped ||
+    isColabOneDesktopRuntime() ||
+    !workflowShareModalOpen.value ||
+    !capabilities.value.can_manage_workflow_shares ||
+    colabOneWebSessionExpired.value ||
+    workflowShareMutating.value ||
+    webWorkflowSharesPollInFlight ||
+    (typeof document !== "undefined" && document.hidden)
+  ) {
+    return;
+  }
+  webWorkflowSharesPollInFlight = true;
+  const wsEpoch = workflowSharesStateEpoch;
+  void colabOneGetWorkflowSharesState()
+    .then((st) => {
+      if (!stopped && !workflowShareMutating.value) {
+        applyWorkflowSharesState(st, wsEpoch);
+      }
+    })
+    .catch(() => {})
+    .finally(() => {
+      webWorkflowSharesPollInFlight = false;
+    });
+}
+
 watch(
-  () => capabilities.value.can_manage_web_console,
-  (allowed) => {
+  [
+    workflowShareModalOpen,
+    () => capabilities.value.can_manage_workflow_shares,
+    colabOneWebSessionExpired,
+  ],
+  ([open, allowed, expired]) => {
     if (!allowed) {
       workflowShareModalOpen.value = false;
+    }
+    if (isColabOneDesktopRuntime() || !open || !allowed || expired) {
+      stopWebWorkflowSharesPoll();
+      return;
+    }
+    if (webWorkflowSharesPollTimer === null) {
+      webWorkflowSharesPollTimer = setInterval(
+        pollWebWorkflowSharesOnce,
+        WEB_WORKFLOW_SHARES_POLL_MS,
+      );
     }
   },
 );
@@ -4660,11 +4749,13 @@ function applyWorkflowSharesState(
   return true;
 }
 
-function openWorkflowShareModal() {
-  if (!capabilities.value.can_manage_web_console) return;
-  workflowShareLastCreated.value = null;
-  workflowShareLastCreatedCopied.value = false;
-  workflowShareModalOpen.value = true;
+function refreshWorkflowSharesState() {
+  if (!capabilities.value.can_manage_workflow_shares) {
+    return;
+  }
+  if (isWebMode.value && colabOneWebSessionExpired.value) {
+    return;
+  }
   if (isColabOneDesktopRuntime()) {
     const wcEpoch = webConsoleStateEpoch;
     void colabOneGetWebConsoleState()
@@ -4672,15 +4763,25 @@ function openWorkflowShareModal() {
         if (!stopped) applyWebConsoleState(st, wcEpoch);
       })
       .catch(() => {});
-    const wsEpoch = workflowSharesStateEpoch;
-    void colabOneGetWorkflowSharesState()
-      .then((st) => {
-        if (!stopped) applyWorkflowSharesState(st, wsEpoch);
-      })
-      .catch(() => {
-        if (!stopped) workflowSharesLoaded.value = true;
-      });
+  } else {
+    void fetchColabOneWebCapabilities().catch(() => {});
   }
+  const wsEpoch = workflowSharesStateEpoch;
+  void colabOneGetWorkflowSharesState()
+    .then((st) => {
+      if (!stopped) applyWorkflowSharesState(st, wsEpoch);
+    })
+    .catch(() => {
+      if (!stopped) workflowSharesLoaded.value = true;
+    });
+}
+
+function openWorkflowShareModal() {
+  if (!capabilities.value.can_manage_workflow_shares) return;
+  workflowShareLastCreated.value = null;
+  workflowShareLastCreatedCopied.value = false;
+  workflowShareModalOpen.value = true;
+  refreshWorkflowSharesState();
 }
 
 async function handleWorkflowShareCreate(req: ColabOneWorkflowShareCreateRequest) {
@@ -4690,7 +4791,10 @@ async function handleWorkflowShareCreate(req: ColabOneWorkflowShareCreateRequest
   try {
     const created = await colabOneCreateWorkflowShare(req);
     if (stopped) return;
-    if (workflowSharesStateEpoch === preCreateEpoch) {
+    const alreadyPresent = workflowSharesState.value.shares.some(
+      (item) => item.id === created.id,
+    );
+    if (workflowSharesStateEpoch === preCreateEpoch || !alreadyPresent) {
       const merged = normalizeColabOneWorkflowShareListState({
         shares: [
           created,
@@ -4699,14 +4803,16 @@ async function handleWorkflowShareCreate(req: ColabOneWorkflowShareCreateRequest
           ),
         ],
       });
-      applyWorkflowSharesState(merged, preCreateEpoch);
+      applyWorkflowSharesState(merged);
     }
     const targetUrl = created.url || created.local_url || "";
     let copied = false;
     if (targetUrl) {
       try {
         await colabOneWriteClipboard(targetUrl);
-        await navigator.clipboard?.writeText(targetUrl).catch(() => {});
+        if (isColabOneDesktopRuntime()) {
+          await navigator.clipboard?.writeText(targetUrl).catch(() => {});
+        }
         copied = true;
       } catch {
         try {
@@ -4736,7 +4842,9 @@ async function handleWorkflowShareCreate(req: ColabOneWorkflowShareCreateRequest
       );
     }
   } catch (e) {
-    if (!stopped) showError(e);
+    if (!stopped && !(isWebMode.value && colabOneWebSessionExpired.value)) {
+      showError(e);
+    }
   } finally {
     if (!stopped) workflowShareCreating.value = false;
   }
@@ -4755,7 +4863,9 @@ async function handleWorkflowShareRevoke(shareID: string) {
     }
     notify(t("workflowShare.toastRevoked"), "info", "workflow-share-revoke");
   } catch (e) {
-    if (!stopped) showError(e);
+    if (!stopped && !(isWebMode.value && colabOneWebSessionExpired.value)) {
+      showError(e);
+    }
   } finally {
     if (!stopped) workflowShareRevokingId.value = "";
   }
@@ -4774,7 +4884,9 @@ async function handleWorkflowShareDelete(shareID: string) {
     }
     notify(t("workflowShare.toastDeleted"), "info", "workflow-share-delete");
   } catch (e) {
-    if (!stopped) showError(e);
+    if (!stopped && !(isWebMode.value && colabOneWebSessionExpired.value)) {
+      showError(e);
+    }
   } finally {
     if (!stopped) workflowShareDeletingId.value = "";
   }
@@ -5031,6 +5143,7 @@ async function handleWebReconnect() {
       return;
     }
     refreshOutputSharesState();
+    refreshWorkflowSharesState();
     ipcFailures = 0;
     ipcDisconnected.value = false;
     ipcError.value = "";
@@ -5146,12 +5259,19 @@ onMounted(() => {
       .catch(() => {});
   } else {
     webConsoleLoaded.value = true;
-    workflowSharesLoaded.value = true;
     window.addEventListener(
       COLABONE_WEB_AUTH_REQUIRED_EVENT,
       handleWebAuthRequired,
     );
     void fetchColabOneWebCapabilities().catch(() => {});
+    const initialWebWsEpoch = workflowSharesStateEpoch;
+    void colabOneGetWorkflowSharesState()
+      .then((st) => {
+        if (!stopped) applyWorkflowSharesState(st, initialWebWsEpoch);
+      })
+      .catch(() => {
+        if (!stopped) workflowSharesLoaded.value = true;
+      });
     const initialWebOsEpoch = outputSharesStateEpoch;
     void colabOneGetOutputSharesState()
       .then((st) => {
@@ -5214,6 +5334,7 @@ onUnmounted(() => {
     handleWebAuthRequired,
   );
   stopUpdateProgressPoll();
+  stopWebWorkflowSharesPoll();
   cancelPanelPrefetch?.();
   cancelPanelPrefetch = null;
   for (const timer of pendingAsyncPanelRetryTimers) {
@@ -6894,7 +7015,7 @@ onUnmounted(() => {
               :loading="!snapshotLoaded"
               :clock-now="clockNow"
               :snapshot-at="snapshotAt"
-              :can-share-workflows="capabilities.can_manage_web_console"
+              :can-share-workflows="capabilities.can_manage_workflow_shares"
               :active-share-count="workflowSharesState.active_count"
               :web-console-state="effectiveWebConsoleState"
               :output-shares-state="outputSharesState"
@@ -7789,19 +7910,31 @@ onUnmounted(() => {
                         </div>
 
                         <ASpace :size="8" wrap class="co-assign-proxy-actions">
-                          <AButton
-                            v-if="capabilities.can_reveal_host_secrets"
-                            size="small"
-                            :loading="testingAssignProxy"
-                            :disabled="
-                              (!form.assign_proxy.trim() && !hasSavedAssignProxy) ||
-                              busy ||
-                              assignProxyMutating
+                          <ColabOneTooltip
+                            v-if="canTestAssignProxy"
+                            :title="
+                              assignProxyTestNeedsSaveFirst
+                                ? t('settings.assignProxyTestSaveFirstHint')
+                                : ''
                             "
-                            @click="testAssignProxy"
+                            :disabled="!assignProxyTestNeedsSaveFirst"
+                            placement="top"
                           >
-                            {{ t("settings.assignProxyTestBtn") }}
-                          </AButton>
+                            <span
+                              class="co-assign-proxy-test-wrap"
+                              data-testid="settings-assign-proxy-test-wrap"
+                            >
+                              <AButton
+                                size="small"
+                                :loading="testingAssignProxy"
+                                :disabled="assignProxyTestDisabled"
+                                data-testid="settings-assign-proxy-test-btn"
+                                @click="testAssignProxy"
+                              >
+                                {{ t("settings.assignProxyTestBtn") }}
+                              </AButton>
+                            </span>
+                          </ColabOneTooltip>
                           <AButton
                             v-if="hasSavedAssignProxy"
                             size="small"
@@ -8988,11 +9121,12 @@ onUnmounted(() => {
 
       <!-- Modal: Workflow Web Share (Create & Manage) -->
       <ColabOneWorkflowShareModal
-        v-if="capabilities.can_manage_web_console"
+        v-if="capabilities.can_manage_workflow_shares"
         :open="workflowShareModalOpen"
         :workflows="state.workflows || []"
-        :web-console-state="webConsoleState"
+        :web-console-state="effectiveWebConsoleState"
         :shares-state="workflowSharesState"
+        :can-manage-web-console="capabilities.can_manage_web_console"
         :loading="!workflowSharesLoaded"
         :creating="workflowShareCreating"
         :mutating="workflowShareMutating"
@@ -11055,6 +11189,10 @@ onUnmounted(() => {
 
 .co-assign-proxy-actions {
   margin-top: -2px;
+}
+
+.co-assign-proxy-test-wrap {
+  display: inline-flex;
 }
 
 .co-about-card :deep(.ant-card-body) {

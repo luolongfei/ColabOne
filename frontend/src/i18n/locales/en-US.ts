@@ -1824,6 +1824,8 @@ export const enUSMessages: ColabOneMessages = {
   "settings.assignProxySavedPlaceholderWithUrl": "Saved: {url} (enter a new URL to update)",
   "settings.assignProxySaveBtn": "Save Proxy",
   "settings.assignProxyTestBtn": "Test Connection",
+  "settings.assignProxyTestSaveFirstHint":
+    "Save the proxy URL first before testing in Web Mode",
   "settings.assignProxyClearBtn": "Clear Proxy",
   "settings.assignProxyNeedUrlFirst": "Enter a proxy URL before enabling",
   "settings.assignProxyEnabledToast": "GPU allocation proxy enabled (allocation requests only)",
@@ -2235,6 +2237,12 @@ export const enUSMessages: ColabOneMessages = {
   "workflowShare.openWebConsoleSettingsBtn": "Configure Public Domain",
   "workflowShare.noPublicOriginHint":
     "No custom public domain is configured, so the generated link will use your local address. Configure a public domain in Settings to share externally.",
+  "workflowShare.noPublicOriginWebHint":
+    "No custom public domain is configured, so the generated link will use your local address. Configure a public domain in Settings on the host desktop client to share externally.",
+  "workflowShare.lanOriginHint":
+    "No custom public domain is configured, so generated links will use your LAN address. Configure a public domain in Settings to share externally.",
+  "workflowShare.lanOriginWebHint":
+    "No custom public domain is configured, so generated links will use your LAN address. Configure a public domain in Settings on the host desktop client to share externally.",
   "workflowShare.publicOriginHint":
     "Share links will be generated using the public address {origin}.",
   "workflowShare.selectWorkflowsLabel": "Select Workflows to Share",
