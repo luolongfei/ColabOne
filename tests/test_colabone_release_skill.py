@@ -202,9 +202,9 @@ class SkillPackageTests(unittest.TestCase):
             "## Bug Fixes",
             "--added-zh",
             "--added-en",
-            "--with-e2e",
-            "不在本地执行",
-            "远端发布检查",
+            "--check --with-e2e",
+            "tools/install.py",
+            "本地全量预检",
             "dispatch --workflow ci.yml",
             "preflight-status",
             "--require-green",
@@ -212,10 +212,27 @@ class SkillPackageTests(unittest.TestCase):
             "git push origin :refs/tags/vX.Y.Z",
         ):
             self.assertIn(token, skill_md)
+        for obsolete in (
+            "不在本地执行",
+            "without redundant local",
+            "不做本地测试",
+            "无需本地重复跑全量测试",
+        ):
+            self.assertNotIn(obsolete, skill_md)
         actions_doc = (SKILL_DIR / "references/github-actions.md").read_text(encoding="utf-8")
         self.assertIn("同一个目标版本", actions_doc)
         self.assertIn("git push origin :refs/tags/vX.Y.Z", actions_doc)
+        self.assertIn("--check --with-e2e", actions_doc)
+        self.assertNotIn("无需先在本地跑测试", actions_doc)
+        self.assertNotIn("无需本地重复跑全量测试", actions_doc)
         self.assertNotIn("严禁删除或强制移动已推送的发布标签", actions_doc)
+        checklist_doc = (SKILL_DIR / "references/release-checklist.md").read_text(encoding="utf-8")
+        self.assertIn("--check --with-e2e", checklist_doc)
+        self.assertNotIn("不在本地执行", checklist_doc)
+        self.assertNotIn("不在本地重复跑全量测试", checklist_doc)
+        openai_yaml = (SKILL_DIR / "agents/openai.yaml").read_text(encoding="utf-8")
+        self.assertIn("--with-e2e", openai_yaml)
+        self.assertNotIn("skip local", openai_yaml)
         self.assertNotIn("严禁删除或强制移动已推送标签", skill_md)
         self.assertNotIn("## 中文", skill_md)
         self.assertNotIn("## English", skill_md)

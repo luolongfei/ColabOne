@@ -1,12 +1,13 @@
 ---
 name: colabone-release
 description: >-
-  Prepare, verify, tag, publish, or resume ColabOne releases using remote
-  GitHub Actions (Windows + macOS CI inside release.yml) without redundant
-  local test/Playwright checks, including automatic patch (+1) version bumping,
-  manifest synchronization, bilingual (Chinese + English) annotated release
-  notes, GitHub Actions tracking, same-version failure recovery, and GitHub
-  Release artifact verification.
+  Prepare, verify locally (full offline checks + Playwright E2E via
+  tools/install.py --check --with-e2e), tag, publish, or resume ColabOne
+  releases using GitHub Actions (Windows + macOS CI inside release.yml),
+  including automatic patch (+1) version bumping, manifest synchronization,
+  bilingual (Chinese + English) annotated release notes, GitHub Actions
+  tracking, same-version failure recovery, and GitHub Release artifact
+  verification.
 ---
 
 # ColabOne Release
@@ -18,18 +19,32 @@ description: >-
 - `scripts/`、`references/` 和 `agents/` 相对于本 skill 目录；其余仓库路径与 shell 命令相对于 ColabOne 仓库根目录
 - `scripts/prepare_release.py` 与 `scripts/github_actions.py` 根据自身位置定位仓库根目录，不依赖用户名、克隆路径或当前工作目录；可用 `--repo-root` 显式指定检出目录
 - 发布说明默认写入操作系统临时目录（`colabone-vX.Y.Z-release-notes.md`），可用 `--notes-output` 指定路径；打标签时始终使用脚本实际输出的路径，不假设临时目录位置
-- 必须先完成受版本控制的版本清单更新与提交，再创建**附注标签**；`.github/workflows/release.yml` 会读取附注标签的标题和正文作为 GitHub Release 说明
+- 必须先完成本地全量验证以及受版本控制的版本清单更新与提交，再创建**附注标签**；`.github/workflows/release.yml` 会读取附注标签的标题和正文作为 GitHub Release 说明
 - 在 WSL2/Linux 非交互式 shell 中执行命令与脚本前，先将 `$HOME/.local/bin` 放到 `PATH` 最前、将 `$HOME/.local/sysroot/usr/lib/x86_64-linux-gnu` 放到 `LD_LIBRARY_PATH` 最前，并重定向标准输入（`< /dev/null`）；不要在 Linux shell 中调用 Windows 的 `/mnt/c/.../node.exe` 或 `npx.cmd`
 
-## 远端发布检查与同版本号直至成功原则
+## 本地全量预检先过与同版本号直至成功原则
 
-- **远端发布检查优先（不在本地执行重复测试与预检）**：
-  - 发布阶段**不在本地执行** `tools/install.py --check` 或本地 Playwright UI 回归测试（`--with-e2e`），也**不要求**在打标签前单独跑一轮冗余的 `ci.yml` 预检。
-  - 本地仅执行秒级元数据与版本清单校验（同步远端标签、检查分支与工作区、`python3 tools/release_version.py --check` / `--tag "v$VERSION"`、核对三处版本文件 diff 与附注标签正文），随后直接提交、打附注标签并推送，由远端 `.github/workflows/release.yml` 统一在 `windows-latest` 与 `macos-latest` 上一次性完成全量离线测试、Playwright UI 回归、原生安装包构建、自检与 Release 发布。
-  - 若用户明确要求单独做一次不打标签的双平台远程诊断，仍可按需使用 `scripts/github_actions.py` 的 `dispatch --workflow ci.yml` 与 `preflight-status --require-green`（常规发版流程默认跳过，直接进入 `release.yml` 远端发布检查）。
+- **本地全量验证先过，再触发远端发布（一次成功优先，禁止盲推）**：
+  - 每次发版在**提交发布清单、创建附注标签并推送触发远端 `.github/workflows/release.yml` 之前**，**必须先在本地完整跑通**所有可本地执行的检查与测试，力争远端流水线一次通过，避免反复推标签、等远端报错再返工浪费时间。
+  - 本地必跑的统一验收命令为：
+    `"$PYTHON_BIN" tools/install.py --root "$CHECK_ROOT" --check --with-e2e < /dev/null`
+    （仓库存在 `.venv/bin/python` 时优先使用 `.venv/bin/python`，否则使用 `python3`；若本机尚未安装 Playwright Chromium 浏览器，先执行一次 `cd frontend && npx playwright install chromium < /dev/null`）。
+  - 该命令与远端 `ci.yml` 检查项保持一致，一次性覆盖：
+    1. Python 字节码编译（`server/`、`common/`、`tools/`）
+    2. 嵌入式远端服务包字节级一致性校验（`check_service_bundle`）
+    3. MyGo TypeScript 绑定一致性校验（`go tool mygo generate` 对比 `frontend/src/colabOneBridge.ts`）
+    4. 前端生产构建（`npm run build`，含图标生成、`vue-tsc --noEmit`、`vite build` 与嵌入资源同步）
+    5. Go 静态检查（本机 `go vet ./...` 以及跨平台 `windows/amd64`、`darwin/arm64`、`linux/amd64` 的 `CGO_ENABLED=0 go vet ./internal/...`）
+    6. Go 单元测试（`go test ./...`）
+    7. Python 离线测试与契约测试（`pytest -q tests`）
+    8. 前端 Vitest 单元测试（`npm test`）
+    9. 纯 Go 客户端自检（`go run . --self-test`）
+    10. 全量 Playwright UI 回归测试（`npx playwright test`）
+  - **硬性门禁**：本地任意一项检查失败时，**严禁**跳过或忽略失败直接打标推送；必须在本地彻底修复、按常规提交修复代码并**重新跑通**本地全量验证（`--check --with-e2e` 全部通过）后，才能提交发布清单、打附注标签并推送触发远端 `release.yml`。
+  - 本地全量绿灯后直接推送标签触发 `release.yml` 即可（由远端在 `windows-latest` 与 `macos-latest` 上补充执行双平台真机校验、原生安装包 `.exe`/`.dmg` 与签名自动更新产物打包及 Release 发布），常规发版不强制在打标签前额外触发一轮 `ci.yml`；若用户显式要求在打标签前做不打标签的双平台远程诊断，仍可按需使用 `scripts/github_actions.py` 的 `dispatch --workflow ci.yml` 与 `preflight-status --require-green`。
 - **同版本号直至发布成功原则（零空版本 / 零不可用版本）**：
-  - 远端 `release.yml` 在构建、测试或验收阶段遇到任何源码、测试或打包缺陷时，**绝不因为线上检测失败就将版本号 `+1` 另发新版本**。
-  - 正确做法：读取远端失败日志定位根因，直接在 `main` 上修复问题（保持三处版本清单仍锁定为当前目标版本 `X.Y.Z`，不递增至下一版本号），删除该版本残留的失败、草稿或不完整 GitHub Release（如已创建）以及远端和本地的旧 `vX.Y.Z` 标签（`git push origin :refs/tags/vX.Y.Z`、`git tag -d vX.Y.Z`），在修复后的提交上重新创建附注标签 `vX.Y.Z` 并推送触发远端重新发布，持续迭代直到同一个版本 `vX.Y.Z` 完整通过并可用。
+  - 若极少数平台特有缺陷（例如仅 Windows/macOS 原生环境或原生打包阶段触发的问题）导致远端 `release.yml` 失败，**绝不因为线上检测失败就将版本号 `+1` 另发新版本**。
+  - 正确做法：读取远端失败日志定位根因，直接在 `main` 上修复问题（保持三处版本清单仍锁定为当前目标版本 `X.Y.Z`，不递增至下一版本号），**先在本地重新跑通 `tools/install.py --root "$CHECK_ROOT" --check --with-e2e` 确认修复有效且无回归**，再推送 `main`、删除该版本残留的失败/草稿/不完整 GitHub Release（如已创建）以及远端和本地的旧 `vX.Y.Z` 标签（`git push origin :refs/tags/vX.Y.Z`、`git tag -d vX.Y.Z`），在修复后的提交上重新创建附注标签 `vX.Y.Z` 并推送触发远端重新发布，持续迭代直到同一个版本 `vX.Y.Z` 完整通过并可用。
 - **继续已有发布（非源码故障）**：仅因外部网络/runner 抖动中断时，复用原标签与提交 SHA，不递增版本，不重新运行准备脚本、不重复提交。
 - 推送标签前、推送标签后以及查询或恢复已有发布时，先读取 [references/github-actions.md](references/github-actions.md)。
 - 发布前使用只读请求检查 GitHub Actions 访问能力；Git 可推送不代表 Actions API 可读写，不要通过重跑探测写权限。
@@ -63,13 +78,15 @@ description: >-
      - 未指定版本时省略 `--version`（默认最后一位 `+1`）
    - 脚本会强校验双语完整性：任一有内容的分类都必须同时提供数量一致的中文与英文条目，否则拒绝写入；确认通过后原子更新 `console/mygo.json`、`frontend/package.json`、`frontend/package-lock.json`（含 `packages[""].version`），并生成附注标签用的中英双语发布说明文件（写入失败自动回滚）
    - 发布说明面向用户，简洁描述可见功能、体验改进或问题修复，不直接照搬内部实现细节或重构流水账；英文区块应使用自然地道的英文准确表达对应变更（避免生硬直译），便于国际用户直接阅读
-3. **快速核对版本清单与 Diff（不做本地测试）**
+3. **本地全量验证与版本清单核对（硬性门禁，全部通过后才可提交打标）**
    - 使用与 CI 完全一致的校验器核对目标标签：`python3 tools/release_version.py --tag "v$VERSION"`
-   - 核对 diff，确认三处版本文件仅包含预期版本变更（无任何业务代码变动）：
+   - 核对 diff，确认三处版本文件仅包含预期版本变更（无任何无关代码变动）：
      `git diff -- console/mygo.json frontend/package.json frontend/package-lock.json`
-   - **不在本地运行** `tools/install.py --check` 或本地 Playwright，直接交给远端 `release.yml` 在 Windows + macOS 上执行完整检查与打包
+   - **必须完整运行本地全量离线检查与 Playwright UI 回归测试**（涵盖 `compileall`、`check_service_bundle`、`mygo generate` 绑定校验、`npm run build`、本机及跨平台 `go vet`、`go test ./...`、`pytest -q tests`、`vitest`、`go run . --self-test`、`npx playwright test`）：
+     `"$PYTHON_BIN" tools/install.py --root "$CHECK_ROOT" --check --with-e2e < /dev/null`
+   - 若本地检查发现任何代码、测试、绑定或同步问题：先在本地修复，**仅暂存并单独提交修复文件**（不要把 3 处版本清单混进修复提交），随后**重新完整跑通** `tools/install.py --root "$CHECK_ROOT" --check --with-e2e` 与 `python3 tools/release_version.py --tag "v$VERSION"`，直至零失败后再进入下一步
    - 详细检查项见 [references/release-checklist.md](references/release-checklist.md)
-4. **提交、创建附注标签并推送触发远端发布检查**
+4. **提交、创建附注标签并推送触发远端发布**
    - 仅暂存受版本清单管理的文件：
      `git add console/mygo.json frontend/package.json frontend/package-lock.json`
    - 提交说明格式固定为：`chore: release X.Y.Z`
@@ -84,7 +101,7 @@ description: >-
    - 持续跟踪运行与各任务状态（`Validate release metadata`、`check (windows-latest)`、`check (macos-latest)`、`Publish GitHub Release`）
    - 若任务失败，读取对应尝试的失败日志并先定位根因：
      - 若属外部环境/网络抖动等非源码原因且已确认恢复，允许对已授权的同标签同 SHA 自动执行一次 `rerun-failed`；同因再次失败则停止重跑并报告阻塞
-     - 若属源码、测试或构建缺陷，不能靠直接重跑旧提交解决，也**绝不因为线上检测失败就将版本号 `+1` 另发新版本**：直接在 `main` 上修复问题并推送（保持版本清单仍锁定为当前目标版本 `X.Y.Z`），删除该版本残留的失败、草稿或不完整 GitHub Release（如有）以及远端和本地的旧 `vX.Y.Z` 标签（`git push origin :refs/tags/vX.Y.Z`、`git tag -d vX.Y.Z`），重新对修复后的提交创建附注标签 `vX.Y.Z` 并推送触发远端重新发布，直至同一个版本全部检查通过且产物完整可用
+     - 若属源码、测试或构建缺陷，不能靠直接重跑旧提交解决，也**绝不因为线上检测失败就将版本号 `+1` 另发新版本**：直接在 `main` 上修复问题（保持版本清单仍锁定为当前目标版本 `X.Y.Z`），**必须先在本地重新跑通 `tools/install.py --root "$CHECK_ROOT" --check --with-e2e` 确认无回归**，再推送 `main`、删除该版本残留的失败/草稿/不完整 GitHub Release（如有）以及远端和本地的旧 `vX.Y.Z` 标签（`git push origin :refs/tags/vX.Y.Z`、`git tag -d vX.Y.Z`），重新对修复后的提交创建附注标签 `vX.Y.Z` 并推送触发远端重新发布，直至同一个版本全部检查通过且产物完整可用
    - 工作流完成后，使用 `gh release view "v$VERSION"` 或 `scripts/github_actions.py release --tag "v$VERSION"` 核实 GitHub Release 已创建且非草稿、预发布标记正确、中英双语发布说明（上方中文、下方英文）已完整写入，且 7 个必选附件齐全且非空：
      - `ColabOne-<version>-windows-x64-setup.exe`
      - `ColabOne-<version>-macos-arm64.dmg`
@@ -138,9 +155,10 @@ ColabOne vX.Y.Z
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 export LD_LIBRARY_PATH="$HOME/.local/sysroot/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
+PYTHON_BIN=$([ -x .venv/bin/python ] && printf '%s' .venv/bin/python || command -v python3)
 
 # 1. 预览下一版本（默认最后一位 +1，不改文件）
-python3 .agents/skills/colabone-release/scripts/prepare_release.py \
+"$PYTHON_BIN" .agents/skills/colabone-release/scripts/prepare_release.py \
   --dry-run \
   --added-zh '支持新功能示例' \
   --changed-zh '优化交互体验示例' \
@@ -150,7 +168,7 @@ python3 .agents/skills/colabone-release/scripts/prepare_release.py \
   --fixed-en 'Fix example known issue' < /dev/null
 
 # 2. 正式准备发布（默认最后一位 +1）
-python3 .agents/skills/colabone-release/scripts/prepare_release.py \
+"$PYTHON_BIN" .agents/skills/colabone-release/scripts/prepare_release.py \
   --added-zh '支持新功能示例' \
   --changed-zh '优化交互体验示例' \
   --fixed-zh '修复已知问题示例' \
@@ -158,11 +176,16 @@ python3 .agents/skills/colabone-release/scripts/prepare_release.py \
   --changed-en 'Improve example user experience' \
   --fixed-en 'Fix example known issue' < /dev/null
 
-# 3. 快速核对三处版本清单与 diff（不在本地跑测试或 Playwright）
-python3 tools/release_version.py --tag "v0.1.1" < /dev/null
+# 3. 本地全量预检（版本清单 + diff + 离线全量测试 + Playwright UI 回归，必须全部通过）
+"$PYTHON_BIN" tools/release_version.py --tag "v0.1.1" < /dev/null
 git diff -- console/mygo.json frontend/package.json frontend/package-lock.json
+# 若本机首次运行且未安装 Playwright Chromium，先执行：
+# (cd frontend && npx playwright install chromium) < /dev/null
+CHECK_ROOT=$(mktemp -d)
+"$PYTHON_BIN" tools/install.py --root "$CHECK_ROOT" --check --with-e2e < /dev/null
+rm -rf "$CHECK_ROOT"
 
-# 4. 提交、打附注标签并推送触发远端 release.yml 全面检查与发布（RELEASE_NOTES_FILE 使用准备脚本实际输出的路径）
+# 4. 本地全部绿灯后，提交、打附注标签并推送触发远端 release.yml（RELEASE_NOTES_FILE 使用准备脚本实际输出的路径）
 git add console/mygo.json frontend/package.json frontend/package-lock.json
 git commit -m "chore: release 0.1.1"
 git tag -a v0.1.1 -F "$RELEASE_NOTES_FILE" --cleanup=verbatim
@@ -171,9 +194,9 @@ git push origin v0.1.1
 
 # （可选）仅在显式需要不打标签的远端双平台诊断时，再手动触发 ci.yml：
 PREFLIGHT_SHA=$(git rev-parse HEAD)
-python3 .agents/skills/colabone-release/scripts/github_actions.py dispatch \
+"$PYTHON_BIN" .agents/skills/colabone-release/scripts/github_actions.py dispatch \
   --workflow ci.yml --ref main --sha "$PREFLIGHT_SHA" < /dev/null
-python3 .agents/skills/colabone-release/scripts/github_actions.py preflight-status \
+"$PYTHON_BIN" .agents/skills/colabone-release/scripts/github_actions.py preflight-status \
   --branch main --sha "$PREFLIGHT_SHA" --require-green < /dev/null
 ```
 

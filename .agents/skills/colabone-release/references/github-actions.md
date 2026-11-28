@@ -40,7 +40,7 @@ SSH 密钥不是 GitHub REST API Token；使用 SSH remote 时需提供前三种
 
 ## 可选：单独触发远端双平台诊断（`ci.yml`）
 
-常规发版直接推送 `vX.Y.Z` 附注标签，由 `.github/workflows/release.yml` 自动调用 `ci.yml` 完成 Windows + macOS 全量检查、Playwright 回归、打包自检与发布，无需先在本地跑测试或在打标签前额外触发一轮 `ci.yml`。仅当需要不打标签单独诊断 `main` 某提交在双平台的构建/测试表现时，按需执行：
+常规发版**必须先在本地完整跑通 `tools/install.py --root <tmp> --check --with-e2e`**（含离线全量测试与 Playwright UI 回归）后再推送 `vX.Y.Z` 附注标签，由 `.github/workflows/release.yml` 自动调用 `ci.yml` 完成 Windows + macOS 双平台校验、打包自检与发布，通常无需在打标签前额外手动触发一轮 `ci.yml`。仅当需要不打标签单独诊断 `main` 某提交在双平台的构建/测试表现时，按需执行：
 
 ```bash
 PREFLIGHT_SHA=$(git rev-parse HEAD)
@@ -110,7 +110,7 @@ gh release view "$RELEASE_TAG" --json tagName,name,body,isDraft,isPrerelease,url
 
 1. 先通过 `show` 和 `logs` 读取失败任务日志，确认具体失败阶段（元数据校验、Windows/macOS 测试或打包、还是 Release 发布）。
 2. 区分问题类型：
-   - **源码/测试/工作流脚本缺陷**：不能靠重跑旧提交获取新代码，也**绝不因为线上检测或构建失败就把版本号 `+1` 另发新版本**；必须直接在 `main` 上修复问题并推送（保持三处版本清单仍为目标版本 `X.Y.Z`，无需本地重复跑全量测试）。若目标标签 `vX.Y.Z` 已推送或已生成失败/草稿/不完整 GitHub Release，先删除该旧 Release（如有）以及远端和本地的旧标签 `vX.Y.Z`（`git push origin :refs/tags/vX.Y.Z`、`git tag -d vX.Y.Z`），再对修复后的提交重新创建附注标签 `vX.Y.Z` 并推送触发远端重新验证发布，持续迭代直到同一个版本 `vX.Y.Z` 成功发布且全部产物完整可用（保证不存在空版本或不可用版本）
+   - **源码/测试/工作流脚本缺陷**：不能靠重跑旧提交获取新代码，也**绝不因为线上检测或构建失败就把版本号 `+1` 另发新版本**；必须直接在 `main` 上修复问题（保持三处版本清单仍为目标版本 `X.Y.Z`），**先在本地重新跑通 `tools/install.py --root <tmp> --check --with-e2e` 确认修复有效且无回归后再推送**。若目标标签 `vX.Y.Z` 已推送或已生成失败/草稿/不完整 GitHub Release，先删除该旧 Release（如有）以及远端和本地的旧标签 `vX.Y.Z`（`git push origin :refs/tags/vX.Y.Z`、`git tag -d vX.Y.Z`），再对修复后的提交重新创建附注标签 `vX.Y.Z` 并推送触发远端重新验证发布，持续迭代直到同一个版本 `vX.Y.Z` 成功发布且全部产物完整可用（保证不存在空版本或不可用版本）
    - **外部临时故障**（如 runner 瞬断、下载依赖超时、临时网络抖动等）：确认原因后，允许对本次已授权的标签与 SHA 自动执行一次 `rerun-failed`
 3. 同因再次失败时立即停止自动重跑，保留运行链接与日志证据并向用户报告阻塞。运行中、排队中、已取消或已成功的运行均不自动重跑。
 4. 仅调用失败任务重跑端点，不自动重跑全部任务，不自动取消任务：

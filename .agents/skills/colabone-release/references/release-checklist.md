@@ -29,18 +29,29 @@
 
 `prepare_release.py` 会先在同目录写出临时文件并 `fsync`，替换前备份原文件；任意一步失败时按逆序自动回滚已替换文件。若极端情况下回滚本身失败，报错信息会列出受影响文件及保留的备份副本路径：先解除文件占用或权限问题，用备份还原并运行 `python3 tools/release_version.py --check` 确认一致后，再重新执行发布准备。
 
-## 发版前快速核对（测试与 E2E 交由远端执行）
+## 发版前本地全量验证（全部通过后才触发远端）
 
-发版流程**不在本地执行** `tools/install.py --check` 或本地 Playwright UI 回归测试；本地仅做秒级版本清单与 diff 校验，完整双平台检查、Playwright 回归、安装包构建与 `--self-test` 统一在推送标签后由远端 `.github/workflows/release.yml` 完成。WSL2/Linux 环境下请始终设置 `PATH`、`LD_LIBRARY_PATH` 并重定向 `< /dev/null`：
+为了确保远端 `release.yml` 一次通过、避免反复推送标签和等待 CI 报错返工，发版流程在提交、打标签并推送之前**必须先在本地完整跑通**版本清单校验、离线全量测试与 Playwright UI 回归测试（`--check --with-e2e`）。远端 `.github/workflows/release.yml` 在本地全量绿灯的基础上，继续在 `windows-latest` 与 `macos-latest` 上完成双平台真机回归、原生安装包构建、自检与签名发布。WSL2/Linux 环境下请始终设置 `PATH`、`LD_LIBRARY_PATH` 并重定向 `< /dev/null`：
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 export LD_LIBRARY_PATH="$HOME/.local/sysroot/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
+PYTHON_BIN=$([ -x .venv/bin/python ] && printf '%s' .venv/bin/python || command -v python3)
 
-# 1. 准备发版并核对三处版本清单与 diff（无业务代码改动）
-python3 tools/release_version.py --tag "v$VERSION" < /dev/null
+# 1. 核对三处版本清单与 diff（无无关业务代码改动）
+"$PYTHON_BIN" tools/release_version.py --tag "v$VERSION" < /dev/null
 git diff -- console/mygo.json frontend/package.json frontend/package-lock.json
+
+# 2. 若本机尚未安装 Playwright Chromium，先执行一次：
+# (cd frontend && npx playwright install chromium) < /dev/null
+
+# 3. 完整运行本地离线检查与 Playwright UI 回归测试（必须全部通过后才可提交与打标）
+CHECK_ROOT=$(mktemp -d)
+"$PYTHON_BIN" tools/install.py --root "$CHECK_ROOT" --check --with-e2e < /dev/null
+rm -rf "$CHECK_ROOT"
 ```
+
+若第 3 步任一项失败，先在本地修复源码或测试并单独提交修复（不混入三处版本清单），重新完整跑通 `tools/install.py --root "$CHECK_ROOT" --check --with-e2e` 至零失败后，再进入提交与打标阶段。
 
 ## 附注标签与推送
 
@@ -73,4 +84,4 @@ git push origin "v$VERSION"
   - `update-darwin-arm64.json`
   - `SHA256SUMS.txt`（以及如有前序签名版本时的 `.delta` 增量补丁）
 - 推送标签本身不代表发布完成；只有工作流全部成功且 Release 附件验收通过后，才报告发布完成
-- 若发布构建或线上检测失败，**绝不递增版本号跳过失败版本**：在 `main` 上持续修复问题并推送（保持版本清单仍为目标版本 `X.Y.Z`，不在本地重复跑全量测试），删除已生成的失败、草稿或不完整旧 Release（如有）及远端/本地旧标签 `vX.Y.Z`，重新创建附注标签 `vX.Y.Z` 并推送触发远端 `release.yml` 重新验证发布，直至同一版本号完整可用、不留空版本
+- 若发布构建或线上检测失败，**绝不递增版本号跳过失败版本**：在 `main` 上持续修复问题（保持版本清单仍为目标版本 `X.Y.Z`），**先在本地重新跑通 `tools/install.py --root <tmp> --check --with-e2e` 确认无回归后再推送**，删除已生成的失败、草稿或不完整旧 Release（如有）及远端/本地旧标签 `vX.Y.Z`，重新创建附注标签 `vX.Y.Z` 并推送触发远端 `release.yml` 重新验证发布，直至同一版本号完整可用、不留空版本
