@@ -6503,6 +6503,66 @@ const PATTERN_RULES: PatternRule[] = [
 
   // === server/drive.py & console/internal/drivemount/drivemount.go ===
   {
+    re: /^从 Google 云盘恢复历史数据失败：(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to restore history from Google Drive: ${detail}`;
+        case "zh-TW":
+          return `從 Google 雲端硬碟恢復歷史資料失敗：${detail}`;
+        case "zh-HK":
+          return `從 Google 雲端硬碟恢復歷史資料失敗：${detail}`;
+        case "ja-JP":
+          return `Google ドライブからの履歴復元に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `Google 드라이브 기록 복원 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^Google 云盘同步失败：(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Google Drive sync failed: ${detail}`;
+        case "zh-TW":
+          return `Google 雲端硬碟同步失敗：${detail}`;
+        case "zh-HK":
+          return `Google 雲端硬碟同步失敗：${detail}`;
+        case "ja-JP":
+          return `Google ドライブの同期に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `Google 드라이브 동기화 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
+    re: /^清理 Google 云盘已删除项失败：(.+)$/,
+    format: (m, loc) => {
+      const detail = translateInner(m[1]!, loc);
+      switch (loc) {
+        case "en-US":
+          return `Failed to clean up deleted items on Google Drive: ${detail}`;
+        case "zh-TW":
+          return `清理 Google 雲端硬碟已刪除項目失敗：${detail}`;
+        case "zh-HK":
+          return `清理 Google 雲端硬碟已刪除項目失敗：${detail}`;
+        case "ja-JP":
+          return `Google ドライブ上の削除済み項目の整理に失敗しました: ${detail}`;
+        case "ko-KR":
+          return `Google 드라이브 삭제 항목 정리 실패: ${detail}`;
+        default:
+          return m[0];
+      }
+    },
+  },
+  {
     re: /^Google 云盘连接失败：(.+)$/,
     format: (m, loc) => {
       const detail = translateInner(m[1]!, loc);

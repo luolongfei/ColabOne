@@ -14,6 +14,7 @@ import (
 
 	"github.com/luolongfei/ColabOne/console/internal/activity"
 	"github.com/luolongfei/ColabOne/console/internal/controller"
+	"github.com/luolongfei/ColabOne/console/internal/outboundlog"
 	"github.com/luolongfei/ColabOne/console/internal/vault"
 )
 
@@ -54,6 +55,7 @@ type colabOneBridge struct {
 	mu            sync.Mutex
 	ctrl           *controller.ColabOneController
 	vault          *vault.ColabOneVault
+	outboundLog    *outboundlog.ColabOneOutboundLogger
 	factory        func() *controller.ColabOneController
 	closeCtrl      func(*controller.ColabOneController)
 	resolveMediaFn       func(context.Context, string) (*controller.ColabOneOutputMediaMeta, error)
@@ -89,7 +91,7 @@ func colabOneMethodTimeout(method string) time.Duration {
 		// Capped exponential-backoff Colab allocation attempts + remote boot.
 		return 900 * time.Second
 	case "runtime.release", "runtime.release.all", "runtime.upgrade",
-		"drive.connect", "auth.colab.auto", "comfyui.output.asset",
+		"drive.connect", "drive.sync", "auth.colab.auto", "comfyui.output.asset",
 		"comfyui.output.export_drive", "comfyui.draft.media.save", "comfyui.draft.media.read":
 		return 300 * time.Second
 	case "comfyui.input.upload", "comfyui.live.avatars.clip.upload", "comfyui.live.driving.upload":
@@ -171,6 +173,7 @@ func (b *colabOneBridge) ensureController(ctx context.Context) (*controller.Cola
 		b.startDone = done
 		factory := b.factory
 		sharedVault := b.vault
+		outboundLog := b.outboundLog
 		onFocusWindow := b.onFocusWindow
 		b.mu.Unlock()
 
@@ -191,7 +194,7 @@ func (b *colabOneBridge) ensureController(ctx context.Context) (*controller.Cola
 			if factory != nil {
 				ctrl = factory()
 			} else {
-				ctrl = newColabOneWiredController("", "", sharedVault, true)
+				ctrl = newColabOneWiredControllerWithOutboundLog("", "", sharedVault, outboundLog, true)
 			}
 			if ctrl != nil && onFocusWindow != nil {
 				ctrl.SetFocusWindowHandler(onFocusWindow)

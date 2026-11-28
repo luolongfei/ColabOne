@@ -324,6 +324,22 @@ type LocationInferer interface {
 // SafeMessageFn redacts sensitive tokens and URLs from user-facing messages.
 type SafeMessageFn func(string) string
 
+// ColabOneOutboundRPCEvent describes a completed outbound RPC sent to a remote ColabOne runtime.
+type ColabOneOutboundRPCEvent struct {
+	Method     string
+	Path       string
+	Endpoint   string
+	Duration   time.Duration
+	ReqBytes   int64
+	StatusCode int
+	OK         bool
+	Detail     string
+	Error      string
+}
+
+// OutboundRPCLogFn records structured outbound RPC telemetry into the desktop outbound request log.
+type OutboundRPCLogFn func(ColabOneOutboundRPCEvent)
+
 // ColabOneSessionState stores local ownership and proxy credentials for a managed Colab runtime.
 type ColabOneSessionState struct {
 	Name           string     `json:"name"`
@@ -550,6 +566,7 @@ type ColabOneProviderConfig struct {
 	Bundler             ServiceBundler
 	Location            LocationInferer
 	SafeMessage         SafeMessageFn
+	OutboundRPCLog      OutboundRPCLogFn
 	HTTPClient          *http.Client
 
 	// Optional overrides for scripts and assign proxy helpers.

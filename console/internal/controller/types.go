@@ -27,6 +27,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/luolongfei/ColabOne/console/internal/activity"
+	"github.com/luolongfei/ColabOne/console/internal/outboundlog"
 )
 
 const (
@@ -805,8 +806,10 @@ type ColabOneControllerConfig struct {
 	CanvasWaitInterval time.Duration
 	UpgradePollDelay   time.Duration
 	StartRetryDelay    time.Duration
-	DriveAPIBaseURL    string
-	DriveHTTPClient    *http.Client
+	DriveAPIBaseURL     string
+	DriveHTTPClient     *http.Client
+	OutboundLogger      *outboundlog.ColabOneOutboundLogger
+	OutboundLoggerOwned bool
 }
 
 // ---------------------------------------------------------------------------

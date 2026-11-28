@@ -4312,7 +4312,12 @@ class ColabOneRuntime:
     def _restore_from_drive(self) -> bool:
         stage_dir = Path(tempfile.mkdtemp(prefix=".drive-pull-", dir=self.root))
         try:
-            if not self.drive.pull_workspace(stage_dir):
+            pull_fn = self.drive.pull_workspace
+            if getattr(pull_fn, "__func__", None) is ColabOneDrive.pull_workspace:
+                pulled = pull_fn(stage_dir, skip_existing_local_outputs=True)
+            else:
+                pulled = pull_fn(stage_dir)
+            if not pulled:
                 return False
             pulled_models = []
             if (stage_dir / "models.json").is_file():
@@ -4411,11 +4416,20 @@ class ColabOneRuntime:
                                 ident = rec["id"]
                                 ext = rec["extension"]
                                 asset_src = outputs_stage / f"{ident}.{ext}"
-                                if (
-                                    ident != meta_path.stem
-                                    or not asset_src.is_file()
-                                    or asset_src.is_symlink()
-                                    or asset_src.stat().st_size != rec["size"]
+                                dst_asset = dst_outputs / asset_src.name
+                                dst_meta = dst_outputs / meta_path.name
+                                has_staged_asset = (
+                                    asset_src.is_file()
+                                    and not asset_src.is_symlink()
+                                    and asset_src.stat().st_size == rec["size"]
+                                )
+                                has_local_asset = (
+                                    dst_asset.is_file()
+                                    and not dst_asset.is_symlink()
+                                    and dst_asset.stat().st_size == rec["size"]
+                                )
+                                if ident != meta_path.stem or (
+                                    not has_staged_asset and not has_local_asset
                                 ):
                                     continue
                                 if (
@@ -4427,9 +4441,11 @@ class ColabOneRuntime:
                                     )
                                 ):
                                     continue
-                                dst_asset = dst_outputs / asset_src.name
-                                dst_meta = dst_outputs / meta_path.name
-                                if not dst_asset.exists() and not dst_asset.is_symlink():
+                                if (
+                                    has_staged_asset
+                                    and not dst_asset.exists()
+                                    and not dst_asset.is_symlink()
+                                ):
                                     try:
                                         os.replace(asset_src, dst_asset)
                                     except OSError as exc:
@@ -4964,6 +4980,8 @@ class ColabOneRuntime:
 
     def _sync_to_drive(self) -> bool:
         if not self.drive.available():
+            if not getattr(self.drive, "error", ""):
+                self.drive.error = "Google 云盘连接已断开，请重新挂载后再试"
             return False
         with self.lock:
             snapshot = dict(self._dirty_seq)
@@ -4975,6 +4993,8 @@ class ColabOneRuntime:
                 return False
         tombstones_ok = self._reconcile_drive_tombstones()
         if not tombstones_ok:
+            if not getattr(self.drive, "error", ""):
+                self.drive.error = "清理 Google 云盘已删除项失败，请稍后重试"
             return False
         with self.lock:
             for k, seq in snapshot.items():

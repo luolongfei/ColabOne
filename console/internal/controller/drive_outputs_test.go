@@ -2135,3 +2135,177 @@ func TestDriveOutputsFinalHardeningOfflineDeleteAndWorkspaceLinks(t *testing.T) 
 		}
 	})
 }
+
+func TestDriveOutputsPersistentDeleteTombstonesPreventResurrection(t *testing.T) {
+	ctx := context.Background()
+
+	// 1. Deleting a colab_drivefs output locally persists a tombstone across app restart
+	//    and suppresses resurrection when a live GPU remounts DriveFS and restores the workspace file.
+	t.Run("MountModeOfflineDeleteSurvivesRestartAndLiveDriveFSRemount", func(t *testing.T) {
+		h := newTestHarness(t, false)
+		h.auth.driveScope = false
+		_ = h.vault.Set("colab", map[string]any{"token": "tok-tomb-1"})
+		_ = h.vault.Set("google_profile", map[string]any{"sub": "sub-tomb-1"})
+
+		oidDeleted := "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
+		oidFresh := "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2"
+
+		h.ctrl.mu.Lock()
+		h.ctrl.driveOutputs["sub:sub-tomb-1"] = map[string]*ColabOneDriveOutputRecord{
+			oidDeleted: {
+				ID: oidDeleted, Kind: "video", Filename: "mounted_avatar.mp4", Extension: "mp4", Mime: "video/mp4",
+				Size: 54693888, CreatedAt: float64(time.Now().Unix()) - 3600,
+				DriveSynced: true, DriveExported: true, DriveMode: "colab_drivefs",
+				DrivePath: "My Drive/ColabOne_Drive_Mount/outputs/mounted_avatar.mp4",
+			},
+		}
+		h.ctrl.mu.Unlock()
+
+		res, err := h.ctrl.deleteDriveOutputOffline(ctx, oidDeleted)
+		if err != nil {
+			t.Fatalf("deleteDriveOutputOffline failed: %v", err)
+		}
+		if !asBool(res["ok"]) || !asBool(res["manual_cloud_cleanup"]) {
+			t.Fatalf("expected manual cloud cleanup warning response, got %#v", res)
+		}
+
+		// Simulate app restart by clearing in-memory maps and reloading drive_outputs.json.
+		h.ctrl.loadDriveOutputs()
+		if h.ctrl.driveOutputRecordCopy(oidDeleted) != nil {
+			t.Fatal("deleted output must stay removed after reload")
+		}
+
+		// Simulate starting a GPU that mounts DriveFS and restores the deleted file alongside a fresh output.
+		rt := map[string]any{
+			"state": "ready",
+			"id":    "ep-remount",
+			"drive": map[string]any{"connected": true, "mode": "colab_drivefs", "remote_folder": "ColabOne_Drive_Mount"},
+		}
+		restoredLive := []any{
+			map[string]any{"id": oidDeleted, "filename": "mounted_avatar.mp4", "extension": "mp4", "size": int64(54693888), "created_at": float64(time.Now().Unix()) - 3600},
+			map[string]any{"id": oidFresh, "filename": "fresh_clip.mp4", "extension": "mp4", "size": int64(2048), "created_at": float64(time.Now().Unix())},
+		}
+		h.ctrl.Update(map[string]any{
+			"runtime":       rt,
+			"comfy_outputs": restoredLive,
+		})
+		h.ctrl.recordSyncedRemoteOutputs(rt, restoredLive)
+
+		if h.ctrl.driveOutputRecordCopy(oidDeleted) != nil {
+			t.Fatal("deleted mount-mode output MUST NOT be re-recorded into driveOutputs on remount")
+		}
+		if h.ctrl.driveOutputRecordCopy(oidFresh) == nil {
+			t.Fatal("expected fresh non-deleted output to be recorded on remount")
+		}
+		snap := h.ctrl.Snapshot()
+		snapOutputs := asAnySlice(snap["comfy_outputs"])
+		if len(snapOutputs) != 1 || asString(asMap(snapOutputs[0])["id"]) != oidFresh {
+			t.Fatalf("expected Snapshot to hide tombstoned live output %s and show only %s, got %#v", oidDeleted, oidFresh, snapOutputs)
+		}
+	})
+
+	// 2. Refreshing Drive API (SyncDriveOutputs) never resurrects locally deleted outputs
+	//    whether matched by hex32 workspace ID, known DriveFileID (HTTP 403 case), or
+	//    pre-existing outputs/ filename+size when DriveFileID was empty at delete time.
+	t.Run("SyncDriveOutputsSuppressesTombstonedFilesByIDFileIDAndPreExistingExport", func(t *testing.T) {
+		oidNoID := "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3"
+		oid403 := "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"
+		oidKeep := "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5"
+		pastRFC := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+		futureRFC := time.Now().Add(10 * time.Minute).UTC().Format(time.RFC3339)
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.Method == http.MethodPatch {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"error":{"code":403,"message":"insufficientFilePermissions"}}`))
+				return
+			}
+			q := r.URL.Query().Get("q")
+			switch {
+			case strings.Contains(q, "'root' in parents") && strings.Contains(q, "ColabOne_Drive"):
+				_, _ = w.Write([]byte(`{"files":[{"id":"folder-root","name":"ColabOne_Drive","mimeType":"application/vnd.google-apps.folder"}]}`))
+			case strings.Contains(q, "'folder-root' in parents") && strings.Contains(q, "workspace"):
+				_, _ = w.Write([]byte(`{"files":[{"id":"folder-ws","name":"workspace","mimeType":"application/vnd.google-apps.folder"}]}`))
+			case strings.Contains(q, "'folder-ws' in parents") && strings.Contains(q, "comfyui-outputs"):
+				_, _ = w.Write([]byte(`{"files":[{"id":"folder-co","name":"comfyui-outputs","mimeType":"application/vnd.google-apps.folder"}]}`))
+			case strings.Contains(q, "'folder-co' in parents"):
+				_, _ = w.Write([]byte(fmt.Sprintf(`{"files":[
+					{"id":"fid-ws-noid","name":"%s.mp4","size":"4096","createdTime":"%s"},
+					{"id":"fid-ws-keep","name":"%s.png","size":"512","createdTime":"%s"}
+				]}`, oidNoID, pastRFC, oidKeep, pastRFC)))
+			case strings.Contains(q, "'folder-root' in parents") && strings.Contains(q, "outputs"):
+				_, _ = w.Write([]byte(`{"files":[{"id":"folder-out","name":"outputs","mimeType":"application/vnd.google-apps.folder"}]}`))
+			case strings.Contains(q, "'folder-out' in parents"):
+				_, _ = w.Write([]byte(fmt.Sprintf(`{"files":[
+					{"id":"fid-exp-noid","name":"legacy_mounted.mp4","size":"4096","createdTime":"%s"},
+					{"id":"fid-exp-403","name":"forbidden_export.mp4","size":"8192","createdTime":"%s"},
+					{"id":"fid-exp-future","name":"legacy_mounted.mp4","size":"4096","createdTime":"%s"}
+				]}`, pastRFC, pastRFC, futureRFC)))
+			default:
+				_, _ = w.Write([]byte(`{"files":[]}`))
+			}
+		}))
+		defer srv.Close()
+
+		h := newTestHarness(t, false)
+		h.ctrl.driveAPIBaseURL = srv.URL
+		h.ctrl.driveHTTPClient = srv.Client()
+		h.auth.driveScope = true
+		_ = h.vault.Set("colab", map[string]any{"token": "tok-tomb-2"})
+		_ = h.vault.Set("google_profile", map[string]any{"sub": "sub-tomb-2"})
+
+		h.ctrl.mu.Lock()
+		h.ctrl.driveOutputs["sub:sub-tomb-2"] = map[string]*ColabOneDriveOutputRecord{
+			oidNoID: {
+				ID: oidNoID, Kind: "video", Filename: "legacy_mounted.mp4", Extension: "mp4", Mime: "video/mp4",
+				Size: 4096, DriveSynced: true, DriveExported: true, DriveMode: "colab_drivefs",
+			},
+			oid403: {
+				ID: oid403, Kind: "video", Filename: "forbidden_export.mp4", Extension: "mp4", Mime: "video/mp4",
+				Size: 8192, DriveSynced: true, DriveExported: true, DriveMode: "mount",
+				DriveFileID: "fid-exp-403",
+			},
+		}
+		h.ctrl.mu.Unlock()
+
+		// Delete both locally (oidNoID via colab_drivefs empty IDs; oid403 via HTTP 403 fallback).
+		if _, err := h.ctrl.deleteDriveOutputOffline(ctx, oidNoID); err != nil {
+			t.Fatalf("delete oidNoID failed: %v", err)
+		}
+		if _, err := h.ctrl.deleteDriveOutputOffline(ctx, oid403); err != nil {
+			t.Fatalf("delete oid403 failed: %v", err)
+		}
+
+		// Reload from disk (simulating restart) and run SyncDriveOutputs (simulating Refresh click).
+		h.ctrl.loadDriveOutputs()
+		syncRes, err := h.ctrl.SyncDriveOutputs(ctx)
+		if err != nil || !asBool(syncRes["synced"]) {
+			t.Fatalf("SyncDriveOutputs failed: res=%#v err=%v", syncRes, err)
+		}
+
+		// Neither deleted item may resurrect (not by original ID nor by synthetic Drive ID!).
+		if h.ctrl.driveOutputRecordCopy(oidNoID) != nil || h.ctrl.driveOutputRecordCopy(syntheticDriveOutputID("fid-exp-noid")) != nil {
+			t.Fatal("deleted colab_drivefs output MUST NOT resurrect on SyncDriveOutputs refresh")
+		}
+		if h.ctrl.driveOutputRecordCopy(oid403) != nil || h.ctrl.driveOutputRecordCopy(syntheticDriveOutputID("fid-exp-403")) != nil {
+			t.Fatal("HTTP 403 deleted output MUST NOT resurrect on SyncDriveOutputs refresh")
+		}
+		// Non-deleted workspace item and genuinely new future file MUST still appear!
+		if h.ctrl.driveOutputRecordCopy(oidKeep) == nil {
+			t.Fatal("expected non-deleted workspace output to remain visible after SyncDriveOutputs")
+		}
+		if h.ctrl.driveOutputRecordCopy(syntheticDriveOutputID("fid-exp-future")) == nil {
+			t.Fatal("expected genuinely new future file created after delete NOT to be falsely hidden")
+		}
+
+		// Verify tombstones are isolated per Google account (Account B is unaffected by Account A).
+		_ = h.vault.Set("google_profile", map[string]any{"sub": "sub-tomb-other"})
+		if _, err := h.ctrl.SyncDriveOutputs(ctx); err != nil {
+			t.Fatalf("SyncDriveOutputs for Account B failed: %v", err)
+		}
+		if h.ctrl.driveOutputRecordCopy(oidNoID) == nil {
+			t.Fatal("Account A tombstones MUST NOT hide outputs for Account B")
+		}
+	})
+}

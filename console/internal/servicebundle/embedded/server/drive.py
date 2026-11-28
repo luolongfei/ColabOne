@@ -13,6 +13,7 @@ native DriveFS mounts:
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import hmac
 import json
@@ -23,6 +24,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -250,6 +252,26 @@ def _redact_oauth_secrets(text: str) -> str:
     return result
 
 
+def _extract_rclone_error_detail(stderr: str) -> str:
+    raw = (stderr or "").strip()
+    if not raw:
+        return ""
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    chosen = ""
+    for ln in lines:
+        if "CRITICAL:" in ln or "ERROR :" in ln or "Failed to " in ln:
+            chosen = ln
+            break
+    if not chosen:
+        chosen = next(
+            (ln for ln in reversed(lines) if len(ln) > 4 and not ln.startswith((",", "]", "}", "{"))),
+            lines[-1],
+        )
+    chosen = re.sub(r"^\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}\s+", "", chosen)
+    chosen = re.sub(r"^(?:CRITICAL|ERROR)\s*:\s*", "", chosen)
+    return _redact_oauth_secrets(chosen)[:180].strip()
+
+
 def format_rclone_error(stderr: str) -> str:
     """Extract an actionable error summary from multi-line rclone/Google API stderr."""
     raw = (stderr or "").strip()
@@ -264,18 +286,99 @@ def format_rclone_error(stderr: str) -> str:
         return "Google Drive API 需要有效的 GCP 配额项目（当前公共凭据未配置配额项目）"
     if "invalid_grant" in lower or "token has been expired or revoked" in lower:
         return "Google 云盘授权已过期，请在设置中重新登录"
-    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
-    chosen = ""
-    for ln in lines:
-        if "CRITICAL:" in ln or "ERROR :" in ln or "Failed to " in ln:
-            chosen = ln
-            break
+    chosen = _extract_rclone_error_detail(raw)
     if not chosen:
-        chosen = next((ln for ln in reversed(lines) if len(ln) > 4 and not ln.startswith((",", "]", "}", "{"))), lines[-1])
-    chosen = re.sub(r"^\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}\s+", "", chosen)
-    chosen = re.sub(r"^(?:CRITICAL|ERROR)\s*:\s*", "", chosen)
-    chosen = _redact_oauth_secrets(chosen)
-    return "Google 云盘连接失败：" + chosen[:180]
+        return "Google 云盘连接失败：授权或网络异常"
+    return "Google 云盘连接失败：" + chosen
+
+
+def _format_rclone_sync_error(stderr: str, *, phase: str) -> str:
+    raw = (stderr or "").strip()
+    lower = raw.lower()
+    if (
+        "accessnotconfigured" in lower
+        or "service_disabled" in lower
+        or "requires a quota project" in lower
+    ):
+        return "Google Drive API 需要有效的 GCP 配额项目（当前公共凭据未配置配额项目）"
+    if "invalid_grant" in lower or "token has been expired or revoked" in lower:
+        return "Google 云盘授权已过期，请在设置中重新登录"
+    if "storagequotaexceeded" in lower or "quota exceeded" in lower:
+        return "Google 云盘存储空间已满，请清理云盘空间后重试"
+    if (
+        "ratelimitexceeded" in lower
+        or "userratelimitexceeded" in lower
+        or "error 429" in lower
+    ):
+        return "Google 云盘接口触发限流，请稍后重试"
+    detail = _extract_rclone_error_detail(raw)
+    if phase == "pull":
+        if detail:
+            return f"从 Google 云盘恢复历史数据失败：{detail}"
+        return "从 Google 云盘恢复历史数据未完成，稍后自动重试"
+    if phase == "trash":
+        if detail:
+            return f"清理 Google 云盘已删除项失败：{detail}"
+        return "清理 Google 云盘已删除项失败，请稍后重试"
+    if detail:
+        return f"Google 云盘同步失败：{detail}"
+    return "Google 云盘同步失败，远端本地副本仍完整保留"
+
+
+def _format_drivefs_os_error(exc: OSError, *, phase: str) -> str:
+    code = getattr(exc, "errno", None)
+    if code == errno.ENOSPC:
+        return "Google 云盘存储空间已满，请清理云盘空间后重试"
+    if code in (errno.EACCES, errno.EPERM, errno.EROFS):
+        return "Google 云盘目录权限不足或只读，请重新挂载云盘"
+    if code in (
+        errno.EIO,
+        errno.ESTALE,
+        errno.ETIMEDOUT,
+        getattr(errno, "ENOTCONN", -1),
+    ):
+        return "Google 云盘挂载连接异常或已断开，请重新挂载后重试"
+    detail = _redact_oauth_secrets(str(exc) or exc.__class__.__name__).strip()[:140]
+    if phase == "pull":
+        if detail:
+            return f"从 Google 云盘恢复历史数据失败：{detail}"
+        return "从 Google 云盘恢复历史数据未完成，稍后自动重试"
+    if phase == "trash":
+        if detail:
+            return f"清理 Google 云盘已删除项失败：{detail}"
+        return "清理 Google 云盘已删除项失败，请稍后重试"
+    if detail:
+        return f"Google 云盘同步失败：{detail}"
+    return "Google 云盘同步失败，远端本地副本仍完整保留"
+
+
+def _is_rclone_auth_or_quota_error(stderr: str) -> bool:
+    lower = (stderr or "").lower()
+    return any(
+        marker in lower
+        for marker in (
+            "accessnotconfigured",
+            "service_disabled",
+            "requires a quota project",
+            "invalid_grant",
+            "token has been expired or revoked",
+            "error 401",
+            "error 403",
+            "unauthenticated",
+        )
+    )
+
+
+def _is_rclone_missing_workspace_dir(res: subprocess.CompletedProcess) -> bool:
+    stderr = res.stderr or ""
+    if _is_rclone_auth_or_quota_error(stderr):
+        return False
+    lower = stderr.lower()
+    if res.returncode == 3:
+        return True
+    return "directory not found" in lower or (
+        "not found" in lower and "workspace" in lower
+    )
 
 
 _RCLONE_INSTALL_LOCK = threading.Lock()
@@ -564,63 +667,111 @@ def _is_temp_name(name: str) -> bool:
 
 
 _SMALL_COMPARE_BYTES = 256 * 1024
+_IMMUTABLE_COMFY_OUTPUT_ASSET_RE = re.compile(r"^[a-f0-9]{32}\.[a-z0-9]{1,10}$", re.ASCII)
+_TRANSIENT_DRIVEFS_ERRNOS = frozenset(
+    e
+    for e in (
+        errno.EIO,
+        errno.ESTALE,
+        errno.EBUSY,
+        errno.EAGAIN,
+        errno.ETIMEDOUT,
+        getattr(errno, "ENOTCONN", None),
+    )
+    if e is not None
+)
+_DRIVEFS_RETRY_DELAYS = (0.2, 0.5)
+
+
+def _run_drivefs_retry(fn):
+    for attempt in range(len(_DRIVEFS_RETRY_DELAYS) + 1):
+        try:
+            return fn()
+        except OSError as exc:
+            if (
+                getattr(exc, "errno", None) not in _TRANSIENT_DRIVEFS_ERRNOS
+                or attempt >= len(_DRIVEFS_RETRY_DELAYS)
+            ):
+                raise
+            time.sleep(_DRIVEFS_RETRY_DELAYS[attempt])
 
 
 def _copy_file_if_newer(src: Path, dst: Path) -> None:
-    if src.is_symlink() or not src.is_file() or dst.is_symlink():
-        return
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    src_stat = src.stat()
-    if dst.is_file():
+    def _do_copy() -> None:
         try:
-            dst_stat = dst.stat()
-            if dst_stat.st_size == src_stat.st_size:
-                if src_stat.st_size <= _SMALL_COMPARE_BYTES:
-                    if src.read_bytes() == dst.read_bytes():
-                        return
-                elif dst_stat.st_mtime >= src_stat.st_mtime:
-                    return
-        except OSError:
-            pass
-    tmp = dst.parent / f".co-sync-{uuid.uuid4().hex[:8]}.tmp"
-    try:
-        _stream_write_file(src, tmp)
-        try:
-            os.utime(tmp, ns=(src_stat.st_atime_ns, src_stat.st_mtime_ns))
-        except OSError:
-            pass
-    except OSError:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
-    try:
-        if dst.is_symlink():
-            tmp.unlink(missing_ok=True)
+            if src.is_symlink() or not src.is_file() or dst.is_symlink():
+                return
+            src_stat = src.stat()
+        except FileNotFoundError:
             return
-        tmp.replace(dst)
-    except OSError:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
-        if dst.is_symlink():
-            return
-        dst_existed = dst.exists()
-        try:
-            _stream_write_file(src, dst)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if dst.is_file():
             try:
-                os.utime(dst, ns=(src_stat.st_atime_ns, src_stat.st_mtime_ns))
+                dst_stat = dst.stat()
+                if dst_stat.st_size == src_stat.st_size:
+                    if src_stat.st_size <= _SMALL_COMPARE_BYTES:
+                        if src.read_bytes() == dst.read_bytes():
+                            return
+                    elif dst_stat.st_mtime >= src_stat.st_mtime:
+                        return
+            except FileNotFoundError:
+                return
             except OSError:
                 pass
+        tmp = dst.parent / f".co-sync-{uuid.uuid4().hex[:8]}.tmp"
+        try:
+            _stream_write_file(src, tmp)
+            try:
+                os.utime(tmp, ns=(src_stat.st_atime_ns, src_stat.st_mtime_ns))
+            except OSError:
+                pass
+        except FileNotFoundError:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return
         except OSError:
-            if not dst_existed and not dst.is_symlink():
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+        try:
+            if dst.is_symlink():
+                tmp.unlink(missing_ok=True)
+                return
+            tmp.replace(dst)
+        except OSError:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if dst.is_symlink():
+                return
+            dst_existed = dst.exists()
+            try:
+                _stream_write_file(src, dst)
                 try:
-                    dst.unlink(missing_ok=True)
+                    os.utime(dst, ns=(src_stat.st_atime_ns, src_stat.st_mtime_ns))
                 except OSError:
                     pass
-            raise
+            except FileNotFoundError:
+                if not dst_existed and not dst.is_symlink():
+                    try:
+                        dst.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                return
+            except OSError:
+                if not dst_existed and not dst.is_symlink():
+                    try:
+                        dst.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                raise
+
+    _run_drivefs_retry(_do_copy)
 
 
 def _sync_drivefs_tree(
@@ -629,23 +780,52 @@ def _sync_drivefs_tree(
     *,
     recursive: bool = False,
     max_depth: int = 6,
+    skip_immutable_in: Path | None = None,
 ) -> None:
-    if max_depth < 0 or not src_dir.is_dir() or src_dir.is_symlink():
+    if max_depth < 0:
+        return
+    try:
+        if not src_dir.is_dir() or src_dir.is_symlink():
+            return
+    except FileNotFoundError:
         return
     if dst_dir.is_symlink():
         return
-    dst_dir.mkdir(parents=True, exist_ok=True)
-    for item in src_dir.iterdir():
-        if _is_temp_name(item.name) or item.is_symlink():
-            continue
-        if item.is_dir():
-            if recursive and max_depth > 0:
-                _sync_drivefs_tree(
-                    item,
-                    dst_dir / item.name,
-                    recursive=True,
-                    max_depth=max_depth - 1,
-                )
+    _run_drivefs_retry(lambda: dst_dir.mkdir(parents=True, exist_ok=True))
+    try:
+        entries = _run_drivefs_retry(lambda: list(src_dir.iterdir()))
+    except FileNotFoundError:
+        return
+    for item in entries:
+        try:
+            if _is_temp_name(item.name) or item.is_symlink():
+                continue
+            if item.is_dir():
+                if recursive and max_depth > 0:
+                    _sync_drivefs_tree(
+                        item,
+                        dst_dir / item.name,
+                        recursive=True,
+                        max_depth=max_depth - 1,
+                    )
+                continue
+            if (
+                skip_immutable_in is not None
+                and _IMMUTABLE_COMFY_OUTPUT_ASSET_RE.fullmatch(item.name)
+                and not item.name.endswith(".json")
+            ):
+                local_copy = skip_immutable_in / item.name
+                try:
+                    if (
+                        not local_copy.is_symlink()
+                        and local_copy.is_file()
+                        and local_copy.stat().st_size > 0
+                        and local_copy.stat().st_size == item.stat().st_size
+                    ):
+                        continue
+                except OSError:
+                    pass
+        except FileNotFoundError:
             continue
         _copy_file_if_newer(item, dst_dir / item.name)
 
@@ -990,6 +1170,19 @@ class ColabOneDrive:
                 self.mode = "disabled"
                 self.error = err
             raise RuntimeError(err)
+        # Ensure workspace/ exists so first-time pull_workspace() never trips on missing directory (exit code 3).
+        try:
+            subprocess.run(
+                self._rclone_cmd(binary, "mkdir", f"{COLABONE_DRIVE_SPEC}/workspace"),
+                check=False,
+                timeout=20,
+                env=_sanitized_rclone_env(),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            pass
 
         with self._mount_lock:
             self._recover_stale_fuse()
@@ -1077,34 +1270,56 @@ class ColabOneDrive:
                     self.error = ""
         return self.status()
 
-    def _pull_drivefs_workspace(self, target_dir: Path) -> bool:
+    def _pull_drivefs_workspace(
+        self,
+        target_dir: Path,
+        *,
+        skip_existing_local_outputs: bool = False,
+    ) -> bool:
         try:
             ws = self._checked_drivefs_workspace_dir()
-            ws.mkdir(parents=True, exist_ok=True)
+            _run_drivefs_retry(lambda: ws.mkdir(parents=True, exist_ok=True))
             models_src = ws / "models.json"
             if models_src.is_file() and not models_src.is_symlink():
                 _copy_file_if_newer(models_src, target_dir / "models.json")
+            local_outputs = (
+                self.root / "comfyui-outputs"
+                if skip_existing_local_outputs and target_dir != self.root
+                else None
+            )
             for folder, recursive in (
                 ("workflows", False),
                 ("comfyui-outputs", False),
                 ("live-avatars", True),
                 ("live-driving-motions", True),
             ):
+                skip_dir = (
+                    local_outputs
+                    if folder == "comfyui-outputs"
+                    and local_outputs is not None
+                    and local_outputs.is_dir()
+                    and not local_outputs.is_symlink()
+                    else None
+                )
                 _sync_drivefs_tree(
-                    ws / folder, target_dir / folder, recursive=recursive
+                    ws / folder,
+                    target_dir / folder,
+                    recursive=recursive,
+                    skip_immutable_in=skip_dir,
                 )
             with self.lock:
                 self.error = ""
             return True
-        except OSError:
+        except OSError as exc:
+            err = _format_drivefs_os_error(exc, phase="pull")
             with self.lock:
-                self.error = "从 Google 云盘恢复历史数据未完成，稍后自动重试"
+                self.error = err
             return False
 
     def _push_drivefs_workspace(self) -> bool:
         try:
             ws = self._checked_drivefs_workspace_dir()
-            ws.mkdir(parents=True, exist_ok=True)
+            _run_drivefs_retry(lambda: ws.mkdir(parents=True, exist_ok=True))
             models_src = self.root / "models.json"
             if models_src.is_file() and not models_src.is_symlink():
                 _copy_file_if_newer(models_src, ws / "models.json")
@@ -1120,52 +1335,128 @@ class ColabOneDrive:
             with self.lock:
                 self.error = ""
             return True
-        except OSError:
+        except OSError as exc:
+            err = _format_drivefs_os_error(exc, phase="push")
             with self.lock:
-                self.error = "Google 云盘同步失败，远端本地副本仍完整保留"
+                self.error = err
             return False
 
-    _WORKSPACE_FILTER_ARGS = (
-        "--filter",
+    _WORKSPACE_FILTER_RULES = (
         "- **/.trash/**",
-        "--filter",
         "- **/.musetalk_cache/**",
-        "--filter",
         "- **/.trt_cache/**",
-        "--filter",
         "- **/.save-*",
-        "--filter",
         "- **/*.part*",
-        "--filter",
         "- **/*.tmp*",
-        "--filter",
         "+ /models.json",
-        "--filter",
         "+ /workflows/**",
-        "--filter",
         "+ /comfyui-outputs/**",
-        "--filter",
         "+ /live-avatars/**",
-        "--filter",
         "+ /live-driving-motions/**",
-        "--filter",
         "- **",
     )
 
-    def pull_workspace(self, dest_dir: Path | None = None) -> bool:
+    _WORKSPACE_FILTER_ARGS = tuple(
+        item
+        for rule in _WORKSPACE_FILTER_RULES
+        for item in ("--filter", rule)
+    )
+
+    _RCLONE_TRANSFER_RETRY_ARGS = (
+        "--retries",
+        "3",
+        "--low-level-retries",
+        "5",
+        "--contimeout",
+        "20s",
+        "--timeout",
+        "60s",
+    )
+
+    def _existing_local_output_asset_names(self) -> list[str]:
+        """Return immutable hex32 local output assets verified against sibling metadata size."""
+        out_dir = self.root / "comfyui-outputs"
+        try:
+            if not out_dir.is_dir() or out_dir.is_symlink():
+                return []
+            names: list[str] = []
+            for item in out_dir.iterdir():
+                try:
+                    name = item.name
+                    if (
+                        name.endswith(".json")
+                        or not _IMMUTABLE_COMFY_OUTPUT_ASSET_RE.fullmatch(name)
+                        or item.is_symlink()
+                        or not item.is_file()
+                    ):
+                        continue
+                    size = item.stat().st_size
+                    if size <= 0:
+                        continue
+                    stem, ext = name.rsplit(".", 1)
+                    meta_path = out_dir / f"{stem}.json"
+                    if meta_path.is_symlink() or not meta_path.is_file():
+                        continue
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                    if (
+                        isinstance(meta, dict)
+                        and meta.get("id") == stem
+                        and str(meta.get("extension") or "").lstrip(".").lower() == ext
+                        and int(meta.get("size") or 0) == size
+                    ):
+                        names.append(name)
+                except (OSError, ValueError, TypeError):
+                    continue
+            names.sort()
+            return names
+        except OSError:
+            return []
+
+    def pull_workspace(
+        self,
+        dest_dir: Path | None = None,
+        *,
+        skip_existing_local_outputs: bool = False,
+    ) -> bool:
         """Pull persisted models.json, workflows, ComfyUI outputs, live-avatars, and live-driving-motions into dest_dir."""
         if not self.available():
+            with self.lock:
+                if not self.error:
+                    self.error = "Google 云盘连接已断开，请重新挂载后再试"
             return False
         with self.lock:
             mode = self.mode
         target_dir = Path(dest_dir) if dest_dir is not None else self.root
         target_dir.mkdir(parents=True, exist_ok=True)
         if mode == "colab_drivefs":
-            return self._pull_drivefs_workspace(target_dir)
+            return self._pull_drivefs_workspace(
+                target_dir,
+                skip_existing_local_outputs=skip_existing_local_outputs,
+            )
+        filter_file: Path | None = None
         try:
             binary = ensure_rclone_binary(
                 self.root, self.catalog, http_factory=self._http_session
             )
+            filter_args: tuple[str, ...] = self._WORKSPACE_FILTER_ARGS
+            if skip_existing_local_outputs and target_dir != self.root:
+                skip_names = self._existing_local_output_asset_names()
+                if skip_names:
+                    fd, tmp_filter_path = tempfile.mkstemp(
+                        prefix=".co-rclone-filter-", suffix=".txt", dir=self.root
+                    )
+                    filter_file = Path(tmp_filter_path)
+                    try:
+                        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                            for name in skip_names:
+                                fh.write(f"- /comfyui-outputs/{name}\n")
+                            for rule in self._WORKSPACE_FILTER_RULES:
+                                fh.write(f"{rule}\n")
+                        filter_args = ("--filter-from", str(filter_file))
+                    except BaseException:
+                        filter_file.unlink(missing_ok=True)
+                        filter_file = None
+                        raise
             res = subprocess.run(
                 self._rclone_cmd(
                     binary,
@@ -1176,23 +1467,44 @@ class ColabOneDrive:
                     "8",
                     "--checkers",
                     "8",
-                    *self._WORKSPACE_FILTER_ARGS,
+                    *self._RCLONE_TRANSFER_RETRY_ARGS,
+                    *filter_args,
                 ),
                 check=False,
-                timeout=120,
+                timeout=240,
                 env=_sanitized_rclone_env(),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 text=True,
             )
-        except (subprocess.TimeoutExpired, OSError, RuntimeError):
+        except subprocess.TimeoutExpired:
             with self.lock:
-                self.error = "从 Google 云盘恢复历史数据未完成，稍后自动重试"
+                self.error = "从 Google 云盘恢复历史数据失败：连接或传输超时，请稍后重试"
             return False
-        if res.returncode != 0:
+        except (OSError, RuntimeError) as exc:
+            detail = _redact_oauth_secrets(str(exc) or exc.__class__.__name__).strip()[:140]
             with self.lock:
-                self.error = "从 Google 云盘恢复历史数据未完成，稍后自动重试"
+                self.error = (
+                    f"从 Google 云盘恢复历史数据失败：{detail}"
+                    if detail
+                    else "从 Google 云盘恢复历史数据未完成，稍后自动重试"
+                )
+            return False
+        finally:
+            if filter_file is not None:
+                try:
+                    filter_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        if res.returncode != 0:
+            if _is_rclone_missing_workspace_dir(res):
+                with self.lock:
+                    self.error = ""
+                return True
+            err = _format_rclone_sync_error(res.stderr or "", phase="pull")
+            with self.lock:
+                self.error = err
             return False
         with self.lock:
             self.error = ""
@@ -1201,6 +1513,9 @@ class ColabOneDrive:
     def push_workspace(self) -> bool:
         """Push local models.json, workflows, ComfyUI outputs, live-avatars, and live-driving-motions directly to ColabOne_Drive."""
         if not self.available():
+            with self.lock:
+                if not self.error:
+                    self.error = "Google 云盘连接已断开，请重新挂载后再试"
             return False
         with self.lock:
             mode = self.mode
@@ -1222,23 +1537,34 @@ class ColabOneDrive:
                     "8",
                     "--drive-chunk-size",
                     "64M",
+                    *self._RCLONE_TRANSFER_RETRY_ARGS,
                     *self._WORKSPACE_FILTER_ARGS,
                 ),
                 check=False,
-                timeout=180,
+                timeout=240,
                 env=_sanitized_rclone_env(),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 text=True,
             )
-        except (subprocess.TimeoutExpired, OSError, RuntimeError):
+        except subprocess.TimeoutExpired:
             with self.lock:
-                self.error = "Google 云盘同步失败，远端本地副本仍完整保留"
+                self.error = "Google 云盘同步失败：连接或传输超时，请稍后重试"
+            return False
+        except (OSError, RuntimeError) as exc:
+            detail = _redact_oauth_secrets(str(exc) or exc.__class__.__name__).strip()[:140]
+            with self.lock:
+                self.error = (
+                    f"Google 云盘同步失败：{detail}"
+                    if detail
+                    else "Google 云盘同步失败，远端本地副本仍完整保留"
+                )
             return False
         if res.returncode != 0:
+            err = _format_rclone_sync_error(res.stderr or "", phase="push")
             with self.lock:
-                self.error = "Google 云盘同步失败，远端本地副本仍完整保留"
+                self.error = err
             return False
         with self.lock:
             self.error = ""
@@ -1246,9 +1572,14 @@ class ColabOneDrive:
 
     @staticmethod
     def _rclone_trash_succeeded(res: subprocess.CompletedProcess) -> bool:
-        if res.returncode == 0 or res.returncode in (3, 4):
+        if res.returncode == 0:
             return True
-        err_low = (res.stderr or "").lower()
+        stderr = res.stderr or ""
+        if _is_rclone_auth_or_quota_error(stderr):
+            return False
+        if res.returncode in (3, 4):
+            return True
+        err_low = stderr.lower()
         return "not found" in err_low or "doesn't exist" in err_low
 
     def remove_remote_workflow(self, workflow_id: str) -> bool:
@@ -1307,10 +1638,27 @@ class ColabOneDrive:
                 stderr=subprocess.PIPE,
                 text=True,
             )
-            return self._rclone_trash_succeeded(res)
+            if self._rclone_trash_succeeded(res):
+                return True
+            err = _format_rclone_sync_error(res.stderr or "", phase="trash")
+            with self.lock:
+                self.error = err
+            return False
         except ValueError:
             raise
-        except Exception:
+        except OSError as exc:
+            err = _format_drivefs_os_error(exc, phase="trash")
+            with self.lock:
+                self.error = err
+            return False
+        except Exception as exc:
+            detail = _redact_oauth_secrets(str(exc) or exc.__class__.__name__).strip()[:140]
+            with self.lock:
+                self.error = (
+                    f"清理 Google 云盘已删除项失败：{detail}"
+                    if detail
+                    else "清理 Google 云盘已删除项失败，请稍后重试"
+                )
             return False
 
     def remove_remote_comfy_output(self, identity: str, extension: str) -> bool:
@@ -1379,11 +1727,26 @@ class ColabOneDrive:
                     text=True,
                 )
                 if not self._rclone_trash_succeeded(res):
+                    err = _format_rclone_sync_error(res.stderr or "", phase="trash")
+                    with self.lock:
+                        self.error = err
                     all_ok = False
             return all_ok
         except ValueError:
             raise
-        except Exception:
+        except OSError as exc:
+            err = _format_drivefs_os_error(exc, phase="trash")
+            with self.lock:
+                self.error = err
+            return False
+        except Exception as exc:
+            detail = _redact_oauth_secrets(str(exc) or exc.__class__.__name__).strip()[:140]
+            with self.lock:
+                self.error = (
+                    f"清理 Google 云盘已删除项失败：{detail}"
+                    if detail
+                    else "清理 Google 云盘已删除项失败，请稍后重试"
+                )
             return False
 
     def _trash_live_subdir(self, subdir: str, item_id: str, label: str) -> bool:
@@ -1447,10 +1810,27 @@ class ColabOneDrive:
                 stderr=subprocess.PIPE,
                 text=True,
             )
-            return self._rclone_trash_succeeded(res)
+            if self._rclone_trash_succeeded(res):
+                return True
+            err = _format_rclone_sync_error(res.stderr or "", phase="trash")
+            with self.lock:
+                self.error = err
+            return False
         except ValueError:
             raise
-        except Exception:
+        except OSError as exc:
+            err = _format_drivefs_os_error(exc, phase="trash")
+            with self.lock:
+                self.error = err
+            return False
+        except Exception as exc:
+            detail = _redact_oauth_secrets(str(exc) or exc.__class__.__name__).strip()[:140]
+            with self.lock:
+                self.error = (
+                    f"清理 Google 云盘已删除项失败：{detail}"
+                    if detail
+                    else "清理 Google 云盘已删除项失败，请稍后重试"
+                )
             return False
 
     def trash_live_avatar(self, avatar_id: str) -> bool:

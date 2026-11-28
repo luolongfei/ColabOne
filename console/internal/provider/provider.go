@@ -159,6 +159,7 @@ type ColabOneProvider struct {
 	bundler             ServiceBundler
 	location            LocationInferer
 	safeMessageFn       SafeMessageFn
+	outboundRPCLogFn    OutboundRPCLogFn
 	httpClient          *http.Client
 	vmBootScript        string
 	vmUpdateScript      string
@@ -280,6 +281,7 @@ func NewColabOneProvider(cfg ColabOneProviderConfig) *ColabOneProvider {
 		bundler:             cfg.Bundler,
 		location:            cfg.Location,
 		safeMessageFn:       cfg.SafeMessage,
+		outboundRPCLogFn:    cfg.OutboundRPCLog,
 		httpClient:          httpClient,
 		vmBootScript:        cfg.VMBootScript,
 		vmUpdateScript:      cfg.VMUpdateScript,
@@ -3365,7 +3367,41 @@ func (p *ColabOneProvider) RPC(
 	body any,
 	endpoint string,
 	timeout time.Duration,
-) (any, error) {
+) (result any, retErr error) {
+	started := time.Now()
+	resolvedEP := strings.TrimSpace(endpoint)
+	var reqBytes int64
+	attempted := false
+	if p.outboundRPCLogFn != nil {
+		defer func() {
+			if !attempted {
+				return
+			}
+			ev := ColabOneOutboundRPCEvent{
+				Method:   strings.ToUpper(strings.TrimSpace(method)),
+				Path:     "/api/v1/" + strings.TrimLeft(strings.TrimSpace(path), "/"),
+				Endpoint: resolvedEP,
+				Duration: time.Since(started),
+				ReqBytes: reqBytes,
+				OK:       retErr == nil,
+			}
+			if retErr != nil {
+				ev.StatusCode = httpStatusCode(retErr)
+				ev.Error = p.safeMessage(retErr.Error())
+			} else if m, ok := result.(map[string]any); ok {
+				if okField, exists := m["ok"]; exists {
+					if b, isBool := okField.(bool); isBool && !b {
+						ev.OK = false
+					}
+				}
+				if errMsg, _ := m["error"].(string); strings.TrimSpace(errMsg) != "" {
+					ev.Detail = p.safeMessage(errMsg)
+				}
+			}
+			p.outboundRPCLogFn(ev)
+		}()
+	}
+
 	if p.closed.Load() {
 		return nil, ErrProviderClosed
 	}
@@ -3379,6 +3415,8 @@ func (p *ColabOneProvider) RPC(
 	if session == nil {
 		return nil, errors.New("请先启动远端 GPU")
 	}
+	resolvedEP = session.Endpoint
+	attempted = true
 
 	upperMethod := strings.ToUpper(strings.TrimSpace(method))
 	idempotent := upperMethod == http.MethodGet ||
@@ -3414,6 +3452,7 @@ func (p *ColabOneProvider) RPC(
 		if err != nil {
 			return nil, err
 		}
+		reqBytes = int64(len(bodyBytes))
 	}
 
 	targetEP := session.Endpoint

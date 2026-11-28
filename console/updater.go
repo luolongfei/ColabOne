@@ -15,6 +15,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/netproxy"
+	"github.com/luolongfei/ColabOne/console/internal/outboundlog"
 	"github.com/luolongfei/ColabOne/console/internal/updater"
 )
 
@@ -30,14 +31,45 @@ var ColabOneUpdateEvent = mygo.NewEvent[updater.ColabOneUpdateState]("colabone-u
 var ColabOneUpdateOpenEvent = mygo.NewEvent[bool]("colabone-update-open")
 
 type mygoInstallableAdapter struct {
-	up *mygo.Update
+	up          *mygo.Update
+	outboundLog *outboundlog.ColabOneOutboundLogger
+	repo        string
 }
 
 func (a *mygoInstallableAdapter) Version() string { return a.up.Version }
 func (a *mygoInstallableAdapter) Notes() string   { return a.up.Notes }
 func (a *mygoInstallableAdapter) Date() time.Time { return a.up.Date }
 func (a *mygoInstallableAdapter) Install(ctx context.Context, progress func(downloaded, total int64)) error {
-	return a.up.Install(ctx, progress)
+	started := time.Now()
+	var totalBytes int64
+	err := a.up.Install(ctx, func(downloaded, total int64) {
+		if total > 0 {
+			totalBytes = total
+		} else if downloaded > totalBytes {
+			totalBytes = downloaded
+		}
+		if progress != nil {
+			progress(downloaded, total)
+		}
+	})
+	if a.outboundLog != nil {
+		rec := outboundlog.ColabOneOutboundRecord{
+			Component:  "updater_self",
+			Protocol:   "http",
+			Method:     "INSTALL",
+			Scheme:     "https",
+			Host:       "github.com",
+			Path:       "/" + strings.Trim(a.repo, "/") + "/releases/download/" + strings.TrimSpace(a.up.Version),
+			OK:         err == nil,
+			DurationMs: time.Since(started).Milliseconds(),
+			RespBytes:  totalBytes,
+		}
+		if err != nil {
+			rec.Error = err.Error()
+		}
+		a.outboundLog.Record(rec)
+	}
+	return err
 }
 
 type mygoUpdateBackend struct {
@@ -45,6 +77,7 @@ type mygoUpdateBackend struct {
 	readOnly    *updater.ColabOneReadOnlyFeedChecker
 	rollback    *updater.ColabOneRollbackInstaller
 	fallbackVer string
+	outboundLog *outboundlog.ColabOneOutboundLogger
 }
 
 type colabOneMyGoManifestMeta struct {
@@ -68,6 +101,10 @@ func readEmbeddedMyGoManifestMeta() colabOneMyGoManifestMeta {
 }
 
 func newMyGoUpdateBackend() *mygoUpdateBackend {
+	return newMyGoUpdateBackendWithOutboundLog(nil)
+}
+
+func newMyGoUpdateBackendWithOutboundLog(outboundLog *outboundlog.ColabOneOutboundLogger) *mygoUpdateBackend {
 	meta := readEmbeddedMyGoManifestMeta()
 	repo := meta.Updates.GitHub
 	if repo == "" {
@@ -76,19 +113,20 @@ func newMyGoUpdateBackend() *mygoUpdateBackend {
 	tr := netproxy.Transport().Clone()
 	tr.ResponseHeaderTimeout = 20 * time.Second
 	metaClient := &http.Client{
-		Transport:     tr,
+		Transport:     outboundlog.WrapTransport(tr, outboundLog, "updater", ""),
 		Timeout:       30 * time.Second,
 		CheckRedirect: updater.ColabOneUpdateCheckRedirect,
 	}
 	downloadTr := netproxy.Transport().Clone()
 	downloadTr.ResponseHeaderTimeout = 30 * time.Second
 	downloadClient := &http.Client{
-		Transport:     downloadTr,
+		Transport:     outboundlog.WrapTransport(downloadTr, outboundLog, "updater", ""),
 		CheckRedirect: updater.ColabOneUpdateCheckRedirect,
 	}
 	b := &mygoUpdateBackend{
 		repo:        repo,
 		fallbackVer: meta.Version,
+		outboundLog: outboundLog,
 	}
 	b.readOnly = &updater.ColabOneReadOnlyFeedChecker{
 		Repo:           repo,
@@ -150,11 +188,32 @@ func (b *mygoUpdateBackend) SetPrereleases(on bool) {
 }
 
 func (b *mygoUpdateBackend) CheckSelfUpdate(ctx context.Context) (updater.ColabOneUpdateInstallable, error) {
+	started := time.Now()
 	up, err := mygo.Updater.Check(ctx)
+	if b.outboundLog != nil {
+		rec := outboundlog.ColabOneOutboundRecord{
+			Component:  "updater_self",
+			Protocol:   "http",
+			Method:     "GET",
+			Scheme:     "https",
+			Host:       "github.com",
+			Path:       "/" + strings.Trim(b.repo, "/") + "/releases/latest",
+			OK:         err == nil,
+			DurationMs: time.Since(started).Milliseconds(),
+		}
+		if err != nil {
+			rec.Error = err.Error()
+		} else if up != nil {
+			rec.Detail = "available=" + strings.TrimSpace(up.Version)
+		} else {
+			rec.Detail = "up_to_date"
+		}
+		b.outboundLog.Record(rec)
+	}
 	if err != nil || up == nil {
 		return nil, err
 	}
-	return &mygoInstallableAdapter{up: up}, nil
+	return &mygoInstallableAdapter{up: up, outboundLog: b.outboundLog, repo: b.repo}, nil
 }
 
 func (b *mygoUpdateBackend) CheckReadOnly(ctx context.Context, includePrerelease bool) (*updater.ColabOneReadOnlyRelease, error) {
@@ -190,7 +249,7 @@ func (b *mygoUpdateBackend) Relaunch() error {
 
 func (d *ColabOneDesktop) initUpdater(cfgDir string, backend updater.ColabOneUpdateBackend) {
 	if backend == nil {
-		backend = newMyGoUpdateBackend()
+		backend = newMyGoUpdateBackendWithOutboundLog(d.outboundLog)
 	}
 	var traySigMu sync.Mutex
 	var lastTraySig string

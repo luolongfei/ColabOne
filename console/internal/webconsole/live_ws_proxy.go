@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/luolongfei/ColabOne/console/internal/outboundlog"
 )
 
 const (
@@ -114,9 +115,26 @@ func defaultLiveWSUpstreamClient() *http.Client {
 	return liveWSSafeClientInst
 }
 
+// SetLiveWSOutboundLogger configures outbound request logging for upstream Live Studio WebSocket dials.
+func (w *ColabOneWebConsole) SetLiveWSOutboundLogger(logger *outboundlog.ColabOneOutboundLogger) {
+	if w == nil || logger == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	base := w.liveWSHTTPClient
+	if base == nil {
+		base = defaultLiveWSUpstreamClient()
+	}
+	w.liveWSHTTPClient = outboundlog.WrapHTTPClient(base, logger, "live_ws_proxy", "")
+}
+
 func (w *ColabOneWebConsole) liveWSUpstreamClient() *http.Client {
-	if w.liveWSHTTPClient != nil {
-		return w.liveWSHTTPClient
+	w.mu.Lock()
+	client := w.liveWSHTTPClient
+	w.mu.Unlock()
+	if client != nil {
+		return client
 	}
 	return defaultLiveWSUpstreamClient()
 }

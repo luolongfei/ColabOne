@@ -133,6 +133,9 @@ func (d *ColabOneDesktop) initWebConsoleWithFS(
 			d.notifyOutputSharesState(state)
 		},
 	})
+	if d.outboundLog != nil {
+		wc.SetLiveWSOutboundLogger(d.outboundLog)
+	}
 	d.webConsoleMu.Lock()
 	d.webConsole = wc
 	d.webConsoleMu.Unlock()

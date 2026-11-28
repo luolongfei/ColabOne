@@ -1,9 +1,11 @@
 """Offline tests for ColabOne headless rclone Google Drive mount & persistence."""
 
+import errno
 import hashlib
 import io
 import json
 import os
+import subprocess
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -1291,3 +1293,228 @@ def test_drivefs_and_rclone_use_distinct_folders(tmp_path, monkeypatch):
     drive_rc.mode = "rclone_sync"
     assert drive_rc.status()["remote_folder"] == COLABONE_DRIVE_FOLDER == "ColabOne_Drive"
     assert COLABONE_DRIVE_SPEC == f"{COLABONE_DRIVE_REMOTE}:ColabOne_Drive"
+
+
+def test_rclone_missing_workspace_dir_treated_as_empty_and_real_errors_surfaced(
+    tmp_path, monkeypatch
+):
+    catalog = tmp_path / "catalog"
+    catalog.mkdir()
+    root = tmp_path / "data"
+    root.mkdir()
+    (root / ".rclone.conf").write_text(
+        f"[{COLABONE_DRIVE_REMOTE}]\ntype = drive\n", encoding="utf-8"
+    )
+    drive = ColabOneDrive(root, catalog, mount_root=root / "mnt")
+    drive.mode = "rclone_sync"
+    fake_bin = tmp_path / "rclone"
+    monkeypatch.setattr("server.drive.ensure_rclone_binary", lambda *a, **k: fake_bin)
+
+    # 1. Missing workspace/ on brand-new Drive (rclone exit code 3) must succeed cleanly.
+    monkeypatch.setattr(
+        "server.drive.subprocess.run",
+        lambda *a, **k: SimpleNamespace(
+            returncode=3,
+            stdout="",
+            stderr="2026/11/27 12:00:00 ERROR : directory not found\n",
+        ),
+    )
+    assert drive.pull_workspace(tmp_path / "stage1") is True
+    assert drive.error == ""
+
+    # 2. Auth/quota error must NOT be treated as empty workspace even if exit code is 3.
+    monkeypatch.setattr(
+        "server.drive.subprocess.run",
+        lambda *a, **k: SimpleNamespace(
+            returncode=3,
+            stdout="",
+            stderr="2026/11/27 12:00:00 ERROR : googleapi: Error 403: SERVICE_DISABLED requires a quota project\n",
+        ),
+    )
+    assert drive.pull_workspace(tmp_path / "stage2") is False
+    assert "配额项目" in drive.error
+
+    # 3. Push failure surfaces redacted OAuth/API error instead of generic message.
+    monkeypatch.setattr(
+        "server.drive.subprocess.run",
+        lambda *a, **k: SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="2026/11/27 12:00:00 ERROR : failed with Bearer ya29.secret-token-xyz: storageQuotaExceeded\n",
+        ),
+    )
+    assert drive.push_workspace() is False
+    assert "存储空间已满" in drive.error
+    assert "ya29.secret-token-xyz" not in drive.error
+
+    # 4. Timeout on push surfaces timeout wording.
+    def raise_timeout(*a, **k):
+        raise subprocess.TimeoutExpired(cmd=["rclone"], timeout=240)
+
+    monkeypatch.setattr("server.drive.subprocess.run", raise_timeout)
+    assert drive.push_workspace() is False
+    assert "超时" in drive.error
+
+
+def test_rclone_pull_skips_existing_local_immutable_outputs(tmp_path, spec, monkeypatch):
+    catalog = tmp_path / "catalog"
+    catalog.mkdir()
+    (catalog / "presets.json").write_text(json.dumps([spec.model_dump()]))
+    (catalog / "engine.json").write_text('{"tag":"test","assets":[]}')
+    (catalog / "comfyui.json").write_text(
+        json.dumps(
+            {
+                "repo": "https://github.com/Comfy-Org/ComfyUI.git",
+                "tag": "test",
+                "commit": "a" * 40,
+                "port": 8188,
+                "proxy_port": 8189,
+                "templates": [],
+            }
+        )
+    )
+    root = tmp_path / "data"
+    out_dir = root / "comfyui-outputs"
+    out_dir.mkdir(parents=True)
+    oid = "c" * 32
+    oid_corrupt = "d" * 32
+    payload = _sample_png_bytes()
+    meta = {
+        "id": oid,
+        "workflow_id": "wf1",
+        "workflow_name": "Test",
+        "kind": "image",
+        "filename": "existing.png",
+        "extension": "png",
+        "mime": "image/png",
+        "size": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "created_at": 1700000000.0,
+        "elapsed": 1.0,
+        "prompt_id": "p1",
+    }
+    # Valid local pair (asset + matching metadata size) should be skipped by rclone pull.
+    (out_dir / f"{oid}.png").write_bytes(payload)
+    (out_dir / f"{oid}.json").write_text(json.dumps(meta), encoding="utf-8")
+    # Truncated/orphan local asset without matching metadata must NOT be skipped so Drive repairs it.
+    (out_dir / f"{oid_corrupt}.png").write_bytes(b"short")
+    (root / ".rclone.conf").write_text(
+        f"[{COLABONE_DRIVE_REMOTE}]\ntype = drive\n", encoding="utf-8"
+    )
+
+    drive = ColabOneDrive(root, catalog, mount_root=root / "mnt")
+    drive.mode = "rclone_sync"
+    fake_bin = tmp_path / "rclone"
+    monkeypatch.setattr("server.drive.ensure_rclone_binary", lambda *a, **k: fake_bin)
+
+    captured_filter_text = []
+
+    def fake_run(cmd, **kwargs):
+        cmd_list = list(cmd)
+        assert "--filter-from" in cmd_list
+        filter_path = Path(cmd_list[cmd_list.index("--filter-from") + 1])
+        captured_filter_text.append(filter_path.read_text(encoding="utf-8"))
+        # Simulate rclone copying only metadata JSON (asset was excluded because already present locally).
+        dest = Path(cmd_list[cmd_list.index("copy") + 2])
+        stage_out = dest / "comfyui-outputs"
+        stage_out.mkdir(parents=True, exist_ok=True)
+        (stage_out / f"{oid}.json").write_text(json.dumps(meta), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("server.drive.subprocess.run", fake_run)
+
+    rt = ColabOneRuntime(root, catalog, drive=drive)
+    assert rt._restore_from_drive() is True
+    assert captured_filter_text
+    assert f"- /comfyui-outputs/{oid}.png" in captured_filter_text[0]
+    assert f"- /comfyui-outputs/{oid_corrupt}.png" not in captured_filter_text[0]
+    assert (out_dir / f"{oid}.json").is_file()
+    assert len(rt.comfy.store.list_outputs()) == 1
+
+
+def test_drivefs_transient_eio_retry_and_vanishing_file_resilience(tmp_path, monkeypatch):
+    from server import drive as drive_mod
+
+    mydrive = tmp_path / "drive" / "MyDrive"
+    mydrive.mkdir(parents=True)
+    data_root = tmp_path / "vm"
+    data_root.mkdir()
+    catalog = tmp_path / "catalog"
+    catalog.mkdir()
+
+    ws = mydrive / COLABONE_DRIVEFS_FOLDER / "workspace"
+    (ws / "workflows").mkdir(parents=True)
+    (ws / "workflows" / "wf1.json").write_text('{"id":"wf1"}', encoding="utf-8")
+
+    monkeypatch.setattr(drive_mod, "_DRIVEFS_RETRY_DELAYS", (0.0, 0.0))
+    orig_stream = drive_mod._stream_write_file
+    attempts = {"n": 0}
+
+    def flaky_stream(src, target):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise OSError(errno.EIO, "transient DriveFS I/O error")
+        return orig_stream(src, target)
+
+    monkeypatch.setattr(drive_mod, "_stream_write_file", flaky_stream)
+
+    drive = ColabOneDrive(data_root, catalog, mount_root=mydrive)
+    monkeypatch.setattr(drive, "is_colab_drivefs_mounted", lambda: True)
+    drive.connect()
+
+    stage = tmp_path / "stage"
+    assert drive.pull_workspace(stage) is True
+    assert attempts["n"] == 2
+    assert (stage / "workflows" / "wf1.json").is_file()
+
+    # Vanishing source file must be skipped cleanly without failing sync.
+    drive_mod._copy_file_if_newer(tmp_path / "does-not-exist.png", stage / "missing.png")
+    assert not (stage / "missing.png").exists()
+
+
+def test_sync_drive_surfaces_error_when_tombstone_reconcile_fails(tmp_path, spec, monkeypatch):
+    catalog = tmp_path / "catalog"
+    catalog.mkdir()
+    (catalog / "presets.json").write_text(json.dumps([spec.model_dump()]))
+    (catalog / "engine.json").write_text('{"tag":"test","assets":[]}')
+    (catalog / "comfyui.json").write_text(
+        json.dumps(
+            {
+                "repo": "https://github.com/Comfy-Org/ComfyUI.git",
+                "tag": "test",
+                "commit": "a" * 40,
+                "port": 8188,
+                "proxy_port": 8189,
+                "templates": [],
+            }
+        )
+    )
+    root = tmp_path / "vm"
+    root.mkdir()
+    (root / ".rclone.conf").write_text(
+        f"[{COLABONE_DRIVE_REMOTE}]\ntype = drive\n", encoding="utf-8"
+    )
+    drive = ColabOneDrive(root, catalog, mount_root=root / "mnt")
+    drive.mode = "rclone_sync"
+    fake_bin = tmp_path / "rclone"
+    monkeypatch.setattr("server.drive.ensure_rclone_binary", lambda *a, **k: fake_bin)
+
+    rt = ColabOneRuntime(root, catalog, drive=drive)
+    rt.drive_restored = True
+    # Create a workflow tombstone pending reconciliation.
+    wf_trash = root / "workflows" / ".trash"
+    wf_trash.mkdir(parents=True)
+    (wf_trash / "wf-del.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "server.drive.subprocess.run",
+        lambda *a, **k: SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="2026/11/27 12:00:00 ERROR : rateLimitExceeded\n",
+        ),
+    )
+
+    res = rt.sync_drive()
+    assert res["ok"] is False
+    assert "限流" in res["error"]

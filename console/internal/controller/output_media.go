@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/luolongfei/ColabOne/console/internal/outboundlog"
 )
 
 const (
@@ -246,7 +248,7 @@ func (c *ColabOneController) driveStreamClient() *http.Client {
 		// Controller is closing/closed: avoid allocating a new cloned transport pool
 		// that will never be cached or closed.
 		return &http.Client{
-			Transport:     http.DefaultTransport,
+			Transport:     outboundlog.WrapTransport(http.DefaultTransport, c.outboundLogger, "drive_stream", ""),
 			Timeout:       0,
 			CheckRedirect: refuseDriveRedirects,
 		}
@@ -266,7 +268,7 @@ func (c *ColabOneController) driveStreamClient() *http.Client {
 		transport = http.DefaultTransport
 	}
 	client := &http.Client{
-		Transport:     transport,
+		Transport:     outboundlog.WrapTransport(transport, c.outboundLogger, "drive_stream", ""),
 		Timeout:       0,
 		CheckRedirect: refuseDriveRedirects,
 	}

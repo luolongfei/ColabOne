@@ -19,6 +19,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/luolongfei/ColabOne/console/internal/outboundlog"
 )
 
 var (
@@ -183,9 +185,10 @@ const (
 	colabOneDriveComfyOutputsSubdir  = "comfyui-outputs"
 	colabOneDriveAssetChunkBytes     = 512 * 1024
 	colabOneDriveMaxMetaBytes        = 64 * 1024
-	colabOneDriveMaxListBodyBytes    = 4 << 20
-	colabOneDriveOutputsMaxPerAcct   = 400
-	colabOneWorkflowAutoRelUpgrHint  = "当前远端服务版本暂不支持工作流完成后自动同步释放，请先点击顶部「立即热更新」升级远端服务后再试"
+	colabOneDriveMaxListBodyBytes          = 4 << 20
+	colabOneDriveOutputsMaxPerAcct         = 400
+	colabOneDriveOutputsMaxTombstonesPerAcct = 2000
+	colabOneWorkflowAutoRelUpgrHint        = "当前远端服务版本暂不支持工作流完成后自动同步释放，请先点击顶部「立即热更新」升级远端服务后再试"
 )
 
 var allowedDriveOutputKindMIME = map[string][2]string{
@@ -326,9 +329,32 @@ func (r *ColabOneDriveOutputRecord) toOutputMap(storage string, canDirectRead bo
 	return out
 }
 
+// ColabOneDriveOutputTombstone persistently records a user-deleted output so that
+// subsequent Drive API refreshes or DriveFS workspace restores never resurrect an
+// output that was explicitly deleted in the app (even when its cloud file remains
+// in Google Drive for manual cleanup).
+type ColabOneDriveOutputTombstone struct {
+	ID                   string  `json:"id"`
+	DriveFileID          string  `json:"drive_file_id,omitempty"`
+	DriveWorkspaceFileID string  `json:"drive_workspace_file_id,omitempty"`
+	SHA256               string  `json:"sha256,omitempty"`
+	Filename             string  `json:"filename,omitempty"`
+	Size                 int64   `json:"size,omitempty"`
+	DeletedAt            float64 `json:"deleted_at"`
+}
+
+func (t *ColabOneDriveOutputTombstone) clone() *ColabOneDriveOutputTombstone {
+	if t == nil {
+		return nil
+	}
+	cp := *t
+	return &cp
+}
+
 type colabOneDriveOutputsDisk struct {
-	Version  int                                             `json:"version"`
-	Accounts map[string]map[string]*ColabOneDriveOutputRecord `json:"accounts"`
+	Version         int                                                 `json:"version"`
+	Accounts        map[string]map[string]*ColabOneDriveOutputRecord    `json:"accounts"`
+	DeletedAccounts map[string]map[string]*ColabOneDriveOutputTombstone `json:"deleted_accounts,omitempty"`
 }
 
 type authAccessTokenProvider interface {
@@ -339,12 +365,40 @@ func (c *ColabOneController) driveOutputsPath() string {
 	return filepath.Join(c.directory, colabOneDriveOutputsFileName)
 }
 
+func pruneDriveOutputTombstonesLocked(bucket map[string]*ColabOneDriveOutputTombstone) {
+	if len(bucket) <= colabOneDriveOutputsMaxTombstonesPerAcct {
+		return
+	}
+	type pair struct {
+		id        string
+		deletedAt float64
+	}
+	items := make([]pair, 0, len(bucket))
+	for id, tomb := range bucket {
+		ts := 0.0
+		if tomb != nil {
+			ts = tomb.DeletedAt
+		}
+		items = append(items, pair{id: id, deletedAt: ts})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].deletedAt != items[j].deletedAt {
+			return items[i].deletedAt > items[j].deletedAt
+		}
+		return items[i].id < items[j].id
+	})
+	for _, p := range items[colabOneDriveOutputsMaxTombstonesPerAcct:] {
+		delete(bucket, p.id)
+	}
+}
+
 func (c *ColabOneController) loadDriveOutputs() {
 	c.persistMu.Lock()
 	defer c.persistMu.Unlock()
 
 	c.mu.Lock()
 	c.driveOutputs = make(map[string]map[string]*ColabOneDriveOutputRecord)
+	c.driveOutputsDeleted = make(map[string]map[string]*ColabOneDriveOutputTombstone)
 	c.mu.Unlock()
 
 	path := c.driveOutputsPath()
@@ -353,12 +407,49 @@ func (c *ColabOneController) loadDriveOutputs() {
 		return
 	}
 	var disk colabOneDriveOutputsDisk
-	if err := json.Unmarshal(raw, &disk); err != nil || disk.Accounts == nil {
+	if err := json.Unmarshal(raw, &disk); err != nil || (disk.Accounts == nil && disk.DeletedAccounts == nil) {
 		backupCorruptLocalFile(path, raw)
 		if c.activity != nil {
 			c.log("读取本地 Google 云盘作品索引失败，已备份损坏文件为 .corrupt 副本", "云盘", "warning")
 		}
 		return
+	}
+	loadedDeleted := make(map[string]map[string]*ColabOneDriveOutputTombstone, len(disk.DeletedAccounts))
+	for acctKey, items := range disk.DeletedAccounts {
+		cleanAcct := strings.TrimSpace(acctKey)
+		if cleanAcct == "" || len(items) == 0 {
+			continue
+		}
+		delBucket := make(map[string]*ColabOneDriveOutputTombstone, len(items))
+		for id, tomb := range items {
+			if tomb == nil {
+				continue
+			}
+			cleanID := strings.ToLower(strings.TrimSpace(tomb.ID))
+			if cleanID == "" {
+				cleanID = strings.ToLower(strings.TrimSpace(id))
+			}
+			if !reHex32ID.MatchString(cleanID) {
+				continue
+			}
+			cp := tomb.clone()
+			cp.ID = cleanID
+			cp.DriveFileID = sanitizeDriveFileID(cp.DriveFileID)
+			cp.DriveWorkspaceFileID = sanitizeDriveFileID(cp.DriveWorkspaceFileID)
+			cp.SHA256 = sanitizeDriveSHA256(cp.SHA256)
+			cp.Filename = strings.TrimSpace(cp.Filename)
+			if cp.Size < 0 {
+				cp.Size = 0
+			}
+			if cp.DeletedAt < 0 || math.IsNaN(cp.DeletedAt) || math.IsInf(cp.DeletedAt, 0) {
+				cp.DeletedAt = 0
+			}
+			delBucket[cleanID] = cp
+		}
+		if len(delBucket) > 0 {
+			pruneDriveOutputTombstonesLocked(delBucket)
+			loadedDeleted[cleanAcct] = delBucket
+		}
 	}
 	loaded := make(map[string]map[string]*ColabOneDriveOutputRecord, len(disk.Accounts))
 	for acctKey, items := range disk.Accounts {
@@ -366,6 +457,7 @@ func (c *ColabOneController) loadDriveOutputs() {
 		if cleanAcct == "" || len(items) == 0 {
 			continue
 		}
+		delBucket := loadedDeleted[cleanAcct]
 		bucket := make(map[string]*ColabOneDriveOutputRecord, len(items))
 		for id, rec := range items {
 			if rec == nil {
@@ -376,6 +468,9 @@ func (c *ColabOneController) loadDriveOutputs() {
 				cleanID = strings.ToLower(strings.TrimSpace(id))
 			}
 			if !reHex32ID.MatchString(cleanID) {
+				continue
+			}
+			if delBucket != nil && delBucket[cleanID] != nil {
 				continue
 			}
 			ext := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(rec.Extension), "."))
@@ -411,6 +506,7 @@ func (c *ColabOneController) loadDriveOutputs() {
 	}
 	c.mu.Lock()
 	c.driveOutputs = loaded
+	c.driveOutputsDeleted = loadedDeleted
 	c.mu.Unlock()
 }
 
@@ -435,6 +531,26 @@ func (c *ColabOneController) saveDriveOutputs() error {
 		}
 		if len(outBucket) > 0 {
 			disk.Accounts[acctKey] = outBucket
+		}
+	}
+	if len(c.driveOutputsDeleted) > 0 {
+		delAccounts := make(map[string]map[string]*ColabOneDriveOutputTombstone, len(c.driveOutputsDeleted))
+		for acctKey, delBucket := range c.driveOutputsDeleted {
+			if len(delBucket) == 0 {
+				continue
+			}
+			outDel := make(map[string]*ColabOneDriveOutputTombstone, len(delBucket))
+			for id, tomb := range delBucket {
+				if tomb != nil {
+					outDel[id] = tomb.clone()
+				}
+			}
+			if len(outDel) > 0 {
+				delAccounts[acctKey] = outDel
+			}
+		}
+		if len(delAccounts) > 0 {
+			disk.DeletedAccounts = delAccounts
 		}
 	}
 	c.mu.Unlock()
@@ -886,6 +1002,9 @@ func (c *ColabOneController) recordSyncedRemoteOutputs(rt map[string]any, rawOut
 	}
 	changed := false
 	for _, rec := range parsedRecords {
+		if c.matchDriveOutputTombstoneLocked(acctKey, rec, false) != nil {
+			continue
+		}
 		rec.DriveSynced = true
 		rec.DriveMode = driveMode
 		rec.DriveFolder = remoteFolder + "/" + colabOneDriveWorkspaceSubdir + "/" + colabOneDriveComfyOutputsSubdir
@@ -1041,6 +1160,102 @@ func (c *ColabOneController) recordExportedDriveOutput(identity string, exportRe
 	_ = c.saveDriveOutputs()
 }
 
+func (c *ColabOneController) matchDriveOutputTombstoneLocked(
+	acctKey string,
+	rec *ColabOneDriveOutputRecord,
+	allowHeuristic bool,
+) *ColabOneDriveOutputTombstone {
+	if acctKey == "" || rec == nil || c.driveOutputsDeleted == nil {
+		return nil
+	}
+	delBucket := c.driveOutputsDeleted[acctKey]
+	if len(delBucket) == 0 {
+		return nil
+	}
+	cleanID := strings.ToLower(strings.TrimSpace(rec.ID))
+	if cleanID != "" {
+		if tomb := delBucket[cleanID]; tomb != nil {
+			return tomb
+		}
+	}
+	recFileID := sanitizeDriveFileID(rec.DriveFileID)
+	recWSID := sanitizeDriveFileID(rec.DriveWorkspaceFileID)
+	recSHA := sanitizeDriveSHA256(rec.SHA256)
+	recName := strings.TrimSpace(rec.Filename)
+	for _, tomb := range delBucket {
+		if tomb == nil {
+			continue
+		}
+		if recFileID != "" && (tomb.DriveFileID == recFileID || tomb.DriveWorkspaceFileID == recFileID) {
+			return tomb
+		}
+		if recWSID != "" && (tomb.DriveWorkspaceFileID == recWSID || tomb.DriveFileID == recWSID) {
+			return tomb
+		}
+		if !allowHeuristic {
+			continue
+		}
+		preExisting := rec.CreatedAt <= 0 || tomb.DeletedAt <= 0 || rec.CreatedAt <= tomb.DeletedAt+60.0
+		if !preExisting {
+			continue
+		}
+		if recSHA != "" && tomb.SHA256 != "" && tomb.SHA256 == recSHA {
+			return tomb
+		}
+		if tomb.DriveFileID == "" && tomb.Filename != "" && tomb.Size > 0 &&
+			recName != "" && rec.Size == tomb.Size && strings.EqualFold(tomb.Filename, recName) {
+			return tomb
+		}
+	}
+	return nil
+}
+
+func (c *ColabOneController) markDriveOutputDeletedLocked(
+	acctKey string,
+	cleanID string,
+	records ...*ColabOneDriveOutputRecord,
+) bool {
+	if acctKey == "" || !reHex32ID.MatchString(cleanID) {
+		return false
+	}
+	if c.driveOutputsDeleted == nil {
+		c.driveOutputsDeleted = make(map[string]map[string]*ColabOneDriveOutputTombstone)
+	}
+	delBucket := c.driveOutputsDeleted[acctKey]
+	if delBucket == nil {
+		delBucket = make(map[string]*ColabOneDriveOutputTombstone)
+		c.driveOutputsDeleted[acctKey] = delBucket
+	}
+	tomb := delBucket[cleanID]
+	if tomb == nil {
+		tomb = &ColabOneDriveOutputTombstone{ID: cleanID}
+		delBucket[cleanID] = tomb
+	}
+	tomb.DeletedAt = nowUnixFloat()
+	for _, rec := range records {
+		if rec == nil {
+			continue
+		}
+		if fid := sanitizeDriveFileID(rec.DriveFileID); fid != "" && tomb.DriveFileID == "" {
+			tomb.DriveFileID = fid
+		}
+		if wfid := sanitizeDriveFileID(rec.DriveWorkspaceFileID); wfid != "" && tomb.DriveWorkspaceFileID == "" {
+			tomb.DriveWorkspaceFileID = wfid
+		}
+		if sha := sanitizeDriveSHA256(rec.SHA256); sha != "" && tomb.SHA256 == "" {
+			tomb.SHA256 = sha
+		}
+		if fn := strings.TrimSpace(rec.Filename); fn != "" && tomb.Filename == "" {
+			tomb.Filename = fn
+		}
+		if rec.Size > 0 && tomb.Size <= 0 {
+			tomb.Size = rec.Size
+		}
+	}
+	pruneDriveOutputTombstonesLocked(delBucket)
+	return true
+}
+
 func (c *ColabOneController) removeDriveOutputRecord(identity string) {
 	cleanID := strings.ToLower(strings.TrimSpace(identity))
 	if !reHex32ID.MatchString(cleanID) {
@@ -1066,6 +1281,37 @@ func (c *ColabOneController) removeDriveOutputRecord(identity string) {
 	}
 }
 
+func (c *ColabOneController) deleteDriveOutputRecordPersistently(identity string, fallback *ColabOneDriveOutputRecord) {
+	cleanID := strings.ToLower(strings.TrimSpace(identity))
+	if !reHex32ID.MatchString(cleanID) {
+		return
+	}
+	c.mu.Lock()
+	acctKey := c.currentDriveAccountKeyLocked()
+	changed := false
+	var oldRec *ColabOneDriveOutputRecord
+	if acctKey != "" && c.driveOutputs != nil {
+		if bucket := c.driveOutputs[acctKey]; bucket != nil {
+			if rec, exists := bucket[cleanID]; exists {
+				oldRec = rec
+				delete(bucket, cleanID)
+				changed = true
+			}
+		}
+	}
+	if c.markDriveOutputDeletedLocked(acctKey, cleanID, oldRec, fallback) {
+		changed = true
+	}
+	c.noteDriveOutputDeletedLocked(acctKey, cleanID, oldRec)
+	if oldRec == nil && fallback != nil {
+		c.noteDriveOutputDeletedLocked(acctKey, cleanID, fallback)
+	}
+	c.mu.Unlock()
+	if changed {
+		_ = c.saveDriveOutputs()
+	}
+}
+
 func (c *ColabOneController) mergeComfyOutputsForSnapshot(
 	rt map[string]any,
 	liveOutputs []any,
@@ -1073,14 +1319,45 @@ func (c *ColabOneController) mergeComfyOutputsForSnapshot(
 ) ([]any, map[string]any) {
 	c.mu.Lock()
 	acctKey := c.currentDriveAccountKeyLocked()
+	var deletedIDs map[string]bool
+	var deletedFileIDs map[string]bool
+	if acctKey != "" && c.driveOutputsDeleted != nil {
+		if delBucket := c.driveOutputsDeleted[acctKey]; len(delBucket) > 0 {
+			deletedIDs = make(map[string]bool, len(delBucket))
+			for id, tomb := range delBucket {
+				deletedIDs[id] = true
+				if tomb != nil {
+					if tomb.DriveFileID != "" {
+						if deletedFileIDs == nil {
+							deletedFileIDs = make(map[string]bool)
+						}
+						deletedFileIDs[tomb.DriveFileID] = true
+					}
+					if tomb.DriveWorkspaceFileID != "" {
+						if deletedFileIDs == nil {
+							deletedFileIDs = make(map[string]bool)
+						}
+						deletedFileIDs[tomb.DriveWorkspaceFileID] = true
+					}
+				}
+			}
+		}
+	}
 	var saved []*ColabOneDriveOutputRecord
 	if acctKey != "" && c.driveOutputs != nil {
 		if bucket := c.driveOutputs[acctKey]; len(bucket) > 0 {
 			saved = make([]*ColabOneDriveOutputRecord, 0, len(bucket))
 			for _, rec := range bucket {
-				if rec != nil {
-					saved = append(saved, rec.clone())
+				if rec == nil || deletedIDs[rec.ID] {
+					continue
 				}
+				if fid := sanitizeDriveFileID(rec.DriveFileID); fid != "" && deletedFileIDs[fid] {
+					continue
+				}
+				if wfid := sanitizeDriveFileID(rec.DriveWorkspaceFileID); wfid != "" && deletedFileIDs[wfid] {
+					continue
+				}
+				saved = append(saved, rec.clone())
 			}
 		}
 	}
@@ -1171,6 +1448,22 @@ func (c *ColabOneController) mergeComfyOutputsForSnapshot(
 				continue
 			}
 			id := strings.ToLower(strings.TrimSpace(asString(m["id"])))
+			if id != "" && deletedIDs[id] {
+				seen[id] = true
+				continue
+			}
+			if fid := sanitizeDriveFileID(asString(m["drive_file_id"])); fid != "" && deletedFileIDs[fid] {
+				if id != "" {
+					seen[id] = true
+				}
+				continue
+			}
+			if wfid := sanitizeDriveFileID(asString(m["drive_workspace_file_id"])); wfid != "" && deletedFileIDs[wfid] {
+				if id != "" {
+					seen[id] = true
+				}
+				continue
+			}
 			if id != "" {
 				seen[id] = true
 			}
@@ -1255,6 +1548,7 @@ func (c *ColabOneController) driveClient() *http.Client {
 	defer c.mu.Unlock()
 	if c.driveHTTPClient == nil {
 		c.driveHTTPClient = &http.Client{
+			Transport:     outboundlog.WrapTransport(nil, c.outboundLogger, "drive_api", ""),
 			Timeout:       30 * time.Second,
 			CheckRedirect: refuseDriveRedirects,
 		}
@@ -1921,6 +2215,17 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 		if wfid := sanitizeDriveFileID(rec.DriveWorkspaceFileID); wfid != "" && deletedFileIDs[wfid] {
 			continue
 		}
+		if tomb := c.matchDriveOutputTombstoneLocked(acctKey, rec, true); tomb != nil {
+			// Backfill immutable Drive file IDs onto the tombstone so future syncs match
+			// directly by ID even if the file is renamed in Google Drive.
+			if fid := sanitizeDriveFileID(rec.DriveFileID); fid != "" && tomb.DriveFileID == "" {
+				tomb.DriveFileID = fid
+			}
+			if wfid := sanitizeDriveFileID(rec.DriveWorkspaceFileID); wfid != "" && tomb.DriveWorkspaceFileID == "" {
+				tomb.DriveWorkspaceFileID = wfid
+			}
+			continue
+		}
 		wfid := sanitizeDriveFileID(rec.DriveWorkspaceFileID)
 		if clearedWSIDs[id] || (wfid != "" && clearedWSFileIDs[wfid]) {
 			rec.DriveWorkspaceFileID = ""
@@ -1938,7 +2243,7 @@ func (c *ColabOneController) SyncDriveOutputs(ctx context.Context) (map[string]a
 	// colab_drivefs records that drive.file scope cannot list (unless deleted).
 	if prevBucket := c.driveOutputs[acctKey]; prevBucket != nil {
 		for id, prev := range prevBucket {
-			if prev == nil || deletedIDs[id] {
+			if prev == nil || deletedIDs[id] || c.matchDriveOutputTombstoneLocked(acctKey, prev, false) != nil {
 				continue
 			}
 			if addedIDs[id] {
@@ -2281,6 +2586,7 @@ func (c *ColabOneController) deleteDriveOutputOffline(ctx context.Context, ident
 	if rec == nil {
 		return nil, ErrNotFound
 	}
+	origRec := rec.clone()
 	hasValidDriveFileIDs := func(r *ColabOneDriveOutputRecord) bool {
 		return r != nil && (sanitizeDriveFileID(r.DriveFileID) != "" ||
 			sanitizeDriveFileID(r.DriveWorkspaceFileID) != "" ||
@@ -2288,7 +2594,7 @@ func (c *ColabOneController) deleteDriveOutputOffline(ctx context.Context, ident
 	}
 	finishLocalOnly := func(reason string) (map[string]any, error) {
 		msg := colabOneManualCloudDeleteWarning(reason)
-		c.removeDriveOutputRecord(cleanID)
+		c.deleteDriveOutputRecordPersistently(cleanID, rec)
 		c.evictLocalOutputCache(cleanID)
 		c.pruneOutputFromSnapshot(cleanID)
 		c.log(msg, "云盘", "warning")
@@ -2349,6 +2655,7 @@ func (c *ColabOneController) deleteDriveOutputOffline(ctx context.Context, ident
 		} else if asBool(syncRes["synced"]) {
 			rec = c.driveOutputRecordCopy(cleanID)
 			if rec == nil {
+				c.deleteDriveOutputRecordPersistently(cleanID, origRec)
 				c.evictLocalOutputCache(cleanID)
 				c.pruneOutputFromSnapshot(cleanID)
 				return map[string]any{"ok": true}, nil
@@ -2382,7 +2689,7 @@ func (c *ColabOneController) deleteDriveOutputOffline(ctx context.Context, ident
 		}
 		return finishLocalOnly(reason)
 	}
-	c.removeDriveOutputRecord(cleanID)
+	c.deleteDriveOutputRecordPersistently(cleanID, rec)
 	c.evictLocalOutputCache(cleanID)
 	c.pruneOutputFromSnapshot(cleanID)
 	if rec.DriveMode == "colab_drivefs" &&

@@ -1406,6 +1406,16 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 					}
 					return nil, err
 				}
+				var liveRec *ColabOneDriveOutputRecord
+				c.mu.Lock()
+				for _, rawItem := range asAnySlice(c.data["comfy_outputs"]) {
+					m := asMap(rawItem)
+					if strings.EqualFold(asString(m["id"]), identity) {
+						liveRec = driveOutputRecordFromMap(m)
+						break
+					}
+				}
+				c.mu.Unlock()
 				c.evictLocalOutputCache(identity)
 				c.pruneOutputFromSnapshot(identity)
 				keepExportedRecord := false
@@ -1450,7 +1460,7 @@ func (c *ColabOneController) dispatchCommand(ctx context.Context, action string,
 					}
 				}
 				if !keepExportedRecord {
-					c.removeDriveOutputRecord(identity)
+					c.deleteDriveOutputRecordPersistently(identity, liveRec)
 				} else {
 					c.clearDriveOutputWorkspaceLinks(identity)
 				}

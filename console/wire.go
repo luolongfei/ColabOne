@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -25,6 +26,7 @@ import (
 	"github.com/luolongfei/ColabOne/console/internal/location"
 	"github.com/luolongfei/ColabOne/console/internal/models"
 	"github.com/luolongfei/ColabOne/console/internal/oauthpage"
+	"github.com/luolongfei/ColabOne/console/internal/outboundlog"
 	"github.com/luolongfei/ColabOne/console/internal/provider"
 	"github.com/luolongfei/ColabOne/console/internal/publicapi"
 	"github.com/luolongfei/ColabOne/console/internal/servicebundle"
@@ -323,6 +325,15 @@ func validateColabOneServiceBundle(bundle *servicebundle.ColabOneServiceBundle) 
 // encrypted vault.enc file in configDir (with silent Windows Credential Manager
 // migration when running against the default production config directory).
 func newColabOneWiredController(root, configDir string, vaultStore *vault.ColabOneVault, background bool) *controller.ColabOneController {
+	return newColabOneWiredControllerWithOutboundLog(root, configDir, vaultStore, nil, background)
+}
+
+func newColabOneWiredControllerWithOutboundLog(
+	root, configDir string,
+	vaultStore *vault.ColabOneVault,
+	outboundLog *outboundlog.ColabOneOutboundLogger,
+	background bool,
+) *controller.ColabOneController {
 	if root == "" {
 		root = colabOneRootDir()
 	}
@@ -340,6 +351,15 @@ func newColabOneWiredController(root, configDir string, vaultStore *vault.ColabO
 		}
 	}
 
+	ownsOutboundLog := false
+	if outboundLog == nil {
+		outboundLog = outboundlog.NewColabOneOutboundLogger(
+			filepath.Join(activityDir, "logs", outboundlog.COLABONE_OUTBOUND_LOG_FILENAME),
+			outboundlog.COLABONE_OUTBOUND_LOG_MAX_BYTES,
+		)
+		ownsOutboundLog = true
+	}
+
 	bundle := servicebundle.ResolveBundle(root)
 	vAdapter := &wireVaultAdapter{v: vaultStore}
 	actLog := activity.NewColabOneActivityLog(
@@ -348,27 +368,67 @@ func newColabOneWiredController(root, configDir string, vaultStore *vault.ColabO
 		activity.DefaultMaxBytes,
 	)
 
+	authHTTPClient := &http.Client{
+		Transport: outboundlog.WrapTransport(nil, outboundLog, "oauth", ""),
+		Timeout:   20 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	authSvc := auth.NewColabOneAuth(
 		vAdapter,
+		auth.WithHTTPClient(authHTTPClient),
 		auth.WithOAuthPageRenderer(oauthpage.RenderColabOneOAuthPage),
 	)
 	if initialLocale := colabOneGetLocale(); initialLocale != "" {
 		authSvc.SetLocale(initialLocale)
 	}
 
-	contentsClient := colabclient.NewColabOneContentsClient(nil)
+	contentsTransport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          16,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+	contentsClient := colabclient.NewColabOneContentsClient(&http.Client{
+		Transport: outboundlog.WrapTransport(contentsTransport, outboundLog, "colab_contents", ""),
+	})
+
+	var provTransport http.RoundTripper
+	if def, ok := http.DefaultTransport.(*http.Transport); ok {
+		cloned := def.Clone()
+		cloned.ResponseHeaderTimeout = 30 * time.Second
+		provTransport = cloned
+	} else {
+		provTransport = http.DefaultTransport
+	}
+	provHTTPClient := &http.Client{
+		Transport: outboundlog.WrapTransport(provTransport, outboundLog, "provider", ""),
+	}
+
 	provAuth := &wireProviderAuthAdapter{a: authSvc}
 	provSvc := provider.NewColabOneProvider(provider.ColabOneProviderConfig{
-		Auth:    provAuth,
-		Vault:   vAdapter,
-		RootDir: root,
+		Auth:       provAuth,
+		Vault:      vAdapter,
+		RootDir:    root,
+		HTTPClient: provHTTPClient,
 		ClientFactory: func(assignProxy string) (provider.ColabClient, error) {
 			tokenFn := func(ctx context.Context) (string, error) {
 				return provAuth.AccessToken(ctx, "colab")
 			}
 			trimmed := strings.TrimSpace(assignProxy)
 			if trimmed == "" {
-				c := colabclient.NewColabOneColabClient(tokenFn)
+				directHTTP := &http.Client{
+					Transport: outboundlog.WrapTransport(nil, outboundLog, "colab", ""),
+					Timeout:   60 * time.Second,
+				}
+				c := colabclient.NewColabOneColabClient(tokenFn, colabclient.WithHTTPClient(directHTTP))
 				return &wireColabClientAdapter{c: c}, nil
 			}
 			spec, err := assignproxy.ParseAssignProxy(trimmed)
@@ -379,7 +439,12 @@ func newColabOneWiredController(root, configDir string, vaultStore *vault.ColabO
 			if err != nil {
 				return nil, err
 			}
-			httpClient := tr.NewClient(assignproxy.AssignProxyConnectTimeout + assignproxy.AssignProxyReadTimeout)
+			httpClient := outboundlog.WrapHTTPClient(
+				tr.NewClient(assignproxy.AssignProxyConnectTimeout+assignproxy.AssignProxyReadTimeout),
+				outboundLog,
+				"colab_assign_proxy",
+				spec.LogLabel,
+			)
 			c := colabclient.NewColabOneColabClient(tokenFn, colabclient.WithHTTPClient(httpClient))
 			return &wireColabClientAdapter{c: c, closer: tr}, nil
 		},
@@ -393,36 +458,60 @@ func newColabOneWiredController(root, configDir string, vaultStore *vault.ColabO
 				ShutdownOnWSTimeout: opts.ShutdownOnWSTimeout,
 				OnKernelStarted:     opts.OnKernelStarted,
 				OnSessionStarted:    opts.OnSessionStarted,
+				HTTPClient:          outboundlog.WrapHTTPClient(nil, outboundLog, "jupyter_ws", ""),
 			})
 			return &wireKernelAdapter{kc: kc}
 		},
 		DriveMounterFactory: func(client provider.ColabClient, endpoint string, opts provider.DriveMountOptions) provider.DriveMounter {
 			return newWireDriveMounterAdapter(client, endpoint, opts)
 		},
-		Bundler:            &wireProviderBundlerAdapter{b: bundle},
-		Location:           wireLocationAdapter{},
-		SafeMessage:        activity.SafeMessage,
+		Bundler:     &wireProviderBundlerAdapter{b: bundle},
+		Location:    wireLocationAdapter{},
+		SafeMessage: activity.SafeMessage,
+		OutboundRPCLog: func(ev provider.ColabOneOutboundRPCEvent) {
+			outboundLog.Record(outboundlog.ColabOneOutboundRecord{
+				Component:  "remote_rpc",
+				Protocol:   "rpc",
+				Method:     ev.Method,
+				Scheme:     "remote",
+				Host:       ev.Endpoint,
+				Path:       ev.Path,
+				StatusCode: ev.StatusCode,
+				OK:         ev.OK,
+				DurationMs: ev.Duration.Milliseconds(),
+				ReqBytes:   ev.ReqBytes,
+				Endpoint:   ev.Endpoint,
+				Detail:     ev.Detail,
+				Error:      ev.Error,
+			})
+		},
 		ParseAssignProxyFn: wireProviderParseAssignProxy,
 		FormatProxyErrorFn: assignproxy.FormatProxyError,
 	})
 
 	hubClient := hub.NewColabOneHubClient()
+	hubClient.HTTPClient = outboundlog.WrapHTTPClient(hubClient.HTTPClient, outboundLog, "huggingface", "")
+	modelsHTTPClient := *hubClient.HTTPClient
+	modelsHTTPClient.Timeout = 30 * time.Second
+
 	ctrl := controller.NewColabOneController(controller.ColabOneControllerConfig{
-		Root:           root,
-		ConfigDir:      configDir,
-		Background:     background,
-		Vault:          vAdapter,
-		Auth:           &wireControllerAuthAdapter{a: authSvc},
-		Provider:       &wireControllerProviderAdapter{p: provSvc},
-		Activity:       &wireActivityAdapter{log: actLog},
-		Hub:            &wireHubAdapter{h: hubClient},
-		Models:         wireModelsAdapter{},
-		Comfy:          wireComfyAdapter{},
-		PublicAPI:      wirePublicAPIAdapter{},
-		AssignProxy:    wireAssignProxyAdapter{},
-		Shortcuts:      wireShortcutsAdapter{},
-		ServiceBundler: &wireControllerBundlerAdapter{b: bundle},
-		Location:       wireLocationAdapter{},
+		Root:                root,
+		ConfigDir:           configDir,
+		Background:          background,
+		Vault:               vAdapter,
+		Auth:                &wireControllerAuthAdapter{a: authSvc},
+		Provider:            &wireControllerProviderAdapter{p: provSvc},
+		Activity:            &wireActivityAdapter{log: actLog},
+		Hub:                 &wireHubAdapter{h: hubClient},
+		Models:              wireModelsAdapter{httpClient: &modelsHTTPClient},
+		Comfy:               wireComfyAdapter{},
+		PublicAPI:           wirePublicAPIAdapter{},
+		AssignProxy:         wireAssignProxyAdapter{outboundLog: outboundLog},
+		Shortcuts:           wireShortcutsAdapter{},
+		ServiceBundler:      &wireControllerBundlerAdapter{b: bundle},
+		Location:            wireLocationAdapter{},
+		OutboundLogger:      outboundLog,
+		OutboundLoggerOwned: ownsOutboundLog,
 	})
 	return ctrl
 }
@@ -1310,7 +1399,9 @@ func (w *wireHubAdapter) ModelFiles(ctx context.Context, repo, token string) (ma
 	return structToMap(res)
 }
 
-type wireModelsAdapter struct{}
+type wireModelsAdapter struct {
+	httpClient *http.Client
+}
 
 func (wireModelsAdapter) ValidateModelSpec(raw map[string]any) (map[string]any, error) {
 	b, err := json.Marshal(raw)
@@ -1340,13 +1431,14 @@ func (wireModelsAdapter) ParseHFInput(repoOrURL, filename, revision string) (str
 	return models.ParseHFInput(repoOrURL, filename, revision)
 }
 
-func (wireModelsAdapter) ResolveImport(ctx context.Context, repo, filename, revision, token, customName string) (map[string]any, error) {
+func (a wireModelsAdapter) ResolveImport(ctx context.Context, repo, filename, revision, token, customName string) (map[string]any, error) {
 	spec, err := models.ResolveImport(ctx, models.ColabOneResolveImportOptions{
 		Repo:                repo,
 		Filename:            filename,
 		Revision:            revision,
 		Token:               token,
 		CustomName:          customName,
+		HTTPClient:          a.httpClient,
 		ExtractQuantization: hub.ExtractQuantization,
 		ClassifyModality:    hub.ClassifyModality,
 		IsAuxiliaryGGUF:     hub.IsAuxiliaryGGUF,
@@ -1497,7 +1589,9 @@ func (wirePublicAPIAdapter) ValidatePublicConfig(raw map[string]any) (map[string
 	return structToMap(cfg)
 }
 
-type wireAssignProxyAdapter struct{}
+type wireAssignProxyAdapter struct {
+	outboundLog *outboundlog.ColabOneOutboundLogger
+}
 
 func (wireAssignProxyAdapter) ParseAssignProxy(raw string) (*controller.ColabOneAssignProxySpec, error) {
 	spec, err := assignproxy.ParseAssignProxy(raw)
@@ -1525,8 +1619,29 @@ func (wireAssignProxyAdapter) ProxyLogLabel(raw string) string {
 	return assignproxy.ProxyLogLabel(raw)
 }
 
-func (wireAssignProxyAdapter) TestAssignProxy(ctx context.Context, raw string) (map[string]any, error) {
-	return assignproxy.TestAssignProxy(ctx, raw, assignproxy.DefaultProxyProbeURL, assignproxy.DefaultProxyTestTimeout)
+func (a wireAssignProxyAdapter) TestAssignProxy(ctx context.Context, raw string) (map[string]any, error) {
+	started := time.Now()
+	res, err := assignproxy.TestAssignProxy(ctx, raw, assignproxy.DefaultProxyProbeURL, assignproxy.DefaultProxyTestTimeout)
+	if a.outboundLog != nil {
+		rec := outboundlog.ColabOneOutboundRecord{
+			Component:  "assign_proxy_test",
+			Protocol:   "http",
+			Method:     http.MethodGet,
+			OK:         err == nil,
+			DurationMs: time.Since(started).Milliseconds(),
+			Proxy:      assignproxy.ProxyLogLabel(raw),
+		}
+		if res != nil {
+			if status, ok := res["status_code"].(int); ok {
+				rec.StatusCode = status
+			}
+		}
+		if err != nil {
+			rec.Error = err.Error()
+		}
+		a.outboundLog.RecordURL(rec, assignproxy.DefaultProxyProbeURL)
+	}
+	return res, err
 }
 
 type wireShortcutsAdapter struct{}

@@ -14,6 +14,7 @@ import (
 	"github.com/luolongfei/ColabOne/console/internal/fsutil"
 	"github.com/luolongfei/ColabOne/console/internal/live"
 	"github.com/luolongfei/ColabOne/console/internal/migration"
+	"github.com/luolongfei/ColabOne/console/internal/outboundlog"
 	"github.com/luolongfei/ColabOne/console/internal/updater"
 	"github.com/luolongfei/ColabOne/console/internal/vault"
 	"github.com/luolongfei/ColabOne/console/internal/webconsole"
@@ -80,7 +81,8 @@ type ColabOneDesktop struct {
 	splashFadeDropped     bool
 	mainVisibleBeforeQuit bool
 	startup               *colabOneStartupCoordinator
-	updater          *updater.ColabOneUpdater
+	outboundLog           *outboundlog.ColabOneOutboundLogger
+	updater               *updater.ColabOneUpdater
 	showMain         func()
 
 	closeBehaviorWriteMu sync.Mutex
@@ -1014,6 +1016,9 @@ func (d *ColabOneDesktop) handleWillQuit() {
 	if d.bridge != nil {
 		d.bridge.close()
 	}
+	if d.outboundLog != nil {
+		d.outboundLog.Close()
+	}
 }
 
 func main() {
@@ -1036,8 +1041,13 @@ func main() {
 	}
 	configDir := colabOneConfigDir()
 	sharedVault := vault.NewFileVaultWithLegacyMigration(configDir)
+	d.outboundLog = outboundlog.NewColabOneOutboundLogger(
+		filepath.Join(configDir, "logs", outboundlog.COLABONE_OUTBOUND_LOG_FILENAME),
+		outboundlog.COLABONE_OUTBOUND_LOG_MAX_BYTES,
+	)
 	d.bridge = &colabOneBridge{
 		vault:         sharedVault,
+		outboundLog:   d.outboundLog,
 		onFocusWindow: d.focusMainWindow,
 	}
 	d.initCloseBehavior(nil)

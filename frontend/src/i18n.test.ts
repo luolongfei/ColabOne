@@ -4536,6 +4536,14 @@ describe("Guest output share locale isolation and cold-load bootstrap", () => {
       "本次运行已消耗 12.55 CU，达到设定的 12.5 CU 自动释放上限，正在保存云盘并释放实例",
       "自动释放前远端收尾未完全成功，仍将继续释放实例以停止计费：timeout",
       "已按 CU 上限（12.5 CU）完成实例自动释放，本次累计消耗 12.55 CU",
+      "Google 云盘存储空间已满，请清理云盘空间后重试",
+      "Google 云盘接口触发限流，请稍后重试",
+      "Google 云盘目录权限不足或只读，请重新挂载云盘",
+      "Google 云盘挂载连接异常或已断开，请重新挂载后重试",
+      "清理 Google 云盘已删除项失败，请稍后重试",
+      "从 Google 云盘恢复历史数据失败：连接或传输超时，请稍后重试",
+      "Google 云盘同步失败：连接或传输超时，请稍后重试",
+      "清理 Google 云盘已删除项失败：rateLimitExceeded",
     ];
     for (const loc of ["en-US", "ko-KR"] as const) {
       setColabOneLocale(loc, { persist: false, syncNative: false });

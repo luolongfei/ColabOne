@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/luolongfei/ColabOne/console/internal/comfyui"
+	"github.com/luolongfei/ColabOne/console/internal/outboundlog"
 )
 
 type taskActivitySig struct {
@@ -148,6 +149,7 @@ type ColabOneController struct {
 
 	background                              bool
 	driveOutputs                            map[string]map[string]*ColabOneDriveOutputRecord
+	driveOutputsDeleted                     map[string]map[string]*ColabOneDriveOutputTombstone
 	driveOutputsSyncSem                     chan struct{}
 	driveOutputsSyncing                     bool
 	driveOutputsSyncAccountKey              string
@@ -163,6 +165,8 @@ type ColabOneController struct {
 	driveHTTPClient                *http.Client
 	driveHTTPClientOwned           bool
 	driveStreamHTTPClient          *http.Client
+	outboundLogger                 *outboundlog.ColabOneOutboundLogger
+	outboundLoggerOwned            bool
 
 	// Optional overrides for unit tests; zero values use production defaults.
 	workflowDraftsMaxCount         int
@@ -297,6 +301,7 @@ func NewColabOneController(cfg ColabOneControllerConfig) *ColabOneController {
 		externalObservations:   make(map[string]map[string]any),
 		background:                              cfg.Background,
 		driveOutputs:                            make(map[string]map[string]*ColabOneDriveOutputRecord),
+		driveOutputsDeleted:                     make(map[string]map[string]*ColabOneDriveOutputTombstone),
 		driveOutputsSyncSem:                     make(chan struct{}, 1),
 		driveOutputsSyncDeleted:                 make(map[string]map[string]bool),
 		driveOutputsSyncDeletedFileIDs:          make(map[string]map[string]bool),
@@ -306,11 +311,14 @@ func NewColabOneController(cfg ColabOneControllerConfig) *ColabOneController {
 		driveAPIBaseURL:                strings.TrimSpace(cfg.DriveAPIBaseURL),
 		driveHTTPClient:                cfg.DriveHTTPClient,
 		driveHTTPClientOwned:           cfg.DriveHTTPClient == nil,
+		outboundLogger:                 cfg.OutboundLogger,
+		outboundLoggerOwned:            cfg.OutboundLoggerOwned,
 		rootCtx:                        rootCtx,
 		cancelRoot:                     cancelRoot,
 	}
 	if c.driveHTTPClient == nil {
 		c.driveHTTPClient = &http.Client{
+			Transport:     outboundlog.WrapTransport(nil, c.outboundLogger, "drive_api", ""),
 			Timeout:       30 * time.Second,
 			CheckRedirect: refuseDriveRedirects,
 		}
@@ -410,6 +418,9 @@ func (c *ColabOneController) Close() {
 			closer.Close()
 		} else {
 			c.closeExternalObserver("", true)
+		}
+		if c.outboundLoggerOwned && c.outboundLogger != nil {
+			c.outboundLogger.Close()
 		}
 	})
 }
@@ -2974,20 +2985,28 @@ func (c *ColabOneController) SyncDrive(ctx context.Context) (map[string]any, err
 		return nil, errors.New("请先启动远端 GPU 实例")
 	}
 	c.log("正在将远端配置、工作流与作品同步至 Google 云盘", "云盘", "info")
-	raw, err := c.remoteLong(ctx, "POST", "drive/sync", nil, 180*time.Second)
+	raw, err := c.remoteLong(ctx, "POST", "drive/sync", nil, 300*time.Second)
 	if err != nil {
+		if isQuotaProjectError(err) && c.auth != nil {
+			c.auth.InvalidateDriveQuotaProject()
+		}
 		return nil, err
 	}
 	result := asMap(raw)
-	if err := c.RefreshRemote(ctx, ""); err != nil {
-		return nil, err
-	}
+	refreshErr := c.RefreshRemote(ctx, "")
 	if !asBool(result["ok"]) {
-		msg := asString(result["error"])
+		msg := strings.TrimSpace(asString(result["error"]))
 		if msg == "" {
 			msg = "Google 云盘同步未完成，请重试"
 		}
-		return nil, errors.New(msg)
+		syncErr := errors.New(msg)
+		if isQuotaProjectError(syncErr) && c.auth != nil {
+			c.auth.InvalidateDriveQuotaProject()
+		}
+		return nil, syncErr
+	}
+	if refreshErr != nil {
+		return nil, refreshErr
 	}
 	remoteFolder := strings.TrimSpace(asString(result["remote_folder"]))
 	if remoteFolder == "" {
