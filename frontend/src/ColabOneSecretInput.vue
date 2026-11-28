@@ -110,7 +110,6 @@ const toggleDisabled = computed(
   () =>
     privacyLocked.value ||
     loadingSaved.value ||
-    (!props.value && !showingSaved.value && !props.loadSaved) ||
     (props.disabled &&
       !(props.hasSaved && props.loadSaved) &&
       !props.value &&
