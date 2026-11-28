@@ -79,7 +79,10 @@ import {
 import ColabOnePrivacyText from "./ColabOnePrivacyText.vue";
 import ColabOneTooltip from "./ColabOneTooltip.vue";
 import { buildColabOnePrivacyContext } from "./colabOnePrivacy";
-import { formatOutputSize } from "./comfyui";
+import {
+  formatOutputSize,
+  normalizeColabOneWorkflowDisplayName,
+} from "./comfyui";
 import { t, tb } from "./i18n";
 import type { ColabOneSnapshot, WorkflowOutput } from "./types";
 
@@ -419,7 +422,11 @@ function onAutoDriveToggle(event: { target?: { checked?: boolean } }) {
             <strong class="co-drive-target-name">
               {{
                 targetOutput.workflow_name
-                  ? tb(targetOutput.workflow_name)
+                  ? tb(
+                      normalizeColabOneWorkflowDisplayName(
+                        targetOutput.workflow_name,
+                      ),
+                    )
                   : t("comfy.defaultWorkflowName")
               }}
             </strong>

@@ -2309,3 +2309,35 @@ func TestDriveOutputsPersistentDeleteTombstonesPreventResurrection(t *testing.T)
 		}
 	})
 }
+
+func TestNormalizeColabOneOutputWorkflowName(t *testing.T) {
+	if got := normalizeColabOneOutputWorkflowName("AI 模特换装棚拍（仅非商用）"); got != "AI 模特换装棚拍" {
+		t.Fatalf("expected legacy non-commercial suffix stripped, got %q", got)
+	}
+	if got := normalizeColabOneOutputWorkflowName("  AI 模特换装棚拍（仅非商用）  "); got != "AI 模特换装棚拍" {
+		t.Fatalf("expected padded legacy non-commercial suffix stripped, got %q", got)
+	}
+	if got := normalizeColabOneOutputWorkflowName("口播数字人"); got != "口播数字人" {
+		t.Fatalf("expected unrelated workflow name preserved, got %q", got)
+	}
+
+	rawOutputs := []any{
+		map[string]any{
+			"id":            "out-legacy",
+			"workflow_id":   "fashion-tryon-h3",
+			"workflow_name": "AI 模特换装棚拍（仅非商用）",
+		},
+		map[string]any{
+			"id":            "out-custom",
+			"workflow_id":   "custom-1",
+			"workflow_name": "自定义棚拍",
+		},
+	}
+	normalized := normalizeColabOneOutputsWorkflowNames(rawOutputs)
+	if got := asString(asMap(normalized[0])["workflow_name"]); got != "AI 模特换装棚拍" {
+		t.Fatalf("expected legacy output workflow_name normalized, got %q", got)
+	}
+	if got := asString(asMap(normalized[1])["workflow_name"]); got != "自定义棚拍" {
+		t.Fatalf("expected custom output workflow_name preserved, got %q", got)
+	}
+}

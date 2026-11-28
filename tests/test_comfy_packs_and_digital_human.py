@@ -1476,14 +1476,10 @@ def test_remote_tts_runner_all_four_engines_and_worker_script_ast(tmp_path):
         assert res["sample_rate"] == 48000
         assert isinstance(res["manifest"], dict)
 
-        # Non-commercial engines MUST log their license notice in task.logs.
+        # Non-commercial license notices are surfaced in Settings -> About rather
+        # than injected as runtime warning logs during synthesis.
         log_text = "\n".join(entry["message"] for entry in task.logs)
-        if not spec["commercial_ok"]:
-            assert (
-                "非商业" in log_text
-                or "非商用" in log_text
-                or spec["license_notice"][:10] in log_text
-            ), f"Expected non-commercial license notice in logs for {engine_id}, got: {log_text}"
+        assert "非商用许可提示" not in log_text
 
 
 # ---------------------------------------------------------------------------

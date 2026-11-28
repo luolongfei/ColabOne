@@ -559,13 +559,18 @@ test("web console browser mode runs over HTTP without window.mygo, hides host-on
   await expect(page.getByTestId("nav-web-mode-badge")).toBeVisible();
   await expect(page.getByTestId("nav-web-signout-btn")).toBeVisible();
 
-  // Settings page hides host-only sections & shows web mode notice
+  // Settings page hides host-only sections & shows web mode notice + dedicated About section
   await page.getByRole("button", { name: "设置" }).click();
   await expect(page.getByTestId("settings-web-mode-notice")).toBeVisible();
   await expect(page.getByTestId("settings-web-console-row")).toHaveCount(0);
   await expect(page.getByTestId("settings-migration-row")).toHaveCount(0);
   await expect(page.getByTestId("settings-close-behavior-row")).toHaveCount(0);
   await expect(page.getByTestId("settings-update-row")).toHaveCount(0);
+  await expect(page.locator("#settings-sec-desktop")).toHaveCount(0);
+  await expect(page.getByTestId("settings-about-section")).toBeVisible();
+  await expect(page.locator("#settings-sec-about")).toHaveText("关于");
+  await expect(page.getByTestId("settings-about-noncommercial-notice")).toContainText("非商业");
+  await expect(page.locator(".co-settings-section-label", { hasText: "帮助" })).toHaveCount(0);
 
   // Settings host secrets (HF Token + Assign Proxy) remain non-revealable in web mode,
   // while testing the saved Assign Proxy is allowed (saved-only, disabled when unsaved draft exists)

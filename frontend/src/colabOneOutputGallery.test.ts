@@ -460,4 +460,32 @@ describe("sortColabOneGalleryItems & resolveColabOneCoverItems", () => {
     ).toBe("album:bad_id_with_chars");
     expect(sanitizeColabOneShareGroupId("   ", 2)).toBe("group-3");
   });
+
+  it("normalizes legacy non-commercial fashion try-on workflow names on historical outputs", () => {
+    const groups = groupColabOneOutputs([
+      makeOutput({
+        id: "legacy-fashion-1",
+        task_id: "task-legacy-1",
+        workflow_id: "fashion-tryon-h3",
+        workflow_name: "AI 模特换装棚拍（仅非商用）",
+        filename: "colabone_fashion_pose_1_00001_.png",
+      }),
+      makeOutput({
+        id: "custom-1",
+        task_id: "task-custom-1",
+        workflow_id: "custom-wf",
+        workflow_name: "自定义人像工作流",
+        filename: "custom_00001_.png",
+      }),
+    ]);
+    expect(groups.find((g) => g.workflowId === "fashion-tryon-h3")?.title).toBe(
+      "AI 模特换装棚拍",
+    );
+    expect(
+      groups.find((g) => g.workflowId === "fashion-tryon-h3")?.workflowName,
+    ).toBe("AI 模特换装棚拍");
+    expect(groups.find((g) => g.workflowId === "custom-wf")?.title).toBe(
+      "自定义人像工作流",
+    );
+  });
 });

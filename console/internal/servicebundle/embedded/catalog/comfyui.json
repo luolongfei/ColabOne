@@ -7,8 +7,8 @@
   "tts_engines": [
     {
       "id": "fish_drama3",
-      "name": "Fish Audio Drama 3（35B MoE · 44.1kHz · 96G 旗舰 · 仅非商用）",
-      "description": "Fish Audio 新一代 35B MoE（3B 激活）旗舰语音大模型，开源听感天花板，44.1 kHz 广播级音质，支持长文稿上下文演绎、自然语言导演控制与内联情绪标签；仅限非商用研究使用。",
+      "name": "Fish Audio Drama 3（35B MoE · 44.1kHz · 96G 旗舰）",
+      "description": "Fish Audio 新一代 35B MoE（3B 激活）旗舰语音大模型，开源听感天花板，44.1 kHz 广播级音质，支持长文稿上下文演绎、自然语言导演控制与内联情绪标签。",
       "repo": "fishaudio/drama-3",
       "revision": "78e5ab79e49aa9a25abe8799eff2c4d73a1c3216",
       "aux_repo": "",
@@ -150,7 +150,7 @@
     {
       "id": "moss_tts_v1_5",
       "name": "MOSS-TTS v1.5（8B · 31 语种长文稿旗舰）",
-      "description": "OpenMOSS 开源 8B（Qwen3-8B 底座）工业级长篇语音大模型，31 语种高稳定克隆，原生支持 [pause X.Ys] 精确停顿与标点韵律控制，Apache-2.0 可商用。",
+      "description": "OpenMOSS 开源 8B（Qwen3-8B 底座）工业级长篇语音大模型，31 语种高稳定克隆，原生支持 [pause X.Ys] 精确停顿与标点韵律控制。",
       "repo": "OpenMOSS-Team/MOSS-TTS-v1.5",
       "revision": "cdd3b911b1585e3f2dbc7775ef10f9926f58850a",
       "aux_repo": "OpenMOSS-Team/MOSS-Audio-Tokenizer",
@@ -301,8 +301,8 @@
     },
     {
       "id": "breeze_tts2",
-      "name": "Breeze TTS 2（3B+ · 中英双语情绪导演 · 仅非商用）",
-      "description": "BreezeBlue 开源 3B+ 中英双语顶级表现力模型，支持文本捏声线、零样本克隆与克隆后自然语言语气调控（Voice Direction），支持中文 [笑]/[叹气]/[咳嗽] 副语言事件；权重仅限非商业研究。",
+      "name": "Breeze TTS 2（3B+ · 中英双语情绪导演）",
+      "description": "BreezeBlue 开源 3B+ 中英双语顶级表现力模型，支持文本捏声线、零样本克隆与克隆后自然语言语气调控（Voice Direction），支持中文 [笑]/[叹气]/[咳嗽] 副语言事件。",
       "repo": "BreezeBlue/Breeze-TTS-2",
       "revision": "3e28c5151381a722f1d8661b4118c298caa77aa4",
       "aux_repo": "",
@@ -599,8 +599,8 @@
     },
     {
       "id": "voxcpm2",
-      "name": "VoxCPM2（OpenBMB · 48kHz 商用推荐）",
-      "description": "面壁智能开源 48 kHz 高保真语音合成与零样本声音克隆引擎，支持文本捏声线与中英混读，Apache-2.0 可商用。",
+      "name": "VoxCPM2（OpenBMB · 48kHz）",
+      "description": "面壁智能开源 48 kHz 高保真语音合成与零样本声音克隆引擎，支持文本捏声线与中英混读。",
       "repo": "openbmb/VoxCPM2",
       "revision": "7936080b41163874f38610f46f438e2c0757f9fd",
       "aux_repo": "",
@@ -743,7 +743,7 @@
     {
       "id": "qwen3_tts",
       "name": "Qwen3-TTS 1.7B（官方 9 音色 + 捏声线 + 克隆）",
-      "description": "阿里通义开源 1.7B 语音大模型，支持官方 9 位原生 CustomVoice 说话人、零样本音色克隆与独立 VoiceDesign 文本捏声线，中英日韩多语种自然口播，Apache-2.0 可商用。",
+      "description": "阿里通义开源 1.7B 语音大模型，支持官方 9 位原生 CustomVoice 说话人、零样本音色克隆与独立 VoiceDesign 文本捏声线，中英日韩多语种自然口播。",
       "repo": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
       "revision": "fd4b254389122332181a7c3db7f27e918eec64e3",
       "aux_repo": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
@@ -984,8 +984,8 @@
     },
     {
       "id": "indextts2",
-      "name": "IndexTTS-2.5（情绪分离 + 拼音纠音 · 仅非商用）",
-      "description": "B站 IndexTeam 开源 2.5 代工业级零样本克隆引擎，相比 2.0 提速 2.28 倍并引入 GRPO 发音强化，支持独立情绪音频迁移、原生语速调控与 <字|PINYIN> 精准纠音；仅限非商业研究。",
+      "name": "IndexTTS-2.5（情绪分离 + 拼音纠音）",
+      "description": "B站 IndexTeam 开源 2.5 代工业级零样本克隆引擎，相比 2.0 提速 2.28 倍并引入 GRPO 发音强化，支持独立情绪音频迁移、原生语速调控与 <字|PINYIN> 精准纠音。",
       "repo": "IndexTeam/IndexTTS-2.5",
       "revision": "c39ce5ba981572cb187443877ff559dfb246ce63",
       "aux_repo": "",
@@ -1128,8 +1128,8 @@
     },
     {
       "id": "fish_s2_pro",
-      "name": "Fish Speech S2-Pro（情绪标签 · 仅非商用）",
-      "description": "支持情绪与副语言内联标签的高表现力 44.1 kHz 语音合成模型，适合拟人化表达；模型权重仅限个人学习与非商业研究。",
+      "name": "Fish Speech S2-Pro（情绪标签）",
+      "description": "支持情绪与副语言内联标签的高表现力 44.1 kHz 语音合成模型，适合拟人化表达。",
       "repo": "fishaudio/s2-pro",
       "revision": "1de9996b6be38b745688de084d87a5633f714e4e",
       "aux_repo": "",
@@ -1795,14 +1795,14 @@
             "pipeline.audio_source": "tts"
           },
           "option_labels": {
-            "fish_drama3": "Fish Audio Drama 3（35B MoE · 44.1kHz · 96G 旗舰 · 仅非商用）",
-            "moss_tts_v1_5": "MOSS-TTS v1.5（8B · 31 语种长文稿旗舰 · Apache-2.0）",
-            "breeze_tts2": "Breeze TTS 2（3B+ · 中英双语情绪导演 · 仅非商用）",
-            "ming_3_tts": "Ming-3.0-TTS Tiny（7.9B MoE · 44.1kHz · 方言与副语言 · MIT）",
-            "voxcpm2": "VoxCPM2（48kHz · 克隆/捏声线 · Apache-2.0 可商用）",
-            "qwen3_tts": "Qwen3-TTS 1.7B（官方 9 音色 + 捏声线 + 克隆 · Apache-2.0）",
-            "indextts2": "IndexTTS-2.5（情绪分离 + 拼音纠音 · 仅非商用）",
-            "fish_s2_pro": "Fish Speech S2-Pro（44.1kHz · 情绪内联标签 · 仅非商用）"
+            "fish_drama3": "Fish Audio Drama 3（35B MoE · 44.1kHz · 96G 旗舰）",
+            "moss_tts_v1_5": "MOSS-TTS v1.5（8B · 31 语种长文稿旗舰）",
+            "breeze_tts2": "Breeze TTS 2（3B+ · 中英双语情绪导演）",
+            "ming_3_tts": "Ming-3.0-TTS Tiny（7.9B MoE · 44.1kHz · 方言与副语言）",
+            "voxcpm2": "VoxCPM2（48kHz · 克隆/捏声线）",
+            "qwen3_tts": "Qwen3-TTS 1.7B（官方 9 音色 + 捏声线 + 克隆）",
+            "indextts2": "IndexTTS-2.5（情绪分离 + 拼音纠音）",
+            "fish_s2_pro": "Fish Speech S2-Pro（44.1kHz · 情绪内联标签）"
           }
         },
         {
@@ -2108,7 +2108,7 @@
     {
       "id": "digital-human-longcat",
       "name": "口播数字人 · 96GB 电影级旗舰版",
-      "description": "基于远端原生 LongCat-Video-Avatar 1.6（纯 BF16 · 原生 720p · 13 帧连续续写）与全画幅时空扩散超分（SeedVR2 7B / FlashVSR+），专注大量半身手势遮挡无穿模、精准口型同步与清晰牙齿质感；本集成方案及模型仅限个人学习、研究与非商用演示，严禁商用。",
+      "description": "基于远端原生 LongCat-Video-Avatar 1.6（纯 BF16 · 原生 720p · 13 帧连续续写）与全画幅时空扩散超分（SeedVR2 7B / FlashVSR+），专注大量半身手势遮挡无穿模、精准口型同步与清晰牙齿质感。",
       "source": "builtin",
       "min_vram_mib": 49152,
       "min_disk_mib": 79872,
@@ -2257,14 +2257,14 @@
             "pipeline.audio_source": "tts"
           },
           "option_labels": {
-            "fish_drama3": "Fish Audio Drama 3（35B MoE · 44.1kHz · 96G 旗舰 · 仅非商用）",
-            "moss_tts_v1_5": "MOSS-TTS v1.5（8B · 31 语种长文稿旗舰 · Apache-2.0）",
-            "breeze_tts2": "Breeze TTS 2（3B+ · 中英双语情绪导演 · 仅非商用）",
-            "ming_3_tts": "Ming-3.0-TTS Tiny（7.9B MoE · 44.1kHz · 方言与副语言 · MIT）",
-            "voxcpm2": "VoxCPM2（48kHz · 克隆/捏声线 · Apache-2.0 可商用）",
-            "qwen3_tts": "Qwen3-TTS 1.7B（官方 9 音色 + 捏声线 + 克隆 · Apache-2.0）",
-            "indextts2": "IndexTTS-2.5（情绪分离 + 拼音纠音 · 仅非商用）",
-            "fish_s2_pro": "Fish Speech S2-Pro（44.1kHz · 情绪内联标签 · 仅非商用）"
+            "fish_drama3": "Fish Audio Drama 3（35B MoE · 44.1kHz · 96G 旗舰）",
+            "moss_tts_v1_5": "MOSS-TTS v1.5（8B · 31 语种长文稿旗舰）",
+            "breeze_tts2": "Breeze TTS 2（3B+ · 中英双语情绪导演）",
+            "ming_3_tts": "Ming-3.0-TTS Tiny（7.9B MoE · 44.1kHz · 方言与副语言）",
+            "voxcpm2": "VoxCPM2（48kHz · 克隆/捏声线）",
+            "qwen3_tts": "Qwen3-TTS 1.7B（官方 9 音色 + 捏声线 + 克隆）",
+            "indextts2": "IndexTTS-2.5（情绪分离 + 拼音纠音）",
+            "fish_s2_pro": "Fish Speech S2-Pro（44.1kHz · 情绪内联标签）"
           }
         },
         {
@@ -2779,8 +2779,8 @@
     },
     {
       "id": "fashion-tryon-h3",
-      "name": "AI 模特换装棚拍（仅非商用）",
-      "description": "上传模特照片与服装图片，自动使用 Bria RMBG 3.0 软透明抠衣去杂物，再由 MiniMax-H3-Image（16 图参考 · 原生高清）一键生成同一模特、同一服装细节、统一室内浅灰自然光棚拍的 6 张多姿态高清成片；80G/96G 自动满血 BF16，24G 自动切 INT8；仅限个人兴趣与非商用研究。",
+      "name": "AI 模特换装棚拍",
+      "description": "上传模特照片与服装图片，自动使用 Bria RMBG 3.0 软透明抠衣去杂物，再由 MiniMax-H3-Image（16 图参考 · 原生高清）一键生成同一模特、同一服装细节、统一室内浅灰自然光棚拍的 6 张多姿态高清成片；80G/96G 自动满血 BF16，24G 自动切 INT8。",
       "source": "builtin",
       "min_vram_mib": 22528,
       "min_disk_mib": 53248,

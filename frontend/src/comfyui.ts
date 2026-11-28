@@ -1498,6 +1498,8 @@ export function formatColabOneVramGiB(mib: number): string {
   return formatColabOneMiBAsGiB(mib);
 }
 
+export { normalizeColabOneWorkflowDisplayName } from "./colabOneOutputGallery";
+
 export function formatColabOneDiskGiB(mib: number): string {
   return formatColabOneMiBAsGiB(mib);
 }

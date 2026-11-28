@@ -1498,9 +1498,6 @@ export const koKRMessages: ColabOneMessages = {
   "comfy.errUnsupportedAudioFormat": "지원하지 않는 오디오 형식입니다. WAV / MP3 / FLAC / OGG / M4A 파일을 선택해 주세요.",
   "comfy.errIncompleteTransfer": "결과물 전송이 완료되지 않았습니다. 다시 시도해 주세요",
   "comfy.errOutputChecksum": "결과물 무결성 검증에 실패했습니다. 다시 시도해 주세요",
-  "comfy.licenseCommercialOk": "상업적 이용 가능",
-  "comfy.licenseNonCommercial": "비상업 / 연구 전용",
-  "comfy.licenseNoticeTitle": "모델 라이선스 안내",
   "comfy.recommendedGpu": "권장 {gpu}",
   "comfy.modelDepsTag": "가중치 {count}개 · {size}",
   "comfy.packNodesTag": "노드 팩 {count}개",
@@ -1517,8 +1514,6 @@ export const koKRMessages: ColabOneMessages = {
   "comfy.downloadProgressMeta": "{done} / {total} · {speed}",
   "comfy.requiredFieldHint": "필수 항목을 먼저 입력하거나 업로드해 주세요: {label}",
   "comfy.pipelineDigitalHumanTag": "장시간 영상 디지털 휴먼",
-  "comfy.ttsNonCommercialAlert":
-    "선택한 TTS 엔진 '{name}'은(는) 비상업/연구 전용 라이선스가 적용됩니다: {notice}",
   "comfy.openOutputsBtn": "출력 결과",
   "comfy.configureAndRun": "파라미터 설정",
   "comfy.paramDrawerAria": "워크플로 파라미터 설정 서랍",
@@ -1672,10 +1667,6 @@ export const koKRMessages: ColabOneMessages = {
   "comfy.fashionPosePreset_pose_30": "키즈 경쾌한 폴짝 스냅",
   "comfy.specsDetailTitle": "하드웨어 및 종속성 사양",
   "comfy.viewOutputsShort": "결과 보기",
-  "comfy.workflowNonCommercialAlert":
-    "선택한 워크플로 '{name}'은(는) 비상업/연구 전용 라이선스가 적용됩니다: {notice}",
-  "comfy.combinedNonCommercialAlert":
-    "현재 구성({names})에 비상업/연구 라이선스 구성 요소가 포함되어 있습니다: {notices}",
   "comfy.preflightVramInsufficient":
     "GPU VRAM이 부족합니다(필요 {required} GB, 현재 {available} GB). 권장 GPU({gpu})로 전환하세요.",
   "comfy.preflightVramInsufficientShare":
@@ -1738,9 +1729,6 @@ export const koKRMessages: ColabOneMessages = {
   "comfy.ttsCapabilityCustomSpeakers": "공식 기본 화자",
   "comfy.ttsMinVram": "VRAM ≥ {vram}",
   "comfy.ttsMinDisk": "디스크 ≥ {disk}",
-  "comfy.ttsNonCommercialSuiteTitle": "내장 플래그십 TTS 엔진 비상업적 이용 안내",
-  "comfy.ttsNonCommercialSuiteDesc":
-    "이 디지털 휴먼 더빙 스위트에는 2026년 최신 오픈소스 및 오픈 가중치 음성 모델(Fish Audio Drama 3 35B MoE, Breeze TTS 2, IndexTTS-2.5 등 연구 및 커뮤니티 라이선스 모델 포함)이 통합되어 있습니다. 개인 학습, 품질 체험 및 비상업적 연구 용도로만 사용해야 하며, 상업적 목적이나 외부 호스팅 TTS 서비스로 직접 사용하지 마세요.",
   "comfy.voiceGroupFemale": "엄선 여성 음색 (범용)",
   "comfy.voiceGroupMale": "엄선 남성 음색 (범용)",
   "comfy.voiceGroupNeutral": "내장 중성 보이스",
@@ -1791,7 +1779,7 @@ export const koKRMessages: ColabOneMessages = {
   "comfy.videoEngineInfiniteTalkTitle": "장편 영상",
   "comfy.videoEngineInfiniteTalkSummary": "수 분 이상 연속 발화에 안정적이고 빠름",
   "comfy.videoEngineLongCatTitle": "플래그십 HD",
-  "comfy.videoEngineLongCatSummary": "LongCat 1.6 네이티브 720p + SeedVR2 7B / FlashVSR+ 업스케일 (비상업 전용)",
+  "comfy.videoEngineLongCatSummary": "LongCat 1.6 네이티브 720p + SeedVR2 7B / FlashVSR+ 업스케일",
   "comfy.qualityPresetCinema": "시네마 플래그십",
   "comfy.qualityPresetBalanced": "고화질 밸런스",
   "comfy.qualityPresetLongform": "장편 안정",
@@ -1813,7 +1801,8 @@ export const koKRMessages: ColabOneMessages = {
   "settings.sectionAccount": "계정 및 자격 증명",
   "settings.sectionCompute": "컴퓨팅 및 네트워크",
   "settings.sectionAppearance": "화면 및 언어",
-  "settings.sectionDesktop": "데스크톱 및 정보",
+  "settings.sectionDesktop": "데스크톱",
+  "settings.sectionAbout": "정보",
   "settings.downloadThreadsDesc": "원격으로 모델 가중치를 다운로드할 때 사용하는 병렬 연결 수입니다.",
   "settings.assignProxyConfigureBtn": "설정",
   "settings.assignProxyEditBtn": "편집",
@@ -1950,9 +1939,12 @@ export const koKRMessages: ColabOneMessages = {
   "settings.toastShortcutBoth": "시작 메뉴와 바탕 화면에 추가했습니다",
   "settings.toastShortcutStartMenu":
     "시작 메뉴에 추가했습니다. 실행 후 작업 표시줄 아이콘을 우클릭해 고정할 수 있습니다",
-  "settings.aboutTitle": "정보 및 오픈소스 라이선스",
+  "settings.aboutTitle": "ColabOne 및 오픈소스 라이선스",
   "settings.aboutDesc":
     "ColabOne · 원격 GGUF 외부 API & ComfyUI 워크플로 · 자격 증명은 로컬 암호화 보관함에 보관",
+  "settings.aboutNonCommercialTitle": "모델 및 구성 요소 라이선스 안내",
+  "settings.aboutNonCommercialDesc":
+    "이 소프트웨어에 통합된 일부 서드파티 AI 모델, 음성 엔진 및 워크플로 구성 요소(일부 디지털 휴먼, 음성 합성, 가상 피팅 및 라이브 스튜디오 관련 모델 가중치 포함)는 각 업스트림 라이선스 조건에 따라 개인 학습, 체험 및 비상업적 연구 용도로만 제한됩니다. 상업적 이용이나 외부 상용 서비스 제공 시에는 사전에 해당 모델 및 구성 요소의 업스트림 라이선스를 확인하고 원권리자로부터 정식 상업 라이선스를 취득하시기 바랍니다.",
 
   // Logs Drawer & Standalone Window
   "logs.windowTitle": "실행 로그 · ColabOne",
@@ -2106,7 +2098,7 @@ export const koKRMessages: ColabOneMessages = {
   "close.activeOpWarning":
     "현재 진행 중인 로컬 작업(GPU 시작/해제 또는 클라이언트 업데이트 등)이 있습니다. 바로 종료하면 로컬 진행이 중단되며, 백그라운드 실행을 선택하면 계속 유지됩니다.",
   "close.rememberLabel": "선택 기억하기 (다음부터 묻지 않기)",
-  "close.rememberHint": "'설정 / 데스크톱 및 정보'에서 언제든지 변경할 수 있습니다.",
+  "close.rememberHint": "'설정 / 데스크톱'에서 언제든지 변경할 수 있습니다.",
   "close.confirmQuitBtn": "바로 종료",
   "close.confirmBackgroundBtn": "백그라운드 실행",
 
@@ -2397,9 +2389,6 @@ export const koKRMessages: ColabOneMessages = {
 
   // Live Studio (Real-time Interactive Digital Human)
   "live.sectionAria": "라이브 스튜디오",
-  "live.researchBadge": "실험적 · 연구 비영리",
-  "live.researchTooltip":
-    "라이브 스튜디오는 SoulX-FlashHead, MuseTalk 1.5, PersonaLive 등 오픈소스 디지털 휴먼 엔진을 통합합니다. 일부 모델 가중치는 연구 및 비상업적 용도로 제한되므로 각 라이선스를 준수해 주세요.",
   "live.stateIdle": "대기",
   "live.stateListening": "듣는 중",
   "live.stateThinking": "생각 중",

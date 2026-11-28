@@ -54,7 +54,7 @@
     {
       "id": "qwen3_tts",
       "name": "Qwen3-TTS 1.7B 流式语音",
-      "description": "阿里通义开源 1.7B 实时流式语音合成引擎，首包延迟约 90ms，支持预设音色与零样本克隆，Apache-2.0 可商用。",
+      "description": "阿里通义开源 1.7B 实时流式语音合成引擎，首包延迟约 90ms，支持预设音色与零样本克隆。",
       "repo": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
       "revision": "fd4b254389122332181a7c3db7f27e918eec64e3",
       "aux_repo": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
@@ -80,7 +80,7 @@
     {
       "id": "voxcpm2",
       "name": "VoxCPM2 流式语音",
-      "description": "面壁智能开源高保真流式语音合成引擎，首包延迟约 170ms，原生 48kHz 实时重采样输出 24kHz PCM，Apache-2.0 可商用。",
+      "description": "面壁智能开源高保真流式语音合成引擎，首包延迟约 170ms，原生 48kHz 实时重采样输出 24kHz PCM。",
       "repo": "openbmb/VoxCPM2",
       "revision": "7936080b41163874f38610f46f438e2c0757f9fd",
       "aux_repo": "",

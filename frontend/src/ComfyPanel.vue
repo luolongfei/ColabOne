@@ -167,7 +167,6 @@ import {
   getColabOneFashionRolesFieldKey,
   getColabOneFashionSlotKeys,
   guessColabOneFashionPhotoRole,
-  hasNonCommercialNotice,
   isColabOneBuiltinDigitalHumanWorkflow,
   isColabOneFashionCustomPosesEmpty,
   isColabOneVoicePresetSupportedByEngine,
@@ -175,6 +174,7 @@ import {
   isColabOneVoiceRefTextRequired,
   isWorkflowFieldVisible,
   missingRequiredWorkflowFields,
+  normalizeColabOneWorkflowDisplayName,
   outputBlobURL,
   parseColabOneFashionPhotoMeta,
   parseWorkflowImportJSON,
@@ -1888,62 +1888,6 @@ const voiceRefRequired = computed(() =>
 const showTtsEngineStrip = computed(
   () => isTtsAudioSource.value && !!selectedTtsEngine.value,
 );
-const nonCommercialNotice = computed(() =>
-  hasNonCommercialNotice(selectedWorkflow.value, selectedTtsEngine.value),
-);
-const nonCommercialAlertDescription = computed(() => {
-  const notice = nonCommercialNotice.value;
-  if (!notice) return "";
-  const items = notice.items || [];
-  if (notice.restrictedBy === "workflow" && items.length >= 1) {
-    const item = items[0];
-    return t("comfy.workflowNonCommercialAlert", {
-      name: tb(item.name),
-      notice: item.notice
-        ? tb(item.notice)
-        : item.license
-          ? tb(item.license)
-          : t("comfy.licenseNonCommercial"),
-    });
-  }
-  if (notice.restrictedBy === "tts" && items.length >= 1) {
-    const item = items[0];
-    return t("comfy.ttsNonCommercialAlert", {
-      name: tb(item.name),
-      notice: item.notice
-        ? tb(item.notice)
-        : item.license
-          ? tb(item.license)
-          : t("comfy.licenseNonCommercial"),
-    });
-  }
-  if (notice.restrictedBy === "both" && items.length >= 2) {
-    const names = items.map((item) => tb(item.name)).join(" + ");
-    const colon = colabOneLocaleCode.value.startsWith("zh-") ? "：" : ": ";
-    const attributed = Array.from(
-      new Set(
-        items.map((item) => {
-          const body = item.notice
-            ? tb(item.notice)
-            : item.license
-              ? tb(item.license)
-              : t("comfy.licenseNonCommercial");
-          return `${tb(item.name)}${colon}${body}`;
-        }),
-      ),
-    );
-    const notices = `\n${attributed.join("\n")}`;
-    return t("comfy.combinedNonCommercialAlert", { names, notices });
-  }
-  return t("comfy.ttsNonCommercialAlert", {
-    name: tb(notice.sourceName),
-    notice: notice.notice
-      ? tb(notice.notice)
-      : notice.license
-        ? tb(notice.license)
-        : t("comfy.licenseNonCommercial"),
-  });
-});
 
 interface WorkflowPreflightItem {
   tone: "warning" | "ready" | "info";
@@ -2134,8 +2078,7 @@ const hasWorkflowSpecs = computed(() => {
       (wf.min_disk_mib || 0) > 0 ||
       wf.recommended_gpu ||
       wf.models?.length ||
-      wf.custom_nodes?.length ||
-      wf.license,
+      wf.custom_nodes?.length,
   );
 });
 
@@ -2336,53 +2279,6 @@ const runningWorkflowName = computed(() => {
   return rawName ? tb(rawName) : t("comfy.defaultWorkflowName");
 });
 
-const NON_COMMERCIAL_LICENSE_RE =
-  /非商用|非商业|非商業|non-?commercial|비상업/i;
-
-function isWorkflowNonCommercial(wf: WorkflowTemplate): boolean {
-  return Boolean(hasNonCommercialNotice(wf, undefined));
-}
-
-function workflowNonCommercialTooltip(wf: WorkflowTemplate): string {
-  if (wf.license_notice) {
-    return tb(wf.license_notice);
-  }
-  const notice = hasNonCommercialNotice(wf, undefined);
-  if (notice?.notice) {
-    return tb(notice.notice);
-  }
-  return t("comfy.licenseNonCommercial");
-}
-
-function dedupeLicenseTokens(rawLicenses: string[]): string {
-  const seen = new Set<string>();
-  const tokens: string[] = [];
-  for (const raw of rawLicenses) {
-    for (const part of raw.split(/\s*\/\s*/)) {
-      const trimmed = part.trim();
-      if (!trimmed) continue;
-      const key = trimmed.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      tokens.push(trimmed);
-    }
-  }
-  return tokens.join(" / ");
-}
-
-function formatWorkflowLicenseTag(wf: WorkflowTemplate): string {
-  if (!wf.license) return "";
-  const translated = dedupeLicenseTokens([tb(wf.license)]);
-  if (!translated) return "";
-  if (
-    isWorkflowNonCommercial(wf) &&
-    !NON_COMMERCIAL_LICENSE_RE.test(translated)
-  ) {
-    return `${translated} · ${t("comfy.licenseNonCommercial")}`;
-  }
-  return translated;
-}
-
 function formatWorkflowCardSpecs(wf: WorkflowTemplate): string {
   const parts: string[] = [];
   if (
@@ -2401,12 +2297,6 @@ function formatWorkflowCardSpecs(wf: WorkflowTemplate): string {
       parts.push(
         `~${Math.max(1, Math.round((wf.min_disk_mib || 0) / 1024))} GB`,
       );
-    }
-    if (wf.license) {
-      const licenseText = dedupeLicenseTokens([tb(wf.license)]);
-      if (licenseText) {
-        parts.push(licenseText);
-      }
     }
   }
   if (parts.length === 0) {
@@ -2434,18 +2324,6 @@ function formatStudioEntrySpecs(entry: ColabOneStudioWorkflowEntry): string {
   parts.push(
     t("comfy.digitalHumanEngineCountSpec", { count: entry.workflows.length }),
   );
-  if (entry.workflows.every((w) => !isWorkflowNonCommercial(w))) {
-    parts.push(t("comfy.licenseCommercialOk"));
-  } else {
-    const licenseSummary = dedupeLicenseTokens(
-      entry.workflows
-        .map((w) => (w.license ? tb(w.license) : ""))
-        .filter(Boolean),
-    );
-    if (licenseSummary) {
-      parts.push(licenseSummary);
-    }
-  }
   return parts.join(" · ");
 }
 
@@ -10426,23 +10304,6 @@ defineExpose({
                 <span class="co-comfy-wf-spec-text">
                   {{ formatStudioEntrySpecs(entry) }}
                 </span>
-                <ColabOneTooltip
-                  v-if="entry.workflows.some((w) => isWorkflowNonCommercial(w))"
-                  :title="
-                    entry.workflows
-                      .filter((w) => isWorkflowNonCommercial(w))
-                      .map((w) => workflowNonCommercialTooltip(w))
-                      .join(' ') || t('comfy.licenseNonCommercial')
-                  "
-                >
-                  <ATag
-                    color="orange"
-                    :bordered="false"
-                    class="co-comfy-noncommercial-pill"
-                  >
-                    {{ t("comfy.licenseNonCommercial") }}
-                  </ATag>
-                </ColabOneTooltip>
               </div>
               <span class="co-comfy-wf-cta" aria-hidden="true">
                 <PhSlidersHorizontal :size="14" />
@@ -10772,25 +10633,6 @@ defineExpose({
                       <span class="co-comfy-wf-spec-text">
                         {{ formatStudioEntrySpecs(entry) }}
                       </span>
-                      <ColabOneTooltip
-                        v-if="
-                          entry.workflows.some((w) => isWorkflowNonCommercial(w))
-                        "
-                        :title="
-                          entry.workflows
-                            .filter((w) => isWorkflowNonCommercial(w))
-                            .map((w) => workflowNonCommercialTooltip(w))
-                            .join(' ') || t('comfy.licenseNonCommercial')
-                        "
-                      >
-                        <ATag
-                          color="orange"
-                          :bordered="false"
-                          class="co-comfy-noncommercial-pill"
-                        >
-                          {{ t("comfy.licenseNonCommercial") }}
-                        </ATag>
-                      </ColabOneTooltip>
                     </div>
                     <span class="co-comfy-wf-cta" aria-hidden="true">
                       <PhSlidersHorizontal :size="14" />
@@ -11840,65 +11682,12 @@ defineExpose({
                         })
                       }}
                     </ATag>
-                    <ColabOneTooltip
-                      v-if="selectedWorkflow.license"
-                      :title="
-                        isWorkflowNonCommercial(selectedWorkflow)
-                          ? workflowNonCommercialTooltip(selectedWorkflow)
-                          : selectedWorkflow.license_notice
-                            ? tb(selectedWorkflow.license_notice)
-                            : t('comfy.licenseCommercialOk')
-                      "
-                    >
-                      <ATag
-                        :color="
-                          isWorkflowNonCommercial(selectedWorkflow)
-                            ? 'orange'
-                            : 'green'
-                        "
-                        class="co-comfy-meta-tag"
-                      >
-                        {{ formatWorkflowLicenseTag(selectedWorkflow) }}
-                      </ATag>
-                    </ColabOneTooltip>
                   </div>
                 </div>
               </div>
             </div>
           </template>
         </form>
-
-        <!-- Always-Visible Non-Commercial License & TTS Suite Disclaimer Banner -->
-        <AAlert
-          v-if="isTtsAudioSource"
-          type="warning"
-          show-icon
-          class="co-comfy-license-alert co-comfy-tts-suite-alert"
-          :message="
-            nonCommercialNotice &&
-            (nonCommercialNotice.restrictedBy === 'workflow' ||
-              nonCommercialNotice.restrictedBy === 'both')
-              ? t('comfy.licenseNoticeTitle')
-              : t('comfy.ttsNonCommercialSuiteTitle')
-          "
-        >
-          <template #description>
-            <p v-if="nonCommercialNotice" class="co-comfy-license-alert-line">
-              {{ nonCommercialAlertDescription }}
-            </p>
-            <p class="co-comfy-license-alert-line">
-              {{ t("comfy.ttsNonCommercialSuiteDesc") }}
-            </p>
-          </template>
-        </AAlert>
-        <AAlert
-          v-else-if="nonCommercialNotice"
-          type="warning"
-          show-icon
-          class="co-comfy-license-alert"
-          :message="t('comfy.licenseNoticeTitle')"
-          :description="nonCommercialAlertDescription"
-        />
       </div>
 
       <template #footer>
@@ -13157,7 +12946,11 @@ defineExpose({
                 :aria-label="
                   outputMultiSelectMode
                     ? item.workflow_name
-                      ? tb(item.workflow_name)
+                      ? tb(
+                          normalizeColabOneWorkflowDisplayName(
+                            item.workflow_name,
+                          ),
+                        )
                       : item.filename
                     : item.kind === 'image' &&
                         Boolean(getOutputPreviewSrc(item))
@@ -13417,13 +13210,21 @@ defineExpose({
                   <ColabOneTooltip
                     :title="
                       item.workflow_name
-                        ? tb(item.workflow_name)
+                        ? tb(
+                            normalizeColabOneWorkflowDisplayName(
+                              item.workflow_name,
+                            ),
+                          )
                         : t('comfy.defaultWorkflowName')
                     "
                   >
                     <strong>{{
                       item.workflow_name
-                        ? tb(item.workflow_name)
+                        ? tb(
+                            normalizeColabOneWorkflowDisplayName(
+                              item.workflow_name,
+                            ),
+                          )
                         : t("comfy.defaultWorkflowName")
                     }}</strong>
                   </ColabOneTooltip>
@@ -14695,13 +14496,6 @@ defineExpose({
   overflow-wrap: anywhere;
 }
 
-.co-comfy-noncommercial-pill {
-  font-size: 11px;
-  line-height: 17px;
-  min-height: 19px;
-  padding: 0 7px;
-}
-
 .co-comfy-wf-cta {
   display: inline-flex;
   align-items: center;
@@ -15339,25 +15133,6 @@ defineExpose({
 
 .co-comfy-form-divider {
   margin: 16px 0 14px;
-}
-
-.co-comfy-license-alert {
-  border-radius: 10px;
-}
-
-.co-comfy-license-alert :deep(.ant-alert-description) {
-  white-space: pre-line;
-}
-
-.co-comfy-license-alert-line {
-  margin: 0;
-  font-size: 12.5px;
-  line-height: 1.5;
-  white-space: pre-line;
-}
-
-.co-comfy-license-alert-line + .co-comfy-license-alert-line {
-  margin-top: 6px;
 }
 
 .co-comfy-param-drawer-footer-shell {

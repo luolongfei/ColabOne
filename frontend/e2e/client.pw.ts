@@ -2804,7 +2804,7 @@ test("ComfyUI Studio validates and imports API workflow offline, rejects canvas 
   await expect(outputsDrawer).toBeHidden();
 });
 
-test("ComfyUI built-in digital human unified entry shows beginner essentials first, auto-selects InfiniteTalk on T4, and displays non-commercial TTS license notice", async ({
+test("ComfyUI built-in digital human unified entry shows beginner essentials first, auto-selects InfiniteTalk on T4, and omits non-commercial badges and banners", async ({
   page,
 }) => {
   const comfyCatalog = JSON.parse(
@@ -2899,32 +2899,24 @@ test("ComfyUI built-in digital human unified entry shows beginner essentials fir
     paramDrawer.locator("#comfy-field-pipeline_max_segment_seconds"),
   ).toBeHidden();
 
-  // Default InfiniteTalk TTS engine (MOSS-TTS v1.5, Apache-2.0) shows commercial badge and only the suite disclaimer
-  // (no active-model non-commercial warning line); switching to Fish Speech S2-Pro adds the active-model warning line.
-  await expect(paramDrawer.locator(".co-comfy-tts-strip")).toContainText(
-    "可商用开源",
-  );
-  const licenseAlert = paramDrawer.locator(".co-comfy-license-alert");
-  await expect(licenseAlert).toBeVisible();
-  await expect(licenseAlert.locator(".co-comfy-license-alert-line")).toHaveCount(
-    1,
-  );
-  await expect(licenseAlert).not.toContainText("MOSS-TTS v1.5");
+  // TTS strip stays clean without commercial/non-commercial badges or disclaimer banners.
+  const ttsStrip = paramDrawer.locator(".co-comfy-tts-strip");
+  await expect(ttsStrip).toContainText("MOSS-TTS v1.5");
+  await expect(ttsStrip).not.toContainText("可商用开源");
+  await expect(ttsStrip).not.toContainText("仅限非商用");
+  await expect(paramDrawer.locator(".co-comfy-license-alert")).toHaveCount(0);
 
   const ttsSelect = paramDrawer.locator(
     ".ant-select:has(#comfy-field-pipeline_tts_engine)",
   );
   await expect(ttsSelect).toBeVisible();
   await chooseAntOption(page, ttsSelect, /Fish Speech S2-Pro/);
-  await expect(licenseAlert).toBeVisible();
-  await expect(licenseAlert.locator(".co-comfy-license-alert-line")).toHaveCount(
-    2,
-  );
-  await expect(
-    licenseAlert.locator(".co-comfy-license-alert-line").first(),
-  ).toContainText("Fish Speech S2-Pro");
+  await expect(ttsStrip).toContainText("Fish Speech S2-Pro");
+  await expect(ttsStrip).not.toContainText("仅非商用");
+  await expect(ttsStrip).not.toContainText("仅限非商用");
+  await expect(paramDrawer.locator(".co-comfy-license-alert")).toHaveCount(0);
 
-  // Expanding and collapsing Advanced Settings reveals engine-tuned defaults while preserving the license alert.
+  // Expanding and collapsing Advanced Settings reveals engine-tuned defaults without license banners.
   await advancedToggle.click();
   await expect(advancedToggle).toHaveAttribute("aria-expanded", "true");
   await expect(paramDrawer.locator("#comfy-field-15_steps")).toHaveValue("8");
@@ -2933,7 +2925,7 @@ test("ComfyUI built-in digital human unified entry shows beginner essentials fir
   ).toHaveValue("20");
   await advancedToggle.click();
   await expect(advancedToggle).toHaveAttribute("aria-expanded", "false");
-  await expect(licenseAlert).toBeVisible();
+  await expect(paramDrawer.locator(".co-comfy-license-alert")).toHaveCount(0);
 });
 
 test("ComfyUI built-in digital human unified entry translates cleanly to Japanese across card, engine switcher, Parameter Drawer, and TTS engine", async ({
@@ -3041,8 +3033,9 @@ test("ComfyUI built-in digital human unified entry translates cleanly to Japanes
   await expect(longCatOpt).toHaveAttribute("aria-checked", "false");
   await expect(longCatOpt).toContainText("フラッグシップ HD");
   await expect(longCatOpt).toContainText(
-    "LongCat 1.6 ネイティブ 720p + SeedVR2 7B / FlashVSR+ 超解像（非商用限定）",
+    "LongCat 1.6 ネイティブ 720p + SeedVR2 7B / FlashVSR+ 超解像",
   );
+  await expect(longCatOpt).not.toContainText("非商用");
 
   const drawerIoRows = paramDrawer.locator(
     ".co-comfy-beginner-guide-io .co-comfy-beginner-guide-io-row",
@@ -3192,16 +3185,14 @@ test("ComfyUI digital human validates audio source toggle, IndexTTS-2 required r
   await digitalHumanCard.click();
   await expect(paramDrawer).toBeVisible();
 
-  // 3. Audio source toggle (tts / audio): switching to uploaded audio hides script_text, suppresses non-commercial TTS alert,
-  //    and updates T4 preflight VRAM requirement to InfiniteTalk's 40 GB.
+  // 3. Audio source toggle (tts / audio): switching to uploaded audio hides script_text,
+  //    keeps drawer free of non-commercial license banners, and updates T4 preflight VRAM requirement to InfiniteTalk's 40 GB.
   const ttsSelect = paramDrawer.locator(
     ".ant-select:has(#comfy-field-pipeline_tts_engine)",
   );
   await expect(ttsSelect).toBeVisible();
   await chooseAntOption(page, ttsSelect, /Fish Speech S2-Pro/);
-  const licenseAlert = paramDrawer.locator(".co-comfy-license-alert");
-  await expect(licenseAlert).toBeVisible();
-  await expect(licenseAlert).toContainText("Fish Speech S2-Pro");
+  await expect(paramDrawer.locator(".co-comfy-license-alert")).toHaveCount(0);
 
   const audioModeBtn = paramDrawer.locator(
     '.co-comfy-segmented button[role="radio"]',
@@ -3216,7 +3207,7 @@ test("ComfyUI digital human validates audio source toggle, IndexTTS-2 required r
     paramDrawer.locator("#comfy-field-pipeline_script_text"),
   ).toHaveCount(0);
   await expect(paramDrawer.locator("#comfy-field-2_audio")).toHaveCount(1);
-  await expect(licenseAlert).toHaveCount(0);
+  await expect(paramDrawer.locator(".co-comfy-license-alert")).toHaveCount(0);
   await expect(preflightWarning).toContainText(
     "当前 GPU 显存不足（需 40 GB，当前 15 GB）",
   );
@@ -3246,8 +3237,13 @@ test("ComfyUI digital human validates audio source toggle, IndexTTS-2 required r
   await expect(voicePresetSelect).toContainText("沈知意 · 知性女主播");
 
   await chooseAntOption(page, ttsSelect, /IndexTTS-2/);
-  await expect(licenseAlert).toBeVisible();
-  await expect(licenseAlert).toContainText("IndexTTS-2");
+  await expect(paramDrawer.locator(".co-comfy-tts-strip")).toContainText(
+    "IndexTTS-2.5",
+  );
+  await expect(paramDrawer.locator(".co-comfy-tts-strip")).not.toContainText(
+    "仅非商用",
+  );
+  await expect(paramDrawer.locator(".co-comfy-license-alert")).toHaveCount(0);
 
   // With default built-in female voice (沈知意) or switching to 林小满, voice_ref_audio is NOT required.
   await expect(paramDrawer.locator(".co-comfy-field-required-hint")).toHaveCount(
@@ -3297,7 +3293,7 @@ test("ComfyUI digital human validates audio source toggle, IndexTTS-2 required r
   });
 });
 
-test("ComfyUI LongCat 1.6 native flagship engine auto-selects on G4 96 GB, exposes built-in voices, 96GB quality/framing/upscale defaults, non-commercial notice, and conditional sampling controls", async ({
+test("ComfyUI LongCat 1.6 native flagship engine auto-selects on G4 96 GB, exposes built-in voices, 96GB quality/framing/upscale defaults, clean drawer without license banners, and conditional sampling controls", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -3429,10 +3425,8 @@ test("ComfyUI LongCat 1.6 native flagship engine auto-selects on G4 96 GB, expos
   await expect(resolutionSelect).toBeVisible();
   await expect(resolutionSelect).toContainText("横屏全高清 1080p");
 
-  // Non-commercial workflow notice stays visible in both TTS mode and uploaded audio mode.
-  const licenseAlert = paramDrawer.locator(".co-comfy-license-alert");
-  await expect(licenseAlert).toBeVisible();
-  await expect(licenseAlert).toContainText("口播数字人 · 96GB 电影级旗舰版");
+  // No non-commercial license banners in either TTS mode or uploaded audio mode.
+  await expect(paramDrawer.locator(".co-comfy-license-alert")).toHaveCount(0);
 
   const audioModeBtn = paramDrawer.locator(
     '.co-comfy-segmented button[role="radio"]',
@@ -3443,8 +3437,7 @@ test("ComfyUI LongCat 1.6 native flagship engine auto-selects on G4 96 GB, expos
     { hasText: "输入文稿（AI 自动配音）" },
   );
   await audioModeBtn.click();
-  await expect(licenseAlert).toBeVisible();
-  await expect(licenseAlert).toContainText("口播数字人 · 96GB 电影级旗舰版");
+  await expect(paramDrawer.locator(".co-comfy-license-alert")).toHaveCount(0);
   await ttsModeBtn.click();
 
   // Advanced controls stay collapsed until expanded.
@@ -3769,7 +3762,7 @@ test("ComfyUI unified digital human card preserves common inputs across engine s
   );
 });
 
-test("ComfyUI fresh-VM longcat_avatar_native runs directly while ComfyUI is stopped, shows processing status, prompts start for InfiniteTalk, and renders deduplicated license and disk footprint", async ({
+test("ComfyUI fresh-VM longcat_avatar_native runs directly while ComfyUI is stopped, shows processing status, prompts start for InfiniteTalk, and renders clean card specs and disk footprint", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -3827,7 +3820,7 @@ test("ComfyUI fresh-VM longcat_avatar_native runs directly while ComfyUI is stop
     "未启动",
   );
 
-  // Workflow list uses role="list" / role="listitem" and deduplicates combined card license tokens (2 cards: unified digital human + fashion try-on).
+  // Workflow list uses role="list" / role="listitem" with clean cards free of non-commercial pills or suffixes.
   const workflowList = page.locator('.co-comfy-workflow-list[role="list"]');
   await expect(workflowList).toBeVisible();
   const cards = workflowList.locator('.co-comfy-workflow-item[role="listitem"]');
@@ -3835,14 +3828,17 @@ test("ComfyUI fresh-VM longcat_avatar_native runs directly while ComfyUI is stop
 
   const unifiedCard = cards.first();
   const cardSpecs = unifiedCard.locator(".co-comfy-wf-spec-text");
-  await expect(cardSpecs).toContainText(
-    "Apache-2.0 / CC-BY-4.0 / GPL-3.0 / MIT",
+  await expect(cardSpecs).toContainText("40–48 GB+");
+  await expect(cardSpecs).toContainText("2 款引擎可选");
+  await expect(unifiedCard.locator(".co-comfy-noncommercial-pill")).toHaveCount(0);
+  await expect(unifiedCard).not.toContainText("非商用");
+
+  const fashionCard = cards.nth(1);
+  await expect(fashionCard.locator(".co-comfy-wf-card-title")).toHaveText(
+    "AI 模特换装棚拍",
   );
-  const cardSpecsText = (await cardSpecs.textContent()) || "";
-  expect(cardSpecsText.match(/Apache-2\.0/g)).toHaveLength(1);
-  await expect(
-    unifiedCard.locator(".co-comfy-noncommercial-pill"),
-  ).toContainText("仅限非商用/研究");
+  await expect(fashionCard.locator(".co-comfy-noncommercial-pill")).toHaveCount(0);
+  await expect(fashionCard).not.toContainText("非商用");
 
   // Open the unified card: G4 96 GB auto-selects digital-human-longcat (longcat_avatar_native).
   await unifiedCard.click();
@@ -3859,22 +3855,18 @@ test("ComfyUI fresh-VM longcat_avatar_native runs directly while ComfyUI is stop
   );
   await expect(longCatOpt).toHaveAttribute("aria-checked", "true");
 
-  // Native preflight disk footprint strip, non-commercial notice banner, and deduplicated license pill render cleanly.
+  // Native preflight disk footprint strip renders cleanly without non-commercial banners or license pills.
   const preflightInfo = paramDrawer.locator(".co-comfy-preflight-strip.is-info");
   await expect(preflightInfo).toBeVisible();
   await expect(preflightInfo).toContainText("78.0 GB");
-
-  const licenseAlert = paramDrawer.locator(".co-comfy-license-alert");
-  await expect(licenseAlert).toBeVisible();
-  await expect(licenseAlert).toContainText("口播数字人 · 96GB 电影级旗舰版");
+  await expect(paramDrawer.locator(".co-comfy-license-alert")).toHaveCount(0);
 
   const advancedToggle = paramDrawer.locator(".co-comfy-advanced-toggle");
   await advancedToggle.click();
   await expect(advancedToggle).toHaveAttribute("aria-expanded", "true");
   const specsStrip = paramDrawer.locator(".co-comfy-specs-pills");
   await expect(specsStrip).toContainText("推荐磁盘 ~78 GB");
-  await expect(specsStrip).toContainText("MIT / Apache-2.0 · 仅限非商用/研究");
-  await expect(specsStrip).not.toContainText("（仅限非商用）");
+  await expect(specsStrip).not.toContainText("非商用");
 
   // While ComfyUI is stopped on a fresh GPU VM, LongCat 1.6 native shows Run directly (NOT "Start ComfyUI first").
   const runBtn = paramDrawer.locator(".co-comfy-drawer-run-btn");
@@ -7443,13 +7435,21 @@ test("settings shows bottom floating save bar only when top save button scrolls 
     )
     .toContain("settings.save");
 
-  // 5) Scroll to the very bottom -> About row clears the floating bar without overlap
+  // 5) Scroll to the very bottom -> dedicated About section renders non-commercial license notice
+  //    (without a Help section) and clears the floating bar without overlap
   await page.evaluate(() => {
     const content = document.querySelector(".co-content") as HTMLElement;
     content.scrollTop = content.scrollHeight;
   });
   await expect(floatingBar).toBeVisible();
   await expect(saveButtons).toHaveCount(1);
+  const aboutSection = page.getByTestId("settings-about-section");
+  await expect(aboutSection).toBeVisible();
+  await expect(aboutSection.locator("#settings-sec-about")).toHaveText("关于");
+  const aboutNotice = page.getByTestId("settings-about-noncommercial-notice");
+  await expect(aboutNotice).toBeVisible();
+  await expect(aboutNotice).toContainText("非商业");
+  await expect(page.locator(".co-settings-section-label", { hasText: "帮助" })).toHaveCount(0);
   const bottomClearance = await page.evaluate(() => {
     const about = document
       .querySelector(".co-about-card")!
@@ -9473,7 +9473,7 @@ test("one-click encrypted migration supports selective export, unauthenticated q
   await expect(accountCheckbox).not.toBeChecked();
 });
 
-test("A100 40 GB VM recommends InfiniteTalk with commercial MOSS-TTS v1.5, checks combined fresh-VM disk preflight with cached_tts_engines, and dynamically adds Fish Drama 3 non-commercial notice", async ({
+test("A100 40 GB VM recommends InfiniteTalk with MOSS-TTS v1.5, checks combined fresh-VM disk preflight with cached_tts_engines, and switches cleanly to Fish Drama 3 without non-commercial banners", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -9551,16 +9551,12 @@ test("A100 40 GB VM recommends InfiniteTalk with commercial MOSS-TTS v1.5, check
   await expect(longCatOpt).toHaveAttribute("aria-checked", "false");
   await expect(longCatOpt).not.toContainText("推荐");
 
-  // Default MOSS-TTS v1.5 (20 GB VRAM, Apache-2.0) fits A100 40 GB with zero VRAM warning
-  // and commercial badge (only the generic suite disclaimer line, no active-model non-commercial line).
+  // Default MOSS-TTS v1.5 (20 GB VRAM) fits A100 40 GB with zero VRAM warning
+  // and clean TTS strip (no commercial/non-commercial badges or disclaimer banners).
   const ttsStrip = paramDrawer.locator(".co-comfy-tts-strip");
   await expect(ttsStrip).toContainText("MOSS-TTS v1.5");
-  await expect(ttsStrip).toContainText("可商用开源");
-  const licenseAlert = paramDrawer.locator(".co-comfy-license-alert");
-  await expect(licenseAlert.locator(".co-comfy-license-alert-line")).toHaveCount(
-    1,
-  );
-  await expect(licenseAlert).not.toContainText("MOSS-TTS v1.5");
+  await expect(ttsStrip).not.toContainText("可商用开源");
+  await expect(paramDrawer.locator(".co-comfy-license-alert")).toHaveCount(0);
 
   // Combined fresh-VM disk preflight sums wfDisk (45 GB) + uncached MOSS-TTS v1.5 (28 GB) = 73 GB > 60 GB.
   const preflightWarnings = paramDrawer.locator(
@@ -9583,20 +9579,16 @@ test("A100 40 GB VM recommends InfiniteTalk with commercial MOSS-TTS v1.5, check
   });
   await expect(preflightWarnings).toHaveCount(0);
 
-  // Dynamically switching TTS to Fish Audio Drama 3 surfaces the active-model non-commercial notice,
-  // flips TTS badge to non-commercial, and raises both 45 GB VRAM and 93 GB combined disk warnings.
+  // Dynamically switching TTS to Fish Audio Drama 3 raises both 45 GB VRAM and 93 GB combined disk warnings
+  // without rendering non-commercial pills or disclaimer banners.
   const ttsSelect = paramDrawer.locator(
     ".ant-select:has(#comfy-field-pipeline_tts_engine)",
   );
   await chooseAntOption(page, ttsSelect, /Fish Audio Drama 3/);
   await expect(ttsStrip).toContainText("Fish Audio Drama 3");
-  await expect(ttsStrip).toContainText("仅限非商用/研究");
-  await expect(licenseAlert.locator(".co-comfy-license-alert-line")).toHaveCount(
-    2,
-  );
-  await expect(
-    licenseAlert.locator(".co-comfy-license-alert-line").first(),
-  ).toContainText("Fish Audio Drama 3");
+  await expect(ttsStrip).not.toContainText("仅非商用");
+  await expect(ttsStrip).not.toContainText("仅限非商用");
+  await expect(paramDrawer.locator(".co-comfy-license-alert")).toHaveCount(0);
   await expect(preflightWarnings).toHaveCount(2);
   await expect(paramDrawer).toContainText(
     "当前 GPU 显存不足（需 45 GB，当前 40 GB）",

@@ -1,5 +1,8 @@
 import { ref } from "vue";
-import { isColabOneInspectOutput } from "./colabOneOutputGallery";
+import {
+  isColabOneInspectOutput,
+  normalizeColabOneWorkflowDisplayName,
+} from "./colabOneOutputGallery";
 import {
   COLABONE_WEB_CLIENT_HEADER,
   COLABONE_WEB_CLIENT_VALUE,
@@ -352,8 +355,9 @@ function normalizeManifestItem(
     mime: typeof rec.mime === "string" ? rec.mime.trim() : "",
     size: normalizeNonNegativeNumber(rec.size),
     workflow_id: typeof rec.workflow_id === "string" ? rec.workflow_id.trim() : "",
-    workflow_name:
-      typeof rec.workflow_name === "string" ? rec.workflow_name.trim() : "",
+    workflow_name: normalizeColabOneWorkflowDisplayName(
+      typeof rec.workflow_name === "string" ? rec.workflow_name : "",
+    ),
     created_at: normalizeNonNegativeNumber(rec.created_at),
     task_id: typeof rec.task_id === "string" ? rec.task_id.trim() : "",
     is_inspect: isInspect,
@@ -389,13 +393,16 @@ function normalizeManifestGroup(
     (typeof rec.workflow_id === "string" ? rec.workflow_id.trim() : "") ||
     items[0].workflow_id;
   const workflowName =
-    (typeof rec.workflow_name === "string" ? rec.workflow_name.trim() : "") ||
-    items[0].workflow_name;
+    normalizeColabOneWorkflowDisplayName(
+      typeof rec.workflow_name === "string" ? rec.workflow_name : "",
+    ) || items[0].workflow_name;
   const taskId =
     (typeof rec.task_id === "string" ? rec.task_id.trim() : "") ||
     items[0].task_id;
   const title =
-    (typeof rec.title === "string" ? rec.title.trim() : "") ||
+    normalizeColabOneWorkflowDisplayName(
+      typeof rec.title === "string" ? rec.title : "",
+    ) ||
     workflowName ||
     items[0].filename ||
     id;

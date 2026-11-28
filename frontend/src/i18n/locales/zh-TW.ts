@@ -1468,9 +1468,6 @@ export const zhTWMessages: ColabOneMessages = {
   "comfy.errUnsupportedAudioFormat": "不支援的音訊格式，請選擇 WAV / MP3 / FLAC / OGG / M4A 檔案",
   "comfy.errIncompleteTransfer": "作品傳輸不完整，請重試",
   "comfy.errOutputChecksum": "作品雜湊驗證失敗，請重試",
-  "comfy.licenseCommercialOk": "可商用開源",
-  "comfy.licenseNonCommercial": "僅限非商用／研究",
-  "comfy.licenseNoticeTitle": "模型授權條款提示",
   "comfy.recommendedGpu": "推薦 {gpu}",
   "comfy.modelDepsTag": "{count} 個權重 · {size}",
   "comfy.packNodesTag": "{count} 個節點套件",
@@ -1487,7 +1484,6 @@ export const zhTWMessages: ColabOneMessages = {
   "comfy.downloadProgressMeta": "{done} / {total} · {speed}",
   "comfy.requiredFieldHint": "請先填寫或上傳必填欄位：{label}",
   "comfy.pipelineDigitalHumanTag": "長影片數位人流程",
-  "comfy.ttsNonCommercialAlert": "目前所選語音引擎「{name}」採用非商用／研究授權：{notice}",
   "comfy.openOutputsBtn": "輸出結果",
   "comfy.configureAndRun": "設定參數",
   "comfy.paramDrawerAria": "工作流程參數設定抽屜",
@@ -1641,10 +1637,6 @@ export const zhTWMessages: ColabOneMessages = {
   "comfy.fashionPosePreset_pose_30": "輕快小步跳躍抓拍",
   "comfy.specsDetailTitle": "硬體與相依規格",
   "comfy.viewOutputsShort": "檢視結果",
-  "comfy.workflowNonCommercialAlert":
-    "目前所選工作流程「{name}」採用非商用／研究授權：{notice}",
-  "comfy.combinedNonCommercialAlert":
-    "目前組合（{names}）包含非商用／研究元件：{notices}",
   "comfy.preflightVramInsufficient":
     "目前 GPU 顯示記憶體不足（需 {required} GB，目前 {available} GB），請切換至建議機型（{gpu}）",
   "comfy.preflightVramInsufficientShare":
@@ -1700,9 +1692,6 @@ export const zhTWMessages: ColabOneMessages = {
   "comfy.ttsCapabilityCustomSpeakers": "官方固定音色",
   "comfy.ttsMinVram": "VRAM ≥ {vram}",
   "comfy.ttsMinDisk": "磁碟 ≥ {disk}",
-  "comfy.ttsNonCommercialSuiteTitle": "內建旗艦 TTS 引擎非商用說明",
-  "comfy.ttsNonCommercialSuiteDesc":
-    "本數位人配音方案整合多款 2026 前沿開源／開放權重語音大模型（含 Fish Audio Drama 3 35B MoE、Breeze TTS 2、IndexTTS-2.5 等研究與社群授權模型），僅供個人學習、效果體驗與非商業研究使用，請勿直接用於商業用途或對外託管 TTS 服務。",
   "comfy.voiceGroupFemale": "精選女聲（通用）",
   "comfy.voiceGroupMale": "精選男聲（通用）",
   "comfy.voiceGroupNeutral": "內建中性／通用音色",
@@ -1753,7 +1742,7 @@ export const zhTWMessages: ColabOneMessages = {
   "comfy.videoEngineInfiniteTalkTitle": "長影片穩健",
   "comfy.videoEngineInfiniteTalkSummary": "多分鐘連續口播更穩、速度更快",
   "comfy.videoEngineLongCatTitle": "旗艦高畫質",
-  "comfy.videoEngineLongCatSummary": "LongCat 1.6 原生 720p + SeedVR2 7B / FlashVSR+ 超解析（僅限非商用）",
+  "comfy.videoEngineLongCatSummary": "LongCat 1.6 原生 720p + SeedVR2 7B / FlashVSR+ 超解析",
   "comfy.qualityPresetCinema": "電影級旗艦",
   "comfy.qualityPresetBalanced": "高畫質均衡",
   "comfy.qualityPresetLongform": "長影片穩態",
@@ -1775,7 +1764,8 @@ export const zhTWMessages: ColabOneMessages = {
   "settings.sectionAccount": "帳戶與憑證",
   "settings.sectionCompute": "算力與網路",
   "settings.sectionAppearance": "外觀與語言",
-  "settings.sectionDesktop": "本機與關於",
+  "settings.sectionDesktop": "本機",
+  "settings.sectionAbout": "關於",
   "settings.downloadThreadsDesc": "遠端下載模型權重時的並行連線數。",
   "settings.assignProxyConfigureBtn": "設定代理",
   "settings.assignProxyEditBtn": "編輯",
@@ -1903,9 +1893,12 @@ export const zhTWMessages: ColabOneMessages = {
   "settings.toastShortcutDesktop": "已建立桌面捷徑",
   "settings.toastShortcutBoth": "已加入開始功能表與桌面",
   "settings.toastShortcutStartMenu": "已加入開始功能表，開啟後可對底部工作列圖示按右鍵釘選",
-  "settings.aboutTitle": "關於與開源授權",
+  "settings.aboutTitle": "ColabOne 與開源授權",
   "settings.aboutDesc":
     "ColabOne · 遠端 GGUF 對外 API 與 ComfyUI 工作流程 · 憑證安全儲存於本機加密憑證庫",
+  "settings.aboutNonCommercialTitle": "模型與元件授權說明",
+  "settings.aboutNonCommercialDesc":
+    "本軟體內建整合的部分第三方 AI 模型、語音引擎與工作流程元件（如部分數位人、語音合成、換裝及即時演播相關模型權重）受各自上游開源或社群授權條款約束，僅限個人學習、體驗與非商業研究使用。如需用於商業用途或對外提供商業服務，請先確認對應模型與元件的上游授權條款，並向原權利方取得合法商業授權。",
 
   // Logs Drawer & Standalone Window
   "logs.windowTitle": "執行日誌 · ColabOne",
@@ -2055,7 +2048,7 @@ export const zhTWMessages: ColabOneMessages = {
   "close.activeOpWarning":
     "目前有正在執行的本機操作（如啟動／釋放 GPU 或用戶端更新）。直接結束會中斷本機進度，選擇「背景執行」可保持其繼續進行。",
   "close.rememberLabel": "記住我的選擇，下次不再提示",
-  "close.rememberHint": "後續可隨時於「設定 / 本機與關於」中修改。",
+  "close.rememberHint": "後續可隨時於「設定 / 本機」中修改。",
   "close.confirmQuitBtn": "直接結束",
   "close.confirmBackgroundBtn": "背景執行",
 
@@ -2330,9 +2323,6 @@ export const zhTWMessages: ColabOneMessages = {
 
   // Live Studio (Real-time Interactive Digital Human)
   "live.sectionAria": "即時演播室",
-  "live.researchBadge": "實驗性 · 學術非商用",
-  "live.researchTooltip":
-    "即時演播室整合了 SoulX-FlashHead、MuseTalk 1.5、PersonaLive 等開源數位人引擎，部分上游權重僅限學術研究與非商用場景，請遵循各上游授權條款。",
   "live.stateIdle": "待命",
   "live.stateListening": "聆聽中",
   "live.stateThinking": "思考中",

@@ -956,6 +956,32 @@ func (c *ColabOneController) builtinTemplatePipelineKind(workflowID string) stri
 	return ""
 }
 
+func normalizeColabOneOutputWorkflowName(name string) string {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "AI 模特换装棚拍（仅非商用）" {
+		return "AI 模特换装棚拍"
+	}
+	return trimmed
+}
+
+func normalizeColabOneOutputsWorkflowNames(outputs []any) []any {
+	if len(outputs) == 0 {
+		return outputs
+	}
+	for _, raw := range outputs {
+		item, ok := raw.(map[string]any)
+		if !ok || item == nil {
+			continue
+		}
+		if wfName, ok := item["workflow_name"].(string); ok {
+			if cleaned := normalizeColabOneOutputWorkflowName(wfName); cleaned != wfName {
+				item["workflow_name"] = cleaned
+			}
+		}
+	}
+	return outputs
+}
+
 func (c *ColabOneController) builtinTtsEngines() []map[string]any {
 	c.loadBuiltinComfyCatalog()
 	return deepCopyMapSlice(c.cachedBuiltinTtsEngines)

@@ -1501,9 +1501,6 @@ export const jaJPMessages: ColabOneMessages = {
   "comfy.errUnsupportedAudioFormat": "未対応の音声形式です。WAV / MP3 / FLAC / OGG / M4A ファイルを選択してください",
   "comfy.errIncompleteTransfer": "出力データの転送が不完全です。再試行してください",
   "comfy.errOutputChecksum": "出力ファイルの整合性検証に失敗しました。再試行してください",
-  "comfy.licenseCommercialOk": "商用利用可",
-  "comfy.licenseNonCommercial": "非商用・研究限定",
-  "comfy.licenseNoticeTitle": "モデルライセンスに関する注意",
   "comfy.recommendedGpu": "推奨 {gpu}",
   "comfy.modelDepsTag": "重み {count} 件 · {size}",
   "comfy.packNodesTag": "ノードパック {count} 件",
@@ -1520,8 +1517,6 @@ export const jaJPMessages: ColabOneMessages = {
   "comfy.downloadProgressMeta": "{done} / {total} · {speed}",
   "comfy.requiredFieldHint": "必須項目を入力またはアップロードしてください: {label}",
   "comfy.pipelineDigitalHumanTag": "長尺動画デジタルヒューマン",
-  "comfy.ttsNonCommercialAlert":
-    "選択中の音声エンジン「{name}」は非商用・研究限定ライセンスです: {notice}",
   "comfy.openOutputsBtn": "出力結果",
   "comfy.configureAndRun": "パラメータ設定",
   "comfy.paramDrawerAria": "ワークフローパラメータ設定ドロワー",
@@ -1675,10 +1670,6 @@ export const jaJPMessages: ColabOneMessages = {
   "comfy.fashionPosePreset_pose_30": "キッズ軽やかステップジャンプ",
   "comfy.specsDetailTitle": "ハードウェアと依存仕様",
   "comfy.viewOutputsShort": "結果を見る",
-  "comfy.workflowNonCommercialAlert":
-    "選択中のワークフロー「{name}」は非商用・研究限定ライセンスです: {notice}",
-  "comfy.combinedNonCommercialAlert":
-    "現在の組み合わせ（{names}）には非商用・研究限定ライセンスのコンポーネントが含まれます: {notices}",
   "comfy.preflightVramInsufficient":
     "GPU VRAM が不足しています（必要 {required} GB、現在 {available} GB）。推奨 GPU（{gpu}）に切り替えてください。",
   "comfy.preflightVramInsufficientShare":
@@ -1741,9 +1732,6 @@ export const jaJPMessages: ColabOneMessages = {
   "comfy.ttsCapabilityCustomSpeakers": "公式固定話者",
   "comfy.ttsMinVram": "VRAM ≥ {vram}",
   "comfy.ttsMinDisk": "ディスク ≥ {disk}",
-  "comfy.ttsNonCommercialSuiteTitle": "組み込みフラッグシップ TTS エンジンの非商用利用について",
-  "comfy.ttsNonCommercialSuiteDesc":
-    "本デジタルヒューマン音声合成スイートには、2026 年の最先端オープンソース／オープンウェイト音声モデル（Fish Audio Drama 3 35B MoE、Breeze TTS 2、IndexTTS-2.5 などの研究・コミュニティライセンスモデルを含む）が統合されています。個人学習・品質検証・非商用研究のみを目的としており、商用利用や外部向け TTS ホスティングサービスへの直接利用はお控えください。",
   "comfy.voiceGroupFemale": "厳選女性ボイス（汎用）",
   "comfy.voiceGroupMale": "厳選男性ボイス（汎用）",
   "comfy.voiceGroupNeutral": "内蔵ニュートラル音声",
@@ -1794,7 +1782,7 @@ export const jaJPMessages: ColabOneMessages = {
   "comfy.videoEngineInfiniteTalkTitle": "長尺安定",
   "comfy.videoEngineInfiniteTalkSummary": "数分の連続トークが安定・高速",
   "comfy.videoEngineLongCatTitle": "フラッグシップ HD",
-  "comfy.videoEngineLongCatSummary": "LongCat 1.6 ネイティブ 720p + SeedVR2 7B / FlashVSR+ 超解像（非商用限定）",
+  "comfy.videoEngineLongCatSummary": "LongCat 1.6 ネイティブ 720p + SeedVR2 7B / FlashVSR+ 超解像",
   "comfy.qualityPresetCinema": "シネマ・フラッグシップ",
   "comfy.qualityPresetBalanced": "高画質バランス",
   "comfy.qualityPresetLongform": "長尺安定",
@@ -1816,7 +1804,8 @@ export const jaJPMessages: ColabOneMessages = {
   "settings.sectionAccount": "アカウントと認証情報",
   "settings.sectionCompute": "計算リソースとネットワーク",
   "settings.sectionAppearance": "外観と言語",
-  "settings.sectionDesktop": "デスクトップと情報",
+  "settings.sectionDesktop": "デスクトップ",
+  "settings.sectionAbout": "このアプリについて",
   "settings.downloadThreadsDesc": "リモートでモデル重みをダウンロードする際の並列接続数。",
   "settings.assignProxyConfigureBtn": "設定",
   "settings.assignProxyEditBtn": "編集",
@@ -1953,9 +1942,12 @@ export const jaJPMessages: ColabOneMessages = {
   "settings.toastShortcutBoth": "スタートメニューとデスクトップに追加しました",
   "settings.toastShortcutStartMenu":
     "スタートメニューに追加しました。起動後にタスクバーアイコンを右クリックしてピン留めできます",
-  "settings.aboutTitle": "このアプリとオープンソースライセンス",
+  "settings.aboutTitle": "ColabOne とオープンソースライセンス",
   "settings.aboutDesc":
     "ColabOne · リモート GGUF 外部 API & ComfyUI ワークフロー · 認証情報はローカルの暗号化ボールトで保護",
+  "settings.aboutNonCommercialTitle": "モデルおよびコンポーネントのライセンスについて",
+  "settings.aboutNonCommercialDesc":
+    "本ソフトウェアに統合されている一部のサードパーティ製 AI モデル、音声エンジン、およびワークフローコンポーネント（一部のデジタルヒューマン、音声合成、バーチャル試着、ライブスタジオ関連のモデル重みなど）は、各アップストリームのライセンス条件により個人の学習・検証・非商用研究のみに制限されています。商用利用や外部向け商用サービスの提供を行う場合は、事前に該当モデルおよびコンポーネントのアップストリームライセンスを確認し、権利元から正規の商用許諾を取得してください。",
 
   // Logs Drawer & Standalone Window
   "logs.windowTitle": "実行ログ · ColabOne",
@@ -2109,7 +2101,7 @@ export const jaJPMessages: ColabOneMessages = {
   "close.activeOpWarning":
     "現在実行中のローカル操作（GPU の起動・解放やクライアント更新など）があります。直接終了するとローカル処理が中断されますが、バックグラウンド実行を選ぶと継続できます。",
   "close.rememberLabel": "この選択を記憶し、次回から確認しない",
-  "close.rememberHint": "「設定 / デスクトップと情報」からいつでも変更できます。",
+  "close.rememberHint": "「設定 / デスクトップ」からいつでも変更できます。",
   "close.confirmQuitBtn": "直接終了",
   "close.confirmBackgroundBtn": "バックグラウンドで実行",
 
@@ -2401,9 +2393,6 @@ export const jaJPMessages: ColabOneMessages = {
 
   // Live Studio (Real-time Interactive Digital Human)
   "live.sectionAria": "ライブスタジオ",
-  "live.researchBadge": "実験機能・研究非商用",
-  "live.researchTooltip":
-    "ライブスタジオは SoulX-FlashHead、MuseTalk 1.5、PersonaLive などの先進オープンソースデジタルヒューマンエンジンを統合しています。一部のモデル重みは研究・非商用用途限定です。各ライセンスに従ってください。",
   "live.stateIdle": "待機中",
   "live.stateListening": "聞き取り中",
   "live.stateThinking": "思考中",

@@ -8166,8 +8166,13 @@ onUnmounted(() => {
                   </div>
                 </section>
 
-                <!-- Section 5: Desktop & About -->
+                <!-- Section 5: Desktop -->
                 <section
+                  v-if="
+                    capabilities.can_manage_close_behavior ||
+                    capabilities.can_manage_shortcuts ||
+                    capabilities.can_self_update
+                  "
                   class="co-settings-group-block"
                   aria-labelledby="settings-sec-desktop"
                 >
@@ -8476,9 +8481,23 @@ onUnmounted(() => {
                         </div>
                       </div>
                     </div>
+                  </div>
+                </section>
 
-                    <!-- Row 4.3: About & Open-Source Licenses -->
-                    <div class="co-settings-row co-about-card">
+                <!-- Section 6: About -->
+                <section
+                  class="co-settings-group-block"
+                  aria-labelledby="settings-sec-about"
+                  data-testid="settings-about-section"
+                >
+                  <h2 id="settings-sec-about" class="co-settings-section-label">
+                    {{ t("settings.sectionAbout") }}
+                  </h2>
+                  <div class="co-settings-list">
+                    <div
+                      class="co-settings-row co-about-card"
+                      data-testid="settings-about-card"
+                    >
                       <div class="co-about-row">
                         <div class="co-about-copy">
                           <div class="co-about-head">
@@ -8501,6 +8520,17 @@ onUnmounted(() => {
                           <ATag>Apache-2.0</ATag>
                           <ATag>MIT</ATag>
                         </div>
+                      </div>
+                      <div
+                        class="co-about-notice"
+                        data-testid="settings-about-noncommercial-notice"
+                      >
+                        <div class="co-about-notice-title">
+                          {{ t("settings.aboutNonCommercialTitle") }}
+                        </div>
+                        <p class="co-about-notice-desc">
+                          {{ t("settings.aboutNonCommercialDesc") }}
+                        </p>
                       </div>
                     </div>
                   </div>
@@ -11195,10 +11225,6 @@ onUnmounted(() => {
   display: inline-flex;
 }
 
-.co-about-card :deep(.ant-card-body) {
-  padding: 16px 22px;
-}
-
 .co-about-row {
   display: flex;
   align-items: center;
@@ -11210,6 +11236,7 @@ onUnmounted(() => {
 .co-about-head {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 4px;
 }
@@ -11244,6 +11271,29 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+.co-about-notice {
+  margin-top: 2px;
+  padding-top: 12px;
+  border-top: 1px solid var(--co-border-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.co-about-notice-title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+  color: var(--co-text);
+}
+
+.co-about-notice-desc {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--co-muted);
 }
 
 /* Active Task Dock */

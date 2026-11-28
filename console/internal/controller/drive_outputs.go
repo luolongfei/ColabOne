@@ -277,7 +277,7 @@ func (r *ColabOneDriveOutputRecord) toOutputMap(storage string, canDirectRead bo
 	out := map[string]any{
 		"id":                r.ID,
 		"workflow_id":       r.WorkflowID,
-		"workflow_name":     r.WorkflowName,
+		"workflow_name":     normalizeColabOneOutputWorkflowName(r.WorkflowName),
 		"kind":              r.Kind,
 		"filename":          r.Filename,
 		"extension":         r.Extension,
@@ -695,7 +695,7 @@ func driveOutputRecordFromMap(raw map[string]any) *ColabOneDriveOutputRecord {
 	return &ColabOneDriveOutputRecord{
 		ID:           id,
 		WorkflowID:   strings.TrimSpace(asString(raw["workflow_id"])),
-		WorkflowName: strings.TrimSpace(asString(raw["workflow_name"])),
+		WorkflowName: normalizeColabOneOutputWorkflowName(asString(raw["workflow_name"])),
 		Kind:         kind,
 		Filename:     fname,
 		Extension:    ext,

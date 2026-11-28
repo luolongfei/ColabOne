@@ -1516,9 +1516,6 @@ export const enUSMessages: ColabOneMessages = {
   "comfy.errUnsupportedAudioFormat": "Unsupported audio format. Choose a WAV, MP3, FLAC, OGG, or M4A file.",
   "comfy.errIncompleteTransfer": "Incomplete output transfer; please retry",
   "comfy.errOutputChecksum": "Output checksum verification failed; please retry",
-  "comfy.licenseCommercialOk": "Commercial OK",
-  "comfy.licenseNonCommercial": "Non-Commercial / Research Only",
-  "comfy.licenseNoticeTitle": "Model License Notice",
   "comfy.recommendedGpu": "Rec. {gpu}",
   "comfy.modelDepsTag": "{count} weights · {size}",
   "comfy.packNodesTag": "{count} node packs",
@@ -1535,8 +1532,6 @@ export const enUSMessages: ColabOneMessages = {
   "comfy.downloadProgressMeta": "{done} / {total} · {speed}",
   "comfy.requiredFieldHint": "Please provide required field: {label}",
   "comfy.pipelineDigitalHumanTag": "Long-Video Digital Human",
-  "comfy.ttsNonCommercialAlert":
-    "Selected TTS engine \"{name}\" uses a non-commercial/research license: {notice}",
   "comfy.openOutputsBtn": "Outputs",
   "comfy.configureAndRun": "Configure",
   "comfy.paramDrawerAria": "Workflow parameter drawer",
@@ -1690,10 +1685,6 @@ export const enUSMessages: ColabOneMessages = {
   "comfy.fashionPosePreset_pose_30": "Kids Playful Hop",
   "comfy.specsDetailTitle": "Hardware & Dependency Specs",
   "comfy.viewOutputsShort": "View Outputs",
-  "comfy.workflowNonCommercialAlert":
-    "Selected workflow \"{name}\" uses a non-commercial/research license: {notice}",
-  "comfy.combinedNonCommercialAlert":
-    "Current selection ({names}) includes non-commercial/research components: {notices}",
   "comfy.preflightVramInsufficient":
     "Insufficient GPU VRAM (requires {required} GB, current {available} GB). Switch to recommended GPU ({gpu}).",
   "comfy.preflightVramInsufficientShare":
@@ -1751,9 +1742,6 @@ export const enUSMessages: ColabOneMessages = {
   "comfy.ttsCapabilityCustomSpeakers": "Official Speakers",
   "comfy.ttsMinVram": "VRAM ≥ {vram}",
   "comfy.ttsMinDisk": "Disk ≥ {disk}",
-  "comfy.ttsNonCommercialSuiteTitle": "Non-Commercial Notice for Flagship TTS Suite",
-  "comfy.ttsNonCommercialSuiteDesc":
-    "This digital human voiceover suite integrates cutting-edge 2026 open-source and open-weights speech models (including research and community-licensed models such as Fish Audio Drama 3 35B MoE, Breeze TTS 2, and IndexTTS-2.5). It is intended strictly for personal learning, evaluation, and non-commercial research — do not use it directly for commercial purposes or externally hosted TTS services.",
   "comfy.voiceGroupFemale": "Curated Female Voices (Universal)",
   "comfy.voiceGroupMale": "Curated Male Voices (Universal)",
   "comfy.voiceGroupNeutral": "Built-in Neutral Voices",
@@ -1804,7 +1792,7 @@ export const enUSMessages: ColabOneMessages = {
   "comfy.videoEngineInfiniteTalkTitle": "Long-Video",
   "comfy.videoEngineInfiniteTalkSummary": "Faster & steadier for multi-minute narration",
   "comfy.videoEngineLongCatTitle": "Flagship HD",
-  "comfy.videoEngineLongCatSummary": "LongCat 1.6 native 720p + SeedVR2 7B / FlashVSR+ upscaling (non-commercial)",
+  "comfy.videoEngineLongCatSummary": "LongCat 1.6 native 720p + SeedVR2 7B / FlashVSR+ upscaling",
   "comfy.qualityPresetCinema": "Cinema Flagship",
   "comfy.qualityPresetBalanced": "Balanced HD",
   "comfy.qualityPresetLongform": "Long-Form Steady",
@@ -1826,7 +1814,8 @@ export const enUSMessages: ColabOneMessages = {
   "settings.sectionAccount": "Accounts & Credentials",
   "settings.sectionCompute": "Compute & Network",
   "settings.sectionAppearance": "Appearance & Language",
-  "settings.sectionDesktop": "Desktop & About",
+  "settings.sectionDesktop": "Desktop",
+  "settings.sectionAbout": "About",
   "settings.downloadThreadsDesc": "Parallel connections used when downloading model weights remotely.",
   "settings.assignProxyConfigureBtn": "Configure",
   "settings.assignProxyEditBtn": "Edit",
@@ -1968,9 +1957,12 @@ export const enUSMessages: ColabOneMessages = {
   "settings.toastShortcutBoth": "Added to Start Menu and Desktop",
   "settings.toastShortcutStartMenu":
     "Added to Start Menu — right-click the taskbar icon while open to pin",
-  "settings.aboutTitle": "About & Licenses",
+  "settings.aboutTitle": "ColabOne & Open-Source Licenses",
   "settings.aboutDesc":
     "ColabOne · Remote GGUF Public API & ComfyUI Workflows · Credentials stored in local encrypted vault",
+  "settings.aboutNonCommercialTitle": "Model & Component License Notice",
+  "settings.aboutNonCommercialDesc":
+    "Some third-party AI models, speech engines, and workflow components integrated in this software (including certain digital human, speech synthesis, fashion try-on, and live studio weights) are governed by their respective upstream open-weight or community licenses and are restricted to personal learning, evaluation, and non-commercial research. Before any commercial use or externally hosted commercial service, please review the corresponding upstream licenses and obtain proper commercial authorization from the rights holders.",
 
   // Logs Drawer & Standalone Window
   "logs.windowTitle": "Logs · ColabOne",
@@ -2127,7 +2119,7 @@ export const enUSMessages: ColabOneMessages = {
   "close.activeOpWarning":
     "A local operation (such as starting/releasing a GPU or downloading an update) is currently in progress. Quitting will interrupt it; running in the background keeps it going.",
   "close.rememberLabel": "Remember my choice and don't ask again",
-  "close.rememberHint": "You can change this anytime in Settings / Desktop & About.",
+  "close.rememberHint": "You can change this anytime in Settings / Desktop.",
   "close.confirmQuitBtn": "Quit",
   "close.confirmBackgroundBtn": "Run in Background",
 
@@ -2417,9 +2409,6 @@ export const enUSMessages: ColabOneMessages = {
 
   // Live Studio (Real-time Interactive Digital Human)
   "live.sectionAria": "Live Studio",
-  "live.researchBadge": "Experimental · Research Only",
-  "live.researchTooltip":
-    "Live Studio integrates frontier open-source digital human engines such as SoulX-FlashHead, MuseTalk 1.5, and PersonaLive. Some upstream weights are restricted to research and non-commercial use; please comply with their licenses.",
   "live.stateIdle": "Idle",
   "live.stateListening": "Listening",
   "live.stateThinking": "Thinking",

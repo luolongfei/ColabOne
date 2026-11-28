@@ -1290,6 +1290,14 @@ func canonicalizeOutputExtKindMIME(rawExt, rawFilename, rawKind, rawMime string)
 	}
 }
 
+func shareNormalizeWorkflowName(name string) string {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "AI 模特换装棚拍（仅非商用）" {
+		return "AI 模特换装棚拍"
+	}
+	return trimmed
+}
+
 func extractSanitizedItemSnapshot(outID string, outMap map[string]any) colabOneOutputShareItemSnapshot {
 	rawFilename := strings.TrimSpace(shareAsString(outMap["filename"]))
 	rawExt := strings.TrimSpace(shareAsString(outMap["extension"]))
@@ -1321,7 +1329,7 @@ func extractSanitizedItemSnapshot(outID string, outMap map[string]any) colabOneO
 		Mime:         mimeType,
 		Size:         size,
 		WorkflowID:   strings.TrimSpace(shareAsString(outMap["workflow_id"])),
-		WorkflowName: strings.TrimSpace(shareAsString(outMap["workflow_name"])),
+		WorkflowName: shareNormalizeWorkflowName(shareAsString(outMap["workflow_name"])),
 		CreatedAt:    createdAt,
 		TaskID:       strings.TrimSpace(shareAsString(outMap["task_id"])),
 		IsInspect:    shareAsBool(outMap["is_inspect"]) || isOutputShareInspectFilename(filename),

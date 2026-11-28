@@ -3163,12 +3163,6 @@ onUnmounted(() => {
           <ATag :color="connBadgeMeta.color" class="co-live-conn-pill">
             {{ connBadgeMeta.label }}
           </ATag>
-          <ColabOneTooltip :title="t('live.researchTooltip')">
-            <ATag class="co-live-research-tag">
-              <PhInfo :size="13" />
-              <span>{{ t("live.researchBadge") }}</span>
-            </ATag>
-          </ColabOneTooltip>
           <ColabOneTooltip :title="vramBudgetView.tooltip">
             <ATag :color="vramBudgetView.color" class="co-live-vram-tag co-mono">
               <PhLightning :size="13" />
@@ -4694,10 +4688,6 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-}
-
-.co-live-research-tag {
-  cursor: help;
 }
 
 .co-live-engine-strip {

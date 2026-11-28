@@ -2517,6 +2517,7 @@ const COMFY_WORKFLOW_NAMES = new Set<string>([
   "口播数字人 · 96GB 电影级旗舰版",
   "口播数字人 · InfiniteTalk 长视频版（配 AI 2x 超分）",
   "口播数字人 · LongCat-Avatar 旗舰高清版（原生 720p）",
+  "AI 模特换装棚拍",
   "AI 模特换装棚拍（仅非商用）",
 ]);
 

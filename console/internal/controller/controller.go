@@ -993,7 +993,7 @@ func (c *ColabOneController) Snapshot() map[string]any {
 	if outputs == nil {
 		outputs = []any{}
 	}
-	value["comfy_outputs"] = outputs
+	value["comfy_outputs"] = normalizeColabOneOutputsWorkflowNames(outputs)
 	if asString(rt["state"]) != "stopped" {
 		value["live_avatars"] = deepCopyMapSlice(asMapSlice(value["live_avatars"]))
 		value["live_driving_motions"] = deepCopyMapSlice(asMapSlice(value["live_driving_motions"]))

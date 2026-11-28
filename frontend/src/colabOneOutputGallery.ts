@@ -1,6 +1,22 @@
 import type { ColabOneOutputShareGroupInput } from "./colabOneOutputShare";
 import type { WorkflowOutput } from "./types";
 
+const LEGACY_NON_COMMERCIAL_WORKFLOW_NAME_MAP: Readonly<
+  Record<string, string>
+> = {
+  "AI 模特换装棚拍（仅非商用）": "AI 模特换装棚拍",
+};
+
+export function normalizeColabOneWorkflowDisplayName(
+  name?: string | null,
+): string {
+  const trimmed = typeof name === "string" ? name.trim() : "";
+  if (!trimmed) {
+    return "";
+  }
+  return LEGACY_NON_COMMERCIAL_WORKFLOW_NAME_MAP[trimmed] || trimmed;
+}
+
 const COLABONE_INSPECT_FILENAME_RE =
   /(?:^|[\\/])(?:00_抠衣质检_|rmbg_inspect_|00_inspect_)|抠衣质检|_inspect_/i;
 
@@ -173,10 +189,11 @@ function buildOutputGroup(
   const workflowId =
     items.find((it) => typeof it.workflow_id === "string" && it.workflow_id.trim())
       ?.workflow_id.trim() || "";
-  const workflowName =
-    items
-      .find((it) => typeof it.workflow_name === "string" && it.workflow_name.trim())
-      ?.workflow_name.trim() || "";
+  const workflowName = normalizeColabOneWorkflowDisplayName(
+    items.find(
+      (it) => typeof it.workflow_name === "string" && it.workflow_name.trim(),
+    )?.workflow_name,
+  );
   const fallbackName = items[0]?.filename?.trim() || taskId || items[0]?.id || "";
   const title = workflowName || fallbackName;
 

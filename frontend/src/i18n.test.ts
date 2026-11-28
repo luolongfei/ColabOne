@@ -4619,4 +4619,88 @@ describe("Guest output share locale isolation and cold-load bootstrap", () => {
       ),
     ).toBe('Pose reference photo "street_ref.png" image file is empty; please upload again');
   });
+
+  it("keeps catalog workflow/TTS titles & descriptions free of non-commercial markers and localizes the dedicated Settings About section across all 6 locales", () => {
+    const nonCommercialUiRe = /非商用|非商业|非商業|non-?commercial|비상업/i;
+    const leakRe = /[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/;
+    const zhTwForbiddenRe =
+      /工作流(?!程)|显存|顯存|尾帧|尾幀|渲染|视频|視頻|音频|音頻|默认|保存|缓存|緩存/;
+
+    // 1) Catalog titles, descriptions, and TTS dropdown labels carry no non-commercial markers
+    //    and translate cleanly across all 6 locales.
+    const catalogTexts: string[] = [];
+    for (const eng of comfyCatalog.tts_engines) {
+      catalogTexts.push(eng.name, eng.description);
+    }
+    for (const tpl of comfyCatalog.templates) {
+      catalogTexts.push(tpl.name, tpl.description);
+      for (const field of tpl.fields || []) {
+        if (field.key === "pipeline.tts_engine" && field.option_labels) {
+          catalogTexts.push(
+            ...Object.values(field.option_labels as Record<string, string>),
+          );
+        }
+      }
+    }
+
+    for (const raw of catalogTexts) {
+      expect(raw, `catalog text still has non-commercial marker: ${raw}`).not.toMatch(
+        nonCommercialUiRe,
+      );
+      for (const loc of ALL_LOCALES) {
+        const translated = translateColabOneBackendText(raw, loc);
+        expect(translated, `${loc} translated catalog text leaked non-commercial marker: ${translated}`).not.toMatch(
+          nonCommercialUiRe,
+        );
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            leakRe.test(translated),
+            `${loc} CJK/fullwidth leak for "${raw}" => "${translated}"`,
+          ).toBe(false);
+        }
+        if (loc === "zh-TW") {
+          expect(translated, `zh-TW forbidden term in "${translated}"`).not.toMatch(
+            zhTwForbiddenRe,
+          );
+        }
+      }
+    }
+
+    // 2) LongCat summary stays free of non-commercial suffixes across all 6 locales.
+    for (const loc of ALL_LOCALES) {
+      const summary = COLABONE_MESSAGES[loc]["comfy.videoEngineLongCatSummary"];
+      expect(summary, `${loc} LongCat summary`).not.toMatch(nonCommercialUiRe);
+    }
+
+    // 3) Dedicated Settings About section keys & non-commercial notice exist and localize cleanly across all 6 locales.
+    const aboutKeys: ColabOneMessageKey[] = [
+      "settings.sectionDesktop",
+      "settings.sectionAbout",
+      "settings.aboutTitle",
+      "settings.aboutNonCommercialTitle",
+      "settings.aboutNonCommercialDesc",
+      "close.rememberHint",
+    ];
+    for (const key of aboutKeys) {
+      for (const loc of ALL_LOCALES) {
+        const val = COLABONE_MESSAGES[loc][key];
+        expect(val.trim().length, `empty ${loc}[${key}]`).toBeGreaterThan(0);
+        if (loc === "en-US" || loc === "ko-KR") {
+          expect(
+            leakRe.test(val),
+            `${loc} CJK/fullwidth leak in ${key}: "${val}"`,
+          ).toBe(false);
+        }
+        if (loc === "zh-TW") {
+          expect(val, `zh-TW forbidden term in ${key}: "${val}"`).not.toMatch(
+            zhTwForbiddenRe,
+          );
+        }
+      }
+    }
+    expect(COLABONE_MESSAGES["zh-CN"]["settings.sectionAbout"]).toBe("关于");
+    expect(COLABONE_MESSAGES["en-US"]["settings.sectionAbout"]).toBe("About");
+    expect(COLABONE_MESSAGES["zh-CN"]["settings.aboutNonCommercialDesc"]).toContain("非商业");
+    expect(COLABONE_MESSAGES["en-US"]["settings.aboutNonCommercialDesc"]).toContain("non-commercial");
+  });
 });

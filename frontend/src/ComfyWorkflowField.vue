@@ -25,7 +25,6 @@ import ColabOneTooltip from "./ColabOneTooltip.vue";
 import {
   formatColabOneDiskGiB,
   formatColabOneVramGiB,
-  isColabOneTtsEngineNonCommercial,
   resolveColabOneSelectedVoicePreset,
   resolveColabOneVoicePresetGroups,
   resolveColabOneWorkflowFieldPlaceholder,
@@ -235,10 +234,6 @@ const canResetVoicePreviewText = computed(() => {
   if (!fallback) return false;
   return voicePreviewTextValue.value.trim() !== fallback;
 });
-
-const isSelectedTtsNonCommercial = computed(() =>
-  isColabOneTtsEngineNonCommercial(props.selectedTtsEngine),
-);
 
 const VOICE_PREVIEW_ALREADY_PREFIXED_RE =
   /^(?:音色试听(?:音频合成)?失败[:：]|音色試聽(?:音訊合成)?失敗[:：]|聲線試聽(?:音訊合成)?失敗[:：]|Voice preview(?: audio synthesis)? failed:|ボイス試聴(?:音声の合成)?に失敗しました[:：]|음색 미리듣기(?: 오디오 합성)? 실패[:：])/i;
@@ -834,10 +829,7 @@ function onMediaDrop(event: DragEvent) {
   <div
     v-if="showTtsStrip && selectedTtsEngine"
     class="co-comfy-tts-strip"
-    :class="{
-      'is-wide': wide,
-      'is-non-commercial': isSelectedTtsNonCommercial,
-    }"
+    :class="{ 'is-wide': wide }"
   >
     <div class="co-comfy-tts-strip-head">
       <div class="co-comfy-tts-strip-title">
@@ -849,16 +841,6 @@ function onMediaDrop(event: DragEvent) {
           {{ tb(selectedTtsEngine.name) }}
         </strong>
       </div>
-      <ATag
-        :color="isSelectedTtsNonCommercial ? 'orange' : 'green'"
-        class="co-comfy-meta-tag"
-      >
-        {{
-          isSelectedTtsNonCommercial
-            ? t("comfy.licenseNonCommercial")
-            : t("comfy.licenseCommercialOk")
-        }}
-      </ATag>
     </div>
     <p v-if="selectedTtsEngine.description" class="co-comfy-tts-strip-desc">
       {{ tb(selectedTtsEngine.description) }}
@@ -893,9 +875,6 @@ function onMediaDrop(event: DragEvent) {
             disk: formatColabOneDiskGiB(selectedTtsEngine.min_disk_mib ?? 0),
           })
         }}
-      </ATag>
-      <ATag v-if="selectedTtsEngine.license" class="co-comfy-meta-tag">
-        {{ tb(selectedTtsEngine.license) }}
       </ATag>
       <ATag
         v-if="selectedTtsEngine.supports_voice_clone"
@@ -932,22 +911,6 @@ function onMediaDrop(event: DragEvent) {
       >
         {{ t("comfy.ttsCapabilityTags") }}
       </ATag>
-    </div>
-    <div
-      v-if="
-        selectedTtsEngine.license_notice &&
-        selectedTtsEngine.license_notice.trim()
-      "
-      class="co-comfy-tts-strip-notice"
-      role="note"
-    >
-      <PhWarningCircle
-        :size="14"
-        weight="fill"
-        class="co-comfy-tts-strip-notice-icon"
-        aria-hidden="true"
-      />
-      <span>{{ tb(selectedTtsEngine.license_notice) }}</span>
     </div>
   </div>
 
@@ -1386,11 +1349,6 @@ function onMediaDrop(event: DragEvent) {
   box-sizing: border-box;
 }
 
-.co-comfy-tts-strip.is-non-commercial {
-  background: var(--co-warning-bg);
-  border-color: var(--co-warning-border);
-}
-
 .co-comfy-tts-strip-head {
   display: flex;
   align-items: center;
@@ -1417,10 +1375,6 @@ function onMediaDrop(event: DragEvent) {
 
 :root[data-theme="dark"] .co-comfy-tts-strip-icon {
   color: var(--co-accent-strong);
-}
-
-.co-comfy-tts-strip.is-non-commercial .co-comfy-tts-strip-icon {
-  color: var(--co-warning-text);
 }
 
 .co-comfy-tts-strip-eyebrow {
@@ -1451,30 +1405,6 @@ function onMediaDrop(event: DragEvent) {
   gap: 6px;
   min-width: 0;
   max-width: 100%;
-}
-
-.co-comfy-tts-strip-notice {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  margin-top: 2px;
-  padding: 6px 9px;
-  border-radius: 8px;
-  background: var(--co-warning-bg);
-  border: 1px solid var(--co-warning-border);
-  color: var(--co-warning-text);
-  font-size: 12px;
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-}
-
-.co-comfy-tts-strip.is-non-commercial .co-comfy-tts-strip-notice {
-  background: color-mix(in srgb, var(--co-surface) 60%, var(--co-warning-bg));
-}
-
-.co-comfy-tts-strip-notice-icon {
-  flex-shrink: 0;
-  margin-top: 2px;
 }
 
 /* Voice Audition Preview Card */

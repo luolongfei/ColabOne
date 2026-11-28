@@ -1469,9 +1469,6 @@ export const zhCNMessages = {
   "comfy.errUnsupportedAudioFormat": "不支持的音频格式，请选择 WAV / MP3 / FLAC / OGG / M4A 文件",
   "comfy.errIncompleteTransfer": "作品传输不完整，请重试",
   "comfy.errOutputChecksum": "作品校验失败，请重试",
-  "comfy.licenseCommercialOk": "可商用开源",
-  "comfy.licenseNonCommercial": "仅限非商用/研究",
-  "comfy.licenseNoticeTitle": "模型许可协议提示",
   "comfy.recommendedGpu": "推荐 {gpu}",
   "comfy.modelDepsTag": "{count} 个权重 · {size}",
   "comfy.packNodesTag": "{count} 个节点包",
@@ -1488,8 +1485,6 @@ export const zhCNMessages = {
   "comfy.downloadProgressMeta": "{done} / {total} · {speed}",
   "comfy.requiredFieldHint": "请先填写或上传必填项：{label}",
   "comfy.pipelineDigitalHumanTag": "长视频数字人流水线",
-  "comfy.ttsNonCommercialAlert":
-    "当前所选语音引擎「{name}」采用非商用/研究协议：{notice}",
   "comfy.openOutputsBtn": "输出结果",
   "comfy.configureAndRun": "配置参数",
   "comfy.paramDrawerAria": "工作流参数配置抽屉",
@@ -1643,10 +1638,6 @@ export const zhCNMessages = {
   "comfy.fashionPosePreset_pose_30": "轻快小步跳跃抓拍",
   "comfy.specsDetailTitle": "硬件与依赖规格",
   "comfy.viewOutputsShort": "查看结果",
-  "comfy.workflowNonCommercialAlert":
-    "当前所选工作流「{name}」采用非商用/研究协议：{notice}",
-  "comfy.combinedNonCommercialAlert":
-    "当前组合（{names}）包含非商用/研究组件：{notices}",
   "comfy.preflightVramInsufficient":
     "当前 GPU 显存不足（需 {required} GB，当前 {available} GB），请切换至推荐机型（{gpu}）",
   "comfy.preflightVramInsufficientShare":
@@ -1702,9 +1693,6 @@ export const zhCNMessages = {
   "comfy.ttsCapabilityCustomSpeakers": "官方固定音色",
   "comfy.ttsMinVram": "显存 ≥ {vram}",
   "comfy.ttsMinDisk": "磁盘 ≥ {disk}",
-  "comfy.ttsNonCommercialSuiteTitle": "内置旗舰 TTS 引擎非商用说明",
-  "comfy.ttsNonCommercialSuiteDesc":
-    "本数字人配音方案集成多款 2026 前沿开源/开放权重语音大模型（含 Fish Audio Drama 3 35B MoE、Breeze TTS 2、IndexTTS-2.5 等研究与社区许可模型），仅供个人学习、效果体验与非商业研究使用，请勿直接用于商业用途或对外托管 TTS 服务。",
   "comfy.voiceGroupFemale": "精选女声（通用）",
   "comfy.voiceGroupMale": "精选男声（通用）",
   "comfy.voiceGroupNeutral": "内置中性 / 通用音色",
@@ -1755,7 +1743,7 @@ export const zhCNMessages = {
   "comfy.videoEngineInfiniteTalkTitle": "长视频稳健",
   "comfy.videoEngineInfiniteTalkSummary": "多分钟连续口播更稳、速度更快",
   "comfy.videoEngineLongCatTitle": "旗舰高清",
-  "comfy.videoEngineLongCatSummary": "LongCat 1.6 原生 720p + SeedVR2 7B / FlashVSR+ 超分（仅非商用）",
+  "comfy.videoEngineLongCatSummary": "LongCat 1.6 原生 720p + SeedVR2 7B / FlashVSR+ 超分",
   "comfy.qualityPresetCinema": "电影级旗舰",
   "comfy.qualityPresetBalanced": "高质均衡",
   "comfy.qualityPresetLongform": "长视频稳态",
@@ -1777,7 +1765,8 @@ export const zhCNMessages = {
   "settings.sectionAccount": "账户与凭据",
   "settings.sectionCompute": "算力与网络",
   "settings.sectionAppearance": "外观与语言",
-  "settings.sectionDesktop": "本机与关于",
+  "settings.sectionDesktop": "本机",
+  "settings.sectionAbout": "关于",
   "settings.downloadThreadsDesc": "远端下载模型权重时的并行连接数。",
   "settings.assignProxyConfigureBtn": "配置代理",
   "settings.assignProxyEditBtn": "编辑",
@@ -1905,9 +1894,12 @@ export const zhCNMessages = {
   "settings.toastShortcutDesktop": "已创建桌面快捷方式",
   "settings.toastShortcutBoth": "已添加到开始菜单与桌面",
   "settings.toastShortcutStartMenu": "已添加到开始菜单，打开后可在底部任务栏右键固定",
-  "settings.aboutTitle": "关于与开源许可",
+  "settings.aboutTitle": "ColabOne 与开源许可",
   "settings.aboutDesc":
     "ColabOne · 远端 GGUF 对外 API 与 ComfyUI 工作流 · 凭据安全保存在本地加密凭据库",
+  "settings.aboutNonCommercialTitle": "模型与组件许可说明",
+  "settings.aboutNonCommercialDesc":
+    "本软件内置集成的部分第三方 AI 模型、语音引擎与工作流组件（如部分数字人、语音合成、换装及实时演播相关模型权重）受其各自上游开源或社区协议约束，仅限个人学习、体验与非商业研究使用。如需用于商业用途或对外提供商业服务，请先核查对应模型与组件的上游许可协议，并向原权利方获取合法商业授权。",
 
   // Logs Drawer & Standalone Window
   "logs.windowTitle": "运行日志 · ColabOne",
@@ -2056,7 +2048,7 @@ export const zhCNMessages = {
   "close.activeOpWarning":
     "当前有正在执行的本地操作（如启动/释放 GPU 或客户端更新）。直接退出会中断本地进度，选择「后台运行」可保持其继续执行。",
   "close.rememberLabel": "记住我的选择，下次不再提示",
-  "close.rememberHint": "后续可随时在「设置 / 本机与关于」中修改。",
+  "close.rememberHint": "后续可随时在「设置 / 本机」中修改。",
   "close.confirmQuitBtn": "直接退出",
   "close.confirmBackgroundBtn": "后台运行",
 
@@ -2329,9 +2321,6 @@ export const zhCNMessages = {
 
   // Live Studio (Real-time Interactive Digital Human)
   "live.sectionAria": "实时演播室",
-  "live.researchBadge": "实验性 · 科研非商用",
-  "live.researchTooltip":
-    "实时演播室集成了 SoulX-FlashHead、MuseTalk 1.5、PersonaLive 等前沿开源数字人引擎，部分上游权重仅限科研与非商用场景，请遵循各上游许可证要求。",
   "live.stateIdle": "待机",
   "live.stateListening": "倾听中",
   "live.stateThinking": "思考中",

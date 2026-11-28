@@ -38,6 +38,7 @@ import {
 } from "./appearance";
 import {
   isColabOneInspectOutput,
+  normalizeColabOneWorkflowDisplayName,
   resolveColabOneCoverItems,
   sortColabOneGalleryItems,
 } from "./colabOneOutputGallery";
@@ -146,8 +147,12 @@ const preparedGroups = computed<PreparedGalleryGroup[]>(() => {
       }
       return {
         id: group.id,
-        title: group.title || group.workflow_name || sorted[0]?.filename || group.id,
-        workflowName: group.workflow_name || "",
+        title:
+          normalizeColabOneWorkflowDisplayName(group.title) ||
+          normalizeColabOneWorkflowDisplayName(group.workflow_name) ||
+          sorted[0]?.filename ||
+          group.id,
+        workflowName: normalizeColabOneWorkflowDisplayName(group.workflow_name),
         items: sorted,
         primaryCount,
         inspectCount,

@@ -8538,14 +8538,6 @@ class ColabOneRemoteTtsRunner:
         effective_voice_seed: int | None = None
         effective_speaker_id = ""
 
-        if not engine.get("commercial_ok", True):
-            lic = str(engine.get("license") or "Non-Commercial").strip()
-            notice = str(engine.get("license_notice") or "").strip()
-            msg = f"非商用许可提示：当前 TTS 引擎「{engine_name}」采用 {lic}"
-            if notice:
-                msg += f" — {notice}"
-            _safe_task_note(task, msg, level="warning")
-
         self.check_vram(engine, allow_unavailable=(self.synth_fn is not None))
         self.check_disk(
             engine,
